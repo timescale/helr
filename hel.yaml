@@ -1,0 +1,31 @@
+# Hel v0.1: minimal config for validation
+global:
+  log_level: info
+  state:
+    backend: sqlite
+    path: "./hel-state.db"
+  health:
+    enabled: true
+    address: "0.0.0.0"
+    port: 8080
+
+sources:
+  okta-audit:
+    url: "https://${OKTA_DOMAIN}/api/v1/logs"
+    schedule:
+      interval_secs: 30
+      jitter_secs: 5
+    auth:
+      type: bearer
+      token_env: OKTA_API_TOKEN
+    pagination:
+      strategy: link_header
+      rel: next
+      max_pages: 100
+    resilience:
+      timeout_secs: 30
+      retries:
+        max_attempts: 3
+        initial_backoff_secs: 1
+        max_backoff_secs: 30
+        multiplier: 2.0

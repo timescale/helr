@@ -2,5 +2,18 @@
 name = "hel"
 version = "0.1.0"
 edition = "2024"
+description = "Generic HTTP API log collector: polls APIs and emits NDJSON to stdout"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+anyhow = "1.0"
+async-trait = "0.1"
