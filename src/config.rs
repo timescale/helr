@@ -192,11 +192,11 @@ fn default_multiplier() -> f64 {
 }
 
 impl Config {
-    /// Load and parse config from path. Expands env vars in string fields.
+    /// Load and parse config from path. Expands env vars (`$VAR`, `${VAR}`, `${VAR:-default}`) via shellexpand.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("read config {:?}: {}", path, e))?;
-        let expanded = expand_env_vars(&s);
+        let expanded = expand_env_vars(&s)?;
         let config: Config = serde_yaml::from_str(&expanded)
             .map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
         if config.sources.is_empty() {
@@ -206,28 +206,16 @@ impl Config {
     }
 }
 
-/// Naive env expansion: ${VAR} or $VAR.
-fn expand_env_vars(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '$' {
-            if chars.peek() == Some(&'{') {
-                chars.next(); // consume '{'
-                let var: String = chars.by_ref().take_while(|&c| c != '}').collect();
-                let val = std::env::var(&var).unwrap_or_default();
-                out.push_str(&val);
-            } else {
-                let var: String = chars
-                    .by_ref()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .collect();
-                let val = std::env::var(&var).unwrap_or_default();
-                out.push_str(&val);
-            }
-        } else {
-            out.push(c);
+/// Expand env vars in config: `$VAR`, `${VAR}`, `${VAR:-default}`. Unset vars expand to empty (like os.ExpandEnv).
+fn expand_env_vars(s: &str) -> anyhow::Result<String> {
+    fn context(var: &str) -> Result<Option<std::borrow::Cow<'static, str>>, std::env::VarError> {
+        match std::env::var(var) {
+            Ok(v) => Ok(Some(v.into())),
+            Err(std::env::VarError::NotPresent) => Ok(Some("".into())),
+            Err(e) => Err(e),
         }
     }
-    out
+    shellexpand::env_with_context(s, context)
+        .map(|cow| cow.into_owned())
+        .map_err(|e| anyhow::anyhow!("config env expansion: {} ({})", e.var_name, e.cause))
 }
