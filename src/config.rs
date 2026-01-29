@@ -124,6 +124,14 @@ pub enum AuthConfig {
     Bearer { token_env: String },
     ApiKey { header: String, key_env: String },
     Basic { user_env: String, password_env: String },
+    OAuth2 {
+        token_url: String,
+        client_id_env: String,
+        client_secret_env: String,
+        refresh_token_env: String,
+        #[serde(default)]
+        scopes: Option<Vec<String>>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]

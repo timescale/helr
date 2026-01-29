@@ -36,3 +36,12 @@ sources:
         half_open_timeout_secs: 60
       rate_limit:
         respect_headers: true   # use Retry-After / X-RateLimit-Reset on 429
+
+# OAuth2 example (e.g. Google Workspace):
+#   auth:
+#     type: oauth2
+#     token_url: "https://oauth2.googleapis.com/token"
+#     client_id_env: GWS_CLIENT_ID
+#     client_secret_env: GWS_CLIENT_SECRET
+#     refresh_token_env: GWS_REFRESH_TOKEN
+#     scopes: []

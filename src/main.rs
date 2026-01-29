@@ -10,6 +10,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 mod circuit;
 mod client;
 mod config;
+mod oauth2;
 mod event;
 mod pagination;
 mod poll;
@@ -20,6 +21,7 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use circuit::new_circuit_store;
 use config::Config;
+use oauth2::new_oauth2_token_cache;
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -172,7 +174,15 @@ async fn run_collector(
     };
 
     let circuit_store = new_circuit_store();
-    poll::run_one_tick(&config, store.clone(), source_filter, circuit_store.clone()).await?;
+    let token_cache = new_oauth2_token_cache();
+    poll::run_one_tick(
+        &config,
+        store.clone(),
+        source_filter,
+        circuit_store.clone(),
+        token_cache.clone(),
+    )
+    .await?;
 
     if once {
         return Ok(());
@@ -201,8 +211,14 @@ async fn run_collector(
         tick += 1;
         tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
         tokio::time::sleep(delay).await;
-        if let Err(e) =
-            poll::run_one_tick(&config, store.clone(), source_filter, circuit_store.clone()).await
+        if let Err(e) = poll::run_one_tick(
+            &config,
+            store.clone(),
+            source_filter,
+            circuit_store.clone(),
+            token_cache.clone(),
+        )
+        .await
         {
             tracing::error!("tick failed: {}", e);
             // continue running; next tick may succeed

@@ -4,6 +4,7 @@ use crate::circuit::{self, CircuitStore};
 use crate::client::build_client;
 use crate::config::{Config, PaginationConfig, SourceConfig};
 use crate::event::EmittedEvent;
+use crate::oauth2::OAuth2TokenCache;
 use crate::pagination::next_link_from_headers;
 use crate::retry::execute_with_retry;
 use crate::state::StateStore;
@@ -19,6 +20,7 @@ pub async fn run_one_tick(
     store: Arc<dyn StateStore>,
     source_filter: Option<&str>,
     circuit_store: CircuitStore,
+    token_cache: OAuth2TokenCache,
 ) -> anyhow::Result<()> {
     for (source_id, source) in &config.sources {
         if let Some(filter) = source_filter {
@@ -26,8 +28,14 @@ pub async fn run_one_tick(
                 continue;
             }
         }
-        if let Err(e) =
-            poll_one_source(store.clone(), source_id, source, circuit_store.clone()).await
+        if let Err(e) = poll_one_source(
+            store.clone(),
+            source_id,
+            source,
+            circuit_store.clone(),
+            token_cache.clone(),
+        )
+        .await
         {
             tracing::error!(source = %source_id, "poll failed: {}", e);
             // continue with other sources
@@ -36,12 +44,13 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source, circuit_store))]
+#[instrument(skip(store, source, circuit_store, token_cache))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
     circuit_store: CircuitStore,
+    token_cache: OAuth2TokenCache,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let client = build_client(source.resilience.as_ref())?;
@@ -52,8 +61,16 @@ async fn poll_one_source(
         }
         _ => {
             // No link-header pagination: single request
-            return poll_single_page(store, source_id, source, &client, &source.url, circuit_store)
-                .await;
+            return poll_single_page(
+                store,
+                source_id,
+                source,
+                &client,
+                &source.url,
+                circuit_store,
+                token_cache,
+            )
+            .await;
         }
     };
 
@@ -80,9 +97,11 @@ async fn poll_one_source(
         let response = match execute_with_retry(
             &client,
             source,
+            source_id,
             &url,
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
             source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            Some(&token_cache),
         )
         .await
         {
@@ -158,6 +177,7 @@ async fn poll_single_page(
     client: &reqwest::Client,
     url: &str,
     circuit_store: CircuitStore,
+    token_cache: OAuth2TokenCache,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
@@ -168,9 +188,11 @@ async fn poll_single_page(
     let response = match execute_with_retry(
         client,
         source,
+        source_id,
         url,
         source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
         source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+        Some(&token_cache),
     )
     .await
     {

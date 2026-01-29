@@ -2,7 +2,8 @@
 //! On 429, uses Retry-After (or X-RateLimit-Reset) when configured.
 
 use crate::client::build_request;
-use crate::config::{RateLimitConfig, RetryConfig, SourceConfig};
+use crate::config::{AuthConfig, RateLimitConfig, RetryConfig, SourceConfig};
+use crate::oauth2::{get_oauth_token, OAuth2TokenCache};
 use anyhow::Context;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Response};
@@ -71,26 +72,46 @@ fn cap_duration(d: Duration, max_secs: Option<u64>) -> Duration {
     }
 }
 
+/// Resolve Bearer token when auth is OAuth2 (refresh if needed).
+async fn bearer_for_request(
+    client: &Client,
+    source: &SourceConfig,
+    source_id: &str,
+    token_cache: Option<&OAuth2TokenCache>,
+) -> anyhow::Result<Option<String>> {
+    match (&source.auth, token_cache) {
+        (Some(auth @ AuthConfig::OAuth2 { .. }), Some(cache)) => {
+            let token = get_oauth_token(cache, client, source_id, auth).await?;
+            Ok(Some(token))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Execute a GET request with optional retries. Uses source auth and headers.
 /// Retries on: 408, 429, 5xx, and transport errors. On 429, uses Retry-After when rate_limit.respect_headers is true.
 pub async fn execute_with_retry(
     client: &Client,
     source: &SourceConfig,
+    source_id: &str,
     url: &str,
     retry: Option<&RetryConfig>,
     rate_limit: Option<&RateLimitConfig>,
+    token_cache: Option<&OAuth2TokenCache>,
 ) -> anyhow::Result<Response> {
     let retry = match retry {
         Some(r) if r.max_attempts > 0 => r,
         _ => {
-            let req = build_request(client, source, url)?;
+            let bearer = bearer_for_request(client, source, source_id, token_cache).await?;
+            let req = build_request(client, source, url, bearer.as_deref())?;
             return client.execute(req).await.context("http request");
         }
     };
 
     let mut last_err = None;
     for attempt in 0..retry.max_attempts {
-        let req = build_request(client, source, url)?;
+        let bearer = bearer_for_request(client, source, source_id, token_cache).await?;
+        let req = build_request(client, source, url, bearer.as_deref())?;
         match client.execute(req).await {
             Ok(response) => {
                 if response.status().is_success() {
