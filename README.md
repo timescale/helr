@@ -26,6 +26,10 @@ hel run --output /var/log/hel/events.ndjson --output-rotate size:100
 # Test a single source (one poll tick)
 hel test --source okta-audit
 
+# Session replay: record responses then replay without hitting the live API
+hel run --once --record-dir ./recordings
+hel run --once --replay-dir ./recordings
+
 # Inspect or manage state
 hel state show okta-audit
 hel state reset okta-audit
@@ -43,7 +47,7 @@ See `hel.yaml` for a minimal example. Required: `sources` with at least one sour
 
 ## Status
 
-- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources, file output with log rotation. **`hel test --source NAME`** and **`hel state show/reset/export/import`** implemented.
+- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources, file output with log rotation, **session replay** (`--record-dir`, `--replay-dir`). **`hel test --source NAME`** and **`hel state show/reset/export/import`** implemented.
 
 ## License
 

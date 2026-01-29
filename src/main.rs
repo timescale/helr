@@ -17,6 +17,7 @@ mod oauth2;
 mod output;
 mod pagination;
 mod poll;
+mod replay;
 mod retry;
 mod state;
 
@@ -71,6 +72,14 @@ enum Commands {
         /// Rotate output file: "daily" or "size:N" (N in MB)
         #[arg(long, value_name = "POLICY", requires = "output")]
         output_rotate: Option<String>,
+
+        /// Record HTTP responses to directory (for later replay)
+        #[arg(long, value_name = "PATH")]
+        record_dir: Option<PathBuf>,
+
+        /// Replay from recorded responses instead of live API (use with --once for testing)
+        #[arg(long, value_name = "PATH")]
+        replay_dir: Option<PathBuf>,
     },
 
     /// Validate configuration file
@@ -138,7 +147,12 @@ async fn main() -> anyhow::Result<()> {
                     source,
                     output,
                     output_rotate,
+                    record_dir,
+                    replay_dir,
                 }) => {
+                    if record_dir.is_some() && replay_dir.is_some() {
+                        anyhow::bail!("cannot use both --record-dir and --replay-dir");
+                    }
                     let (event_sink, output_path): (Arc<dyn EventSink>, Option<PathBuf>) = match output {
                         Some(path) => {
                             let rotation = output_rotate
@@ -154,7 +168,25 @@ async fn main() -> anyhow::Result<()> {
                         }
                         None => (Arc::new(StdoutSink), None),
                     };
-                    run_collector(&config, *once, source.as_deref(), event_sink, output_path).await
+                    let record_state = if let Some(dir) = record_dir {
+                        Some(Arc::new(replay::RecordState::new(dir)?))
+                    } else {
+                        None
+                    };
+                    let (config_to_use, record_state) = if let Some(dir) = replay_dir {
+                        let recordings = replay::load_recordings(dir)?;
+                        if recordings.is_empty() {
+                            anyhow::bail!("replay dir has no recordings: {}", dir.display());
+                        }
+                        let (addr, _join) = replay::start_replay_server(recordings, 0).await?;
+                        let base = format!("http://{}", addr);
+                        tracing::info!(%base, "replay server started");
+                        let rewritten = replay::rewrite_config_for_replay(&config, &base);
+                        (rewritten, None)
+                    } else {
+                        (config.clone(), record_state)
+                    };
+                    run_collector(&config_to_use, *once, source.as_deref(), event_sink, output_path, record_state).await
                 }
                 Some(Commands::Test { source, .. }) => {
                     run_test(&config, source, Arc::new(StdoutSink)).await
@@ -163,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
                     run_state(&config, subcommand.as_ref()).await
                 }
                 None => {
-                    run_collector(&config, false, None, Arc::new(StdoutSink), None).await
+                    run_collector(&config, false, None, Arc::new(StdoutSink), None, None).await
                 }
                 _ => unreachable!(),
             }
@@ -280,6 +312,7 @@ async fn run_test(
         token_cache,
         dedupe_store,
         event_sink,
+        None,
     )
     .await
 }
@@ -371,6 +404,7 @@ async fn run_collector(
     source_filter: Option<&str>,
     event_sink: Arc<dyn EventSink>,
     output_path: Option<PathBuf>,
+    record_state: Option<Arc<replay::RecordState>>,
 ) -> anyhow::Result<()> {
     tracing::info!("loaded config");
 
@@ -396,6 +430,7 @@ async fn run_collector(
         token_cache.clone(),
         dedupe_store.clone(),
         event_sink.clone(),
+        record_state.clone(),
     )
     .await?;
 
@@ -498,6 +533,7 @@ async fn run_collector(
         let token_cache_ref = token_cache.clone();
         let dedupe_store_ref = dedupe_store.clone();
         let event_sink_ref = event_sink.clone();
+        let record_state_ref = record_state.as_ref();
         let mut tick_fut = std::pin::pin!(poll::run_one_tick(
             config_ref,
             store_ref,
@@ -506,6 +542,7 @@ async fn run_collector(
             token_cache_ref,
             dedupe_store_ref,
             event_sink_ref,
+            record_state_ref.cloned(),
         ));
 
         tokio::select! {

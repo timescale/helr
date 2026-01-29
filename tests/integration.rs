@@ -1,5 +1,6 @@
 //! Integration test: mock HTTP server + hel run --once; assert stdout NDJSON and behavior.
 
+use base64::Engine;
 use serde_json::json;
 use std::time::Duration;
 use wiremock::matchers::method;
@@ -314,6 +315,169 @@ sources:
         "expected no events when parse fails with skip, got {}",
         ndjson_lines.len()
     );
+}
+
+/// Session replay --record-dir: run against mock server, then verify recording files exist.
+#[tokio::test]
+async fn integration_record_dir_writes_recordings() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "rec1", "msg": "recorded", "published": "2024-01-15T12:00:00Z"}
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_record");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let record_dir = config_dir.join("recordings");
+    let _ = std::fs::remove_dir_all(&record_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  record-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let out = std::process::Command::new(hel_bin())
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "run",
+            "--once",
+            "--record-dir",
+            record_dir.to_str().unwrap(),
+        ])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    assert!(
+        out.status.success(),
+        "hel run --once --record-dir failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let source_dir = record_dir.join("record-source");
+    assert!(source_dir.is_dir(), "record dir should contain record-source/");
+    let file0 = source_dir.join("000.json");
+    assert!(file0.is_file(), "record-source/000.json should exist");
+    let content = std::fs::read_to_string(&file0).expect("read 000.json");
+    let rec: serde_json::Value = serde_json::from_str(&content).expect("parse recording JSON");
+    assert_eq!(rec["status"], 200);
+    assert!(rec.get("body_base64").and_then(|v| v.as_str()).unwrap_or("").len() > 0);
+    let body_b64 = rec["body_base64"].as_str().unwrap();
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(body_b64)
+        .expect("decode body_base64");
+    let body_str = String::from_utf8(body).unwrap();
+    let arr: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(arr[0]["id"], "rec1");
+    assert_eq!(arr[0]["msg"], "recorded");
+}
+
+/// Session replay --replay-dir: use pre-created recordings; run hel and assert NDJSON matches.
+#[tokio::test]
+async fn integration_replay_dir_emits_from_recordings() {
+    let config_dir = std::env::temp_dir().join("hel_integration_replay");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let replay_dir = config_dir.join("replay_fixture");
+    let _ = std::fs::remove_dir_all(&replay_dir);
+    let source_dir = replay_dir.join("replay-source");
+    std::fs::create_dir_all(&source_dir).expect("create replay fixture dir");
+
+    let body = json!([{"id": "rp1", "msg": "replayed", "published": "2024-01-20T10:00:00Z"}]);
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let rec = serde_json::json!({
+        "url": "http://replay/replay/replay-source",
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body_base64": base64::engine::general_purpose::STANDARD.encode(&body_bytes)
+    });
+    std::fs::write(
+        source_dir.join("000.json"),
+        serde_json::to_string_pretty(&rec).unwrap(),
+    )
+    .expect("write 000.json");
+
+    let config_path = config_dir.join("hel.yaml");
+    std::fs::write(
+        &config_path,
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  replay-source:
+    url: "http://placeholder/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+    )
+    .expect("write config");
+
+    let out = std::process::Command::new(hel_bin())
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "run",
+            "--once",
+            "--replay-dir",
+            replay_dir.to_str().unwrap(),
+        ])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    assert!(
+        out.status.success(),
+        "hel run --once --replay-dir failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(
+        lines.len() >= 1,
+        "expected at least 1 NDJSON line from replay, got {}: stdout={} stderr={}",
+        lines.len(),
+        stdout,
+        stderr
+    );
+    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(obj["source"], "replay-source");
+    assert_eq!(obj["event"]["id"], "rp1");
+    assert_eq!(obj["event"]["msg"], "replayed");
 }
 
 fn hel_bin() -> String {

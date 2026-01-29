@@ -13,6 +13,7 @@ use crate::metrics;
 use crate::oauth2::OAuth2TokenCache;
 use crate::output::EventSink;
 use crate::pagination::next_link_from_headers;
+use crate::replay::RecordState;
 use crate::retry::execute_with_retry;
 use crate::state::StateStore;
 use anyhow::Context;
@@ -31,6 +32,7 @@ pub async fn run_one_tick(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
+    record_state: Option<Arc<RecordState>>,
 ) -> anyhow::Result<()> {
     let mut handles = Vec::new();
     for (source_id, source) in &config.sources {
@@ -46,6 +48,7 @@ pub async fn run_one_tick(
         let token_cache = token_cache.clone();
         let dedupe_store = dedupe_store.clone();
         let event_sink = event_sink.clone();
+        let record_state = record_state.clone();
         let h = tokio::spawn(async move {
             poll_one_source(
                 store,
@@ -55,6 +58,7 @@ pub async fn run_one_tick(
                 token_cache,
                 dedupe_store,
                 event_sink,
+                record_state,
             )
             .await
         });
@@ -76,7 +80,7 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source, circuit_store, token_cache, dedupe_store, event_sink))]
+#[instrument(skip(store, source, circuit_store, token_cache, dedupe_store, event_sink, record_state))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
@@ -85,6 +89,7 @@ async fn poll_one_source(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
+    record_state: Option<Arc<RecordState>>,
 ) -> anyhow::Result<()> {
     let client = build_client(source.resilience.as_ref())?;
 
@@ -101,6 +106,7 @@ async fn poll_one_source(
                 token_cache,
                 dedupe_store,
                 event_sink,
+                record_state,
             )
             .await
         }
@@ -121,6 +127,7 @@ async fn poll_one_source(
                 token_cache,
                 dedupe_store,
                 event_sink,
+                record_state,
             )
             .await
         }
@@ -143,6 +150,7 @@ async fn poll_one_source(
                 token_cache,
                 dedupe_store,
                 event_sink,
+                record_state,
             )
             .await
         }
@@ -157,6 +165,7 @@ async fn poll_one_source(
                 token_cache,
                 dedupe_store,
                 event_sink,
+                record_state.clone(),
             )
             .await;
         }
@@ -175,6 +184,7 @@ async fn poll_link_header(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
+    record_state: Option<Arc<RecordState>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let from_store = store.get(source_id, "next_url").await?.filter(|s| !s.is_empty());
@@ -252,7 +262,19 @@ async fn poll_link_header(
         let next_url = next_link_from_headers(response.headers(), rel);
         let base_url = response.url().clone();
         let path = base_url.path().to_string();
+        let record_url = response.url().clone();
+        let record_status = response.status().as_u16();
+        let record_headers = response.headers().clone();
         let body_bytes = response.bytes().await.context("read body")?;
+        if let Some(ref rs) = record_state {
+            rs.save(
+                source_id,
+                record_url.as_str(),
+                record_status,
+                &record_headers,
+                &body_bytes,
+            )?;
+        }
         let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes {
             if body.len() as u64 > limit {
@@ -359,6 +381,7 @@ async fn poll_cursor_pagination(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
+    record_state: Option<Arc<RecordState>>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -433,7 +456,19 @@ async fn poll_cursor_pagination(
         };
         let status = response.status();
         let path = response.url().path().to_string();
+        let record_url = response.url().clone();
+        let record_status = response.status().as_u16();
+        let record_headers = response.headers().clone();
         let body_bytes = response.bytes().await.context("read body")?;
+        if let Some(ref rs) = record_state {
+            rs.save(
+                source_id,
+                record_url.as_str(),
+                record_status,
+                &record_headers,
+                &body_bytes,
+            )?;
+        }
         let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
         if !status.is_success() {
             if cursor.is_some()
@@ -571,6 +606,7 @@ async fn poll_page_offset_pagination(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
+    record_state: Option<Arc<RecordState>>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -622,15 +658,24 @@ async fn poll_page_offset_pagination(
                 return Err(e).context("http request");
             }
         };
-        if !response.status().is_success() {
-            anyhow::bail!(
-                "http {} {}",
-                response.status(),
-                response.text().await.unwrap_or_default()
-            );
-        }
         let path = response.url().path().to_string();
+        let record_url = response.url().clone();
+        let record_status = response.status().as_u16();
+        let record_headers = response.headers().clone();
         let body_bytes = response.bytes().await.context("read body")?;
+        if let Some(ref rs) = record_state {
+            rs.save(
+                source_id,
+                record_url.as_str(),
+                record_status,
+                &record_headers,
+                &body_bytes,
+            )?;
+        }
+        if record_status < 200 || record_status >= 300 {
+            let body_str = String::from_utf8_lossy(&body_bytes);
+            anyhow::bail!("http {} {}", record_status, body_str);
+        }
         let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes {
             if body.len() as u64 > limit {
@@ -700,6 +745,7 @@ async fn poll_single_page(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
+    record_state: Option<Arc<RecordState>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
@@ -741,14 +787,26 @@ async fn poll_single_page(
         }
     };
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("http {} {}", status, body);
+    let record_url = response.url().clone();
+    let record_status = response.status().as_u16();
+    let record_headers = response.headers().clone();
+    let body_bytes = response.bytes().await.context("read body")?;
+
+    if let Some(ref rs) = record_state {
+        rs.save(
+            source_id,
+            record_url.as_str(),
+            record_status,
+            &record_headers,
+            &body_bytes,
+        )?;
     }
 
-    let path = response.url().path().to_string();
-    let body_bytes = response.bytes().await.context("read body")?;
+    if record_status < 200 || record_status >= 300 {
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        anyhow::bail!("http {} {}", record_status, body_str);
+    }
+    let path = record_url.path().to_string();
     let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
     if let Some(limit) = source.max_response_bytes {
         if body.len() as u64 > limit {
