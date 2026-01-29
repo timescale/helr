@@ -7,8 +7,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+mod client;
 mod config;
 mod event;
+mod pagination;
 mod state;
 
 use config::Config;
