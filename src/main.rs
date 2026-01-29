@@ -19,6 +19,7 @@ use config::Config;
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "hel")]
@@ -146,10 +147,44 @@ async fn run_collector(
         _ => Arc::new(MemoryStateStore::new()),
     };
 
-    poll::run_one_tick(&config, store, source_filter).await?;
+    poll::run_one_tick(&config, store.clone(), source_filter).await?;
 
-    if !once {
-        tracing::info!("continuous mode (scheduler not yet implemented)");
+    if once {
+        return Ok(());
     }
-    Ok(())
+
+    let mut tick = 0u64;
+    loop {
+        let delay = next_delay(&config);
+        tick += 1;
+        tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
+        tokio::time::sleep(delay).await;
+        if let Err(e) = poll::run_one_tick(&config, store.clone(), source_filter).await {
+            tracing::error!("tick failed: {}", e);
+            // continue running; next tick may succeed
+        }
+    }
+}
+
+/// Interval + jitter: min interval across sources, max jitter; delay = interval ± jitter, at least 1s.
+fn next_delay(config: &Config) -> Duration {
+    let interval_secs = config
+        .sources
+        .values()
+        .map(|s| s.schedule.interval_secs)
+        .min()
+        .unwrap_or(60);
+    let jitter_secs = config
+        .sources
+        .values()
+        .filter_map(|s| s.schedule.jitter_secs)
+        .max()
+        .unwrap_or(0);
+    let delta = if jitter_secs > 0 {
+        rand::random_range(-(jitter_secs as i64)..=(jitter_secs as i64))
+    } else {
+        0
+    };
+    let secs = (interval_secs as i64 + delta).max(1) as u64;
+    Duration::from_secs(secs)
 }
