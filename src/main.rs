@@ -238,24 +238,80 @@ async fn run_collector(
         }
     }
 
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
     let mut tick = 0u64;
-    loop {
+    'run: loop {
         let delay = next_delay(&config);
         tick += 1;
         tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
-        tokio::time::sleep(delay).await;
-        if let Err(e) = poll::run_one_tick(
-            &config,
-            store.clone(),
-            source_filter,
-            circuit_store.clone(),
-            token_cache.clone(),
-        )
-        .await
-        {
-            tracing::error!("tick failed: {}", e);
-            // continue running; next tick may succeed
+
+        tokio::select! {
+            _ = shutdown_signal() => {
+                tracing::info!("shutdown signal received, stopping scheduler");
+                break 'run;
+            }
+            _ = tokio::time::sleep(delay) => {}
         }
+
+        let config_ref = &config;
+        let store_ref = store.clone();
+        let source_filter_ref = source_filter;
+        let circuit_store_ref = circuit_store.clone();
+        let token_cache_ref = token_cache.clone();
+        let mut tick_fut = std::pin::pin!(poll::run_one_tick(
+            config_ref,
+            store_ref,
+            source_filter_ref,
+            circuit_store_ref,
+            token_cache_ref,
+        ));
+
+        tokio::select! {
+            _ = shutdown_signal() => {
+                tracing::info!("shutdown signal received, waiting for in-flight poll (timeout {}s)", SHUTDOWN_TIMEOUT.as_secs());
+                match tokio::time::timeout(SHUTDOWN_TIMEOUT, tick_fut).await {
+                    Ok(Ok(())) => tracing::debug!("in-flight poll completed"),
+                    Ok(Err(e)) => tracing::warn!("in-flight poll failed: {}", e),
+                    Err(_) => tracing::warn!("in-flight poll did not finish within shutdown timeout"),
+                }
+                break 'run;
+            }
+            result = tick_fut.as_mut() => {
+                if let Err(e) = result {
+                    tracing::error!("tick failed: {}", e);
+                }
+            }
+        }
+    }
+
+    if let Err(e) = std::io::Write::flush(&mut std::io::stdout()) {
+        tracing::warn!("flush stdout: {}", e);
+    }
+    tracing::info!("graceful shutdown complete");
+    Ok(())
+}
+
+/// Future that completes when SIGINT (Ctrl+C) or SIGTERM is received.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
 }
 
