@@ -299,6 +299,7 @@ pub enum AuthConfig {
         #[serde(default)]
         password_file: Option<String>,
     },
+    #[serde(rename = "oauth2")]
     OAuth2 {
         token_url: String,
         client_id_env: String,
