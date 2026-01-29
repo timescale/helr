@@ -61,3 +61,50 @@ pub async fn seen_and_add(
         .or_insert_with(|| LruDedupe::new(capacity));
     dedupe.seen_and_add(id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lru_dedupe_new_is_not_duplicate() {
+        let mut d = LruDedupe::new(10);
+        assert!(!d.seen_and_add("id1".to_string()));
+        assert!(!d.seen_and_add("id2".to_string()));
+    }
+
+    #[test]
+    fn lru_dedupe_duplicate_returns_true() {
+        let mut d = LruDedupe::new(10);
+        assert!(!d.seen_and_add("id1".to_string()));
+        assert!(d.seen_and_add("id1".to_string()));
+        assert!(d.seen_and_add("id1".to_string()));
+    }
+
+    #[test]
+    fn lru_dedupe_empty_id_treated_as_new() {
+        let mut d = LruDedupe::new(10);
+        assert!(!d.seen_and_add("".to_string()));
+        assert!(!d.seen_and_add("".to_string()));
+    }
+
+    #[test]
+    fn lru_dedupe_eviction_when_over_capacity() {
+        let mut d = LruDedupe::new(3);
+        assert!(!d.seen_and_add("a".to_string()));
+        assert!(!d.seen_and_add("b".to_string()));
+        assert!(!d.seen_and_add("c".to_string()));
+        assert!(d.seen_and_add("a".to_string()));
+        assert!(!d.seen_and_add("d".to_string()));
+        assert!(d.seen_and_add("b".to_string()));
+        assert!(!d.seen_and_add("a".to_string()));
+    }
+
+    #[tokio::test]
+    async fn store_seen_and_add_per_source() {
+        let store = new_dedupe_store();
+        assert!(!seen_and_add(&store, "s1", "e1".to_string(), 10).await);
+        assert!(seen_and_add(&store, "s1", "e1".to_string(), 10).await);
+        assert!(!seen_and_add(&store, "s2", "e1".to_string(), 10).await);
+    }
+}

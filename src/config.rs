@@ -319,7 +319,7 @@ impl Config {
 }
 
 /// Expand env vars in config: `$VAR`, `${VAR}`, `${VAR:-default}`. Unset vars expand to empty (like os.ExpandEnv).
-fn expand_env_vars(s: &str) -> anyhow::Result<String> {
+pub(crate) fn expand_env_vars(s: &str) -> anyhow::Result<String> {
     fn context(var: &str) -> Result<Option<std::borrow::Cow<'static, str>>, std::env::VarError> {
         match std::env::var(var) {
             Ok(v) => Ok(Some(v.into())),
@@ -330,4 +330,131 @@ fn expand_env_vars(s: &str) -> anyhow::Result<String> {
     shellexpand::env_with_context(s, context)
         .map(|cow| cow.into_owned())
         .map_err(|e| anyhow::anyhow!("config env expansion: {} ({})", e.var_name, e.cause))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn expand_env_vars_simple() {
+        unsafe {
+            std::env::set_var("HEL_TEST_EXPAND_A", "foo");
+        }
+        let s = "prefix_${HEL_TEST_EXPAND_A}_suffix";
+        let out = expand_env_vars(s).unwrap();
+        assert_eq!(out, "prefix_foo_suffix");
+        unsafe {
+            std::env::remove_var("HEL_TEST_EXPAND_A");
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_unset_expands_empty() {
+        unsafe {
+            std::env::remove_var("HEL_TEST_UNSET_VAR_XYZ");
+        }
+        let s = "a${HEL_TEST_UNSET_VAR_XYZ}b";
+        let out = expand_env_vars(s).unwrap();
+        assert_eq!(out, "ab");
+    }
+
+    #[test]
+    fn read_secret_from_env() {
+        unsafe {
+            std::env::set_var("HEL_TEST_SECRET_ENV", "secret-from-env");
+        }
+        let out = read_secret(None, "HEL_TEST_SECRET_ENV").unwrap();
+        assert_eq!(out, "secret-from-env");
+        unsafe {
+            std::env::remove_var("HEL_TEST_SECRET_ENV");
+        }
+    }
+
+    #[test]
+    fn read_secret_file_overrides_env() {
+        let dir = std::env::temp_dir().join("hel_config_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("token.txt");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(b"  secret-from-file  \n")
+            .unwrap();
+        unsafe {
+            std::env::set_var("HEL_TEST_SECRET_BOTH", "secret-from-env");
+        }
+        let out = read_secret(Some(path.to_str().unwrap()), "HEL_TEST_SECRET_BOTH").unwrap();
+        assert_eq!(out, "secret-from-file");
+        unsafe {
+            std::env::remove_var("HEL_TEST_SECRET_BOTH");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_minimal_valid() {
+        let dir = std::env::temp_dir().join("hel_config_load_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  log_level: info
+sources:
+  test-source:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.global.log_level, "info");
+        assert!(config.sources.contains_key("test-source"));
+        assert_eq!(config.sources["test-source"].url, "https://example.com/logs");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_expands_env() {
+        unsafe {
+            std::env::set_var("HEL_TEST_BASE_URL", "https://api.test.com");
+        }
+        let dir = std::env::temp_dir().join("hel_config_expand_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global: {}
+sources:
+  x:
+    url: "${HEL_TEST_BASE_URL}/logs"
+    pagination:
+      strategy: link_header
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.sources["x"].url, "https://api.test.com/logs");
+        unsafe {
+            std::env::remove_var("HEL_TEST_BASE_URL");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_empty_sources_fails() {
+        let dir = std::env::temp_dir().join("hel_config_empty_sources");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources: {}
+"#,
+        )
+        .unwrap();
+        let err = Config::load(&path).unwrap_err();
+        assert!(err.to_string().contains("at least one source"));
+        let _ = std::fs::remove_file(&path);
+    }
 }

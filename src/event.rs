@@ -53,3 +53,38 @@ impl EmittedEvent {
         serde_json::to_string(self).map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emitted_event_new_and_to_ndjson_line() {
+        let e = EmittedEvent::new(
+            "2024-01-15T12:00:00Z".to_string(),
+            "test-source".to_string(),
+            "https://api.example.com/logs".to_string(),
+            serde_json::json!({"id": 1, "msg": "hello"}),
+        );
+        let line = e.to_ndjson_line().unwrap();
+        assert!(line.contains("\"ts\":\"2024-01-15T12:00:00Z\""));
+        assert!(line.contains("\"source\":\"test-source\""));
+        assert!(line.contains("\"event\":{\"id\":1,\"msg\":\"hello\"}"));
+        assert!(line.contains("\"meta\":{}"));
+    }
+
+    #[test]
+    fn emitted_event_with_cursor_and_request_id() {
+        let e = EmittedEvent::new(
+            "2024-01-15T12:00:00Z".to_string(),
+            "s".to_string(),
+            "https://x/".to_string(),
+            serde_json::json!(null),
+        )
+        .with_cursor("next-page-token".to_string())
+        .with_request_id("req-123".to_string());
+        let line = e.to_ndjson_line().unwrap();
+        assert!(line.contains("\"cursor\":\"next-page-token\""));
+        assert!(line.contains("\"request_id\":\"req-123\""));
+    }
+}
