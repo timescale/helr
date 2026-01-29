@@ -4,7 +4,7 @@
 
 - Polls HTTP APIs (Okta, GitHub, Google Workspace, etc.)
 - Handles pagination (Link header, cursor, page/offset), rate limits, and durable state
-- Emits **NDJSON to stdout** for downstream collectors (Grafana Alloy, Vector, Fluent Bit)
+- Emits **NDJSON to stdout or to a file** (optional log rotation) for downstream collectors (Grafana Alloy, Vector, Fluent Bit)
 
 ## Quick start
 
@@ -15,8 +15,13 @@ hel validate
 # Run one poll cycle
 hel run --once
 
-# Run continuously
+# Run continuously (NDJSON to stdout)
 hel run
+
+# Write to file (optional rotation: daily or size in MB)
+hel run --output /var/log/hel/events.ndjson
+hel run --output /var/log/hel/events.ndjson --output-rotate daily
+hel run --output /var/log/hel/events.ndjson --output-rotate size:100
 
 # Test a single source (one poll tick)
 hel test --source okta-audit
@@ -34,7 +39,7 @@ See `hel.yaml` for a minimal example. Required: `sources` with at least one sour
 
 ## Status
 
-- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources. **`hel test --source NAME`** and **`hel state show/reset/export/import`** implemented.
+- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources, file output with log rotation. **`hel test --source NAME`** and **`hel state show/reset/export/import`** implemented.
 
 ## License
 

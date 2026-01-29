@@ -14,6 +14,7 @@ mod dedupe;
 mod event;
 mod metrics;
 mod oauth2;
+mod output;
 mod pagination;
 mod poll;
 mod retry;
@@ -24,6 +25,7 @@ use axum::routing::get;
 use circuit::new_circuit_store;
 use config::Config;
 use oauth2::new_oauth2_token_cache;
+use output::{parse_rotation, EventSink, FileSink, RotationPolicy, StdoutSink};
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -61,6 +63,14 @@ enum Commands {
         /// Run only specified source(s)
         #[arg(long, value_name = "NAME")]
         source: Option<String>,
+
+        /// Write NDJSON to file instead of stdout
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
+
+        /// Rotate output file: "daily" or "size:N" (N in MB)
+        #[arg(long, value_name = "POLICY", requires = "output")]
+        output_rotate: Option<String>,
     },
 
     /// Validate configuration file
@@ -109,14 +119,34 @@ async fn main() -> anyhow::Result<()> {
             let config = Config::load(&cli.config)?;
             init_logging(Some(&config), &cli);
             match other {
-                Some(Commands::Run { once, source }) => {
-                    run_collector(&config, *once, source.as_deref()).await
+                Some(Commands::Run {
+                    once,
+                    source,
+                    output,
+                    output_rotate,
+                }) => {
+                    let event_sink: Arc<dyn EventSink> = match output {
+                        Some(path) => {
+                            let rotation = output_rotate
+                                .as_deref()
+                                .map(parse_rotation)
+                                .transpose()?
+                                .unwrap_or(RotationPolicy::None);
+                            Arc::new(FileSink::new(path, rotation)?)
+                        }
+                        None => Arc::new(StdoutSink),
+                    };
+                    run_collector(&config, *once, source.as_deref(), event_sink).await
                 }
-                Some(Commands::Test { source, .. }) => run_test(&config, source).await,
+                Some(Commands::Test { source, .. }) => {
+                    run_test(&config, source, Arc::new(StdoutSink)).await
+                }
                 Some(Commands::State { subcommand }) => {
                     run_state(&config, subcommand.as_ref()).await
                 }
-                None => run_collector(&config, false, None).await,
+                None => {
+                    run_collector(&config, false, None, Arc::new(StdoutSink)).await
+                }
                 _ => unreachable!(),
             }
         }
@@ -211,7 +241,11 @@ fn open_store(config: &Config) -> anyhow::Result<Arc<dyn StateStore>> {
 }
 
 /// Run one poll tick for the given source (test).
-async fn run_test(config: &Config, source_name: &str) -> anyhow::Result<()> {
+async fn run_test(
+    config: &Config,
+    source_name: &str,
+    event_sink: Arc<dyn EventSink>,
+) -> anyhow::Result<()> {
     if !config.sources.contains_key(source_name) {
         anyhow::bail!("source {:?} not found in config", source_name);
     }
@@ -227,6 +261,7 @@ async fn run_test(config: &Config, source_name: &str) -> anyhow::Result<()> {
         circuit_store,
         token_cache,
         dedupe_store,
+        event_sink,
     )
     .await
 }
@@ -316,6 +351,7 @@ async fn run_collector(
     config: &Config,
     once: bool,
     source_filter: Option<&str>,
+    event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     tracing::info!("loaded config");
 
@@ -340,6 +376,7 @@ async fn run_collector(
         circuit_store.clone(),
         token_cache.clone(),
         dedupe_store.clone(),
+        event_sink.clone(),
     )
     .await?;
 
@@ -421,6 +458,7 @@ async fn run_collector(
         let circuit_store_ref = circuit_store.clone();
         let token_cache_ref = token_cache.clone();
         let dedupe_store_ref = dedupe_store.clone();
+        let event_sink_ref = event_sink.clone();
         let mut tick_fut = std::pin::pin!(poll::run_one_tick(
             config_ref,
             store_ref,
@@ -428,6 +466,7 @@ async fn run_collector(
             circuit_store_ref,
             token_cache_ref,
             dedupe_store_ref,
+            event_sink_ref,
         ));
 
         tokio::select! {
@@ -448,8 +487,8 @@ async fn run_collector(
         }
     }
 
-    if let Err(e) = std::io::Write::flush(&mut std::io::stdout()) {
-        tracing::warn!("flush stdout: {}", e);
+    if let Err(e) = event_sink.flush() {
+        tracing::warn!("flush output: {}", e);
     }
     tracing::info!("graceful shutdown complete");
     Ok(())

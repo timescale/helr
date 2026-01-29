@@ -7,6 +7,7 @@ use crate::dedupe::{self, DedupeStore};
 use crate::event::EmittedEvent;
 use crate::metrics;
 use crate::oauth2::OAuth2TokenCache;
+use crate::output::EventSink;
 use crate::pagination::next_link_from_headers;
 use crate::retry::execute_with_retry;
 use crate::state::StateStore;
@@ -25,6 +26,7 @@ pub async fn run_one_tick(
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
+    event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let mut handles = Vec::new();
     for (source_id, source) in &config.sources {
@@ -39,6 +41,7 @@ pub async fn run_one_tick(
         let circuit_store = circuit_store.clone();
         let token_cache = token_cache.clone();
         let dedupe_store = dedupe_store.clone();
+        let event_sink = event_sink.clone();
         let h = tokio::spawn(async move {
             poll_one_source(
                 store,
@@ -47,6 +50,7 @@ pub async fn run_one_tick(
                 circuit_store,
                 token_cache,
                 dedupe_store,
+                event_sink,
             )
             .await
         });
@@ -68,7 +72,7 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source, circuit_store, token_cache, dedupe_store))]
+#[instrument(skip(store, source, circuit_store, token_cache, dedupe_store, event_sink))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
@@ -76,6 +80,7 @@ async fn poll_one_source(
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
+    event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let client = build_client(source.resilience.as_ref())?;
 
@@ -91,6 +96,7 @@ async fn poll_one_source(
                 circuit_store,
                 token_cache,
                 dedupe_store,
+                event_sink,
             )
             .await
         }
@@ -110,6 +116,7 @@ async fn poll_one_source(
                 circuit_store,
                 token_cache,
                 dedupe_store,
+                event_sink,
             )
             .await
         }
@@ -131,6 +138,7 @@ async fn poll_one_source(
                 circuit_store,
                 token_cache,
                 dedupe_store,
+                event_sink,
             )
             .await
         }
@@ -144,6 +152,7 @@ async fn poll_one_source(
                 circuit_store,
                 token_cache,
                 dedupe_store,
+                event_sink,
             )
             .await;
         }
@@ -161,6 +170,7 @@ async fn poll_link_header(
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
+    event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let mut url: String = store
@@ -256,7 +266,7 @@ async fn poll_link_header(
                 path.clone(),
                 event_value.clone(),
             );
-            println!("{}", emitted.to_ndjson_line()?);
+            event_sink.write_line(&emitted.to_ndjson_line()?)?;
         }
         metrics::record_events(source_id, emitted_count);
 
@@ -310,6 +320,7 @@ async fn poll_cursor_pagination(
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
+    event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -418,7 +429,7 @@ async fn poll_cursor_pagination(
                 path.clone(),
                 event_value.clone(),
             );
-            println!("{}", emitted.to_ndjson_line()?);
+            event_sink.write_line(&emitted.to_ndjson_line()?)?;
         }
         metrics::record_events(source_id, emitted_count);
         match next_cursor {
@@ -461,6 +472,7 @@ async fn poll_page_offset_pagination(
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
+    event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -539,7 +551,7 @@ async fn poll_page_offset_pagination(
                 path.clone(),
                 event_value.clone(),
             );
-            println!("{}", emitted.to_ndjson_line()?);
+            event_sink.write_line(&emitted.to_ndjson_line()?)?;
         }
         metrics::record_events(source_id, emitted_count);
         if events.len() < limit as usize {
@@ -570,6 +582,7 @@ async fn poll_single_page(
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
+    event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
@@ -637,7 +650,7 @@ async fn poll_single_page(
             path.clone(),
             event_value.clone(),
         );
-        println!("{}", emitted.to_ndjson_line()?);
+        event_sink.write_line(&emitted.to_ndjson_line()?)?;
     }
     metrics::record_events(source_id, emitted_count);
 

@@ -179,6 +179,85 @@ sources:
     assert_eq!(first["event"]["id"], "r1");
 }
 
+/// --output writes NDJSON to file instead of stdout.
+#[tokio::test]
+async fn integration_file_output_ndjson() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "f1", "msg": "file-one", "published": "2024-01-15T12:00:00Z"},
+                {"id": "f2", "msg": "file-two", "published": "2024-01-15T12:00:01Z"}
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_file_out");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let output_path = config_dir.join("events.ndjson");
+    let _ = std::fs::remove_file(&output_path);
+
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  file-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let out = std::process::Command::new(hel_bin())
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "run",
+            "--once",
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    assert!(
+        out.status.success(),
+        "hel run --once --output failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(&output_path).expect("read output file");
+    let lines: Vec<&str> = content.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(lines.len() >= 2, "expected at least 2 NDJSON lines, got {:?}", content);
+
+    for line in &lines {
+        let obj: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid NDJSON {:?}: {}", line, e));
+        assert_eq!(obj.get("source").and_then(|v| v.as_str()), Some("file-source"));
+        assert!(obj.get("event").is_some());
+    }
+    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(first["event"]["id"], "f1");
+    assert_eq!(first["event"]["msg"], "file-one");
+}
+
 fn hel_bin() -> String {
     std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
         format!(
