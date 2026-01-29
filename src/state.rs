@@ -2,10 +2,10 @@
 //!
 //! Implementations: in-memory (tests), SQLite (v0.1), Redis/Postgres (later).
 
-#![allow(dead_code)] // used when implementing poll loop
-
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// State store: get/set/list keys per source. Must be Send + Sync for use across tasks.
 #[async_trait]
@@ -52,5 +52,114 @@ impl StateStore for MemoryStateStore {
         Ok(g.get(source_id)
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default())
+    }
+}
+
+/// SQLite-backed state store. Table: (source_id, key, value, updated_at).
+/// Uses spawn_blocking so rusqlite's sync API doesn't block the async runtime.
+pub struct SqliteStateStore {
+    conn: Arc<Mutex<rusqlite::Connection>>,
+}
+
+impl SqliteStateStore {
+    /// Open or create DB at path; creates state table if missing.
+    pub fn open(path: &Path) -> anyhow::Result<Self> {
+        let conn = rusqlite::Connection::open(path)
+            .map_err(|e| anyhow::anyhow!("open sqlite {:?}: {}", path, e))?;
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS hel_state (
+                source_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (source_id, key)
+            );
+            "#,
+        )
+        .map_err(|e| anyhow::anyhow!("init sqlite: {}", e))?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+}
+
+#[async_trait]
+impl StateStore for SqliteStateStore {
+    async fn get(&self, source_id: &str, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.clone();
+        let source_id = source_id.to_string();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let mut stmt = c.prepare(
+                "SELECT value FROM hel_state WHERE source_id = ?1 AND key = ?2",
+            )?;
+            let mut rows = stmt.query([&source_id, &key])?;
+            if let Some(row) = rows.next()? {
+                let value: String = row.get(0)?;
+                Ok(Some(value))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking: {}", e))?
+    }
+
+    async fn set(&self, source_id: &str, key: &str, value: &str) -> anyhow::Result<()> {
+        let conn = self.conn.clone();
+        let source_id = source_id.to_string();
+        let key = key.to_string();
+        let value = value.to_string();
+        let updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        tokio::task::spawn_blocking(move || {
+            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            c.execute(
+                "INSERT INTO hel_state (source_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (source_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
+                rusqlite::params![&source_id, &key, &value, updated_at],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking: {}", e))?
+    }
+
+    async fn list_keys(&self, source_id: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.clone();
+        let source_id = source_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let mut stmt = c.prepare("SELECT key FROM hel_state WHERE source_id = ?1 ORDER BY key")?;
+            let rows = stmt.query_map([&source_id], |row| row.get(0))?;
+            let keys: Result<Vec<String>, _> = rows.collect();
+            Ok(keys?)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking: {}", e))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sqlite_state_store_get_set_list() {
+        let dir = std::env::temp_dir().join("hel_state_test");
+        let _ = std::fs::remove_file(&dir);
+        let store = SqliteStateStore::open(&dir).unwrap();
+        assert!(store.get("s1", "cursor").await.unwrap().is_none());
+        store.set("s1", "cursor", "abc123").await.unwrap();
+        assert_eq!(store.get("s1", "cursor").await.unwrap(), Some("abc123".into()));
+        store.set("s1", "watermark", "2024-01-01T00:00:00Z").await.unwrap();
+        let keys = store.list_keys("s1").await.unwrap();
+        assert!(keys.contains(&"cursor".to_string()));
+        assert!(keys.contains(&"watermark".to_string()));
+        let _ = std::fs::remove_file(&dir);
     }
 }
