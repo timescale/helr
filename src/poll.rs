@@ -17,6 +17,7 @@ use std::time::Instant;
 use tracing::instrument;
 
 /// Run one poll tick for all sources (or only those matching source_filter).
+/// Sources are polled concurrently (one task per source).
 pub async fn run_one_tick(
     config: &Config,
     store: Arc<dyn StateStore>,
@@ -25,25 +26,43 @@ pub async fn run_one_tick(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
 ) -> anyhow::Result<()> {
+    let mut handles = Vec::new();
     for (source_id, source) in &config.sources {
         if let Some(filter) = source_filter {
             if filter != source_id {
                 continue;
             }
         }
-        if let Err(e) = poll_one_source(
-            store.clone(),
-            source_id,
-            source,
-            circuit_store.clone(),
-            token_cache.clone(),
-            dedupe_store.clone(),
-        )
-        .await
-        {
-            metrics::record_error(source_id);
-            tracing::error!(source = %source_id, "poll failed: {}", e);
-            // continue with other sources
+        let store = store.clone();
+        let source_id_key = source_id.clone();
+        let source = source.clone();
+        let circuit_store = circuit_store.clone();
+        let token_cache = token_cache.clone();
+        let dedupe_store = dedupe_store.clone();
+        let h = tokio::spawn(async move {
+            poll_one_source(
+                store,
+                &source_id_key,
+                &source,
+                circuit_store,
+                token_cache,
+                dedupe_store,
+            )
+            .await
+        });
+        handles.push((source_id, h));
+    }
+    for (source_id, h) in handles {
+        match h.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                metrics::record_error(&source_id);
+                tracing::error!(source = %source_id, "poll failed: {}", e);
+            }
+            Err(e) => {
+                metrics::record_error(&source_id);
+                tracing::error!(source = %source_id, "task join failed: {}", e);
+            }
         }
     }
     Ok(())
