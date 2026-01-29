@@ -12,6 +12,7 @@ mod config;
 mod event;
 mod pagination;
 mod poll;
+mod retry;
 mod state;
 
 use config::Config;

@@ -1,9 +1,10 @@
 //! Single poll tick: load state → fetch pages (link-header) → emit NDJSON → commit state.
 
-use crate::client::{build_client, build_request};
+use crate::client::build_client;
 use crate::config::{Config, PaginationConfig, SourceConfig};
 use crate::event::EmittedEvent;
 use crate::pagination::next_link_from_headers;
+use crate::retry::execute_with_retry;
 use crate::state::StateStore;
 use anyhow::Context;
 use chrono::Utc;
@@ -62,10 +63,14 @@ async fn poll_one_source(
             break;
         }
 
-        let response = client
-            .execute(build_request(&client, source, &url)?)
-            .await
-            .context("http request")?;
+        let response = execute_with_retry(
+            &client,
+            source,
+            &url,
+            source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
+        )
+        .await
+        .context("http request")?;
 
         let status = response.status();
         if !status.is_success() {
@@ -114,10 +119,14 @@ async fn poll_single_page(
     client: &reqwest::Client,
     url: &str,
 ) -> anyhow::Result<()> {
-    let response = client
-        .execute(build_request(client, source, url)?)
-        .await
-        .context("http request")?;
+    let response = execute_with_retry(
+        client,
+        source,
+        url,
+        source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
+    )
+    .await
+    .context("http request")?;
 
     if !response.status().is_success() {
         let status = response.status();
