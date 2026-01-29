@@ -12,11 +12,19 @@
 # Validate config
 hel validate
 
-# Run one poll cycle (when implemented)
+# Run one poll cycle
 hel run --once
 
-# Run continuously (when implemented)
+# Run continuously
 hel run
+
+# Test a single source (one poll tick)
+hel test --source okta-audit
+
+# Inspect or reset state
+hel state show okta-audit
+hel state reset okta-audit
+hel state export
 ```
 
 ## Config
@@ -25,7 +33,7 @@ See `hel.yaml` for a minimal example. Required: `sources` with at least one sour
 
 ## Status
 
-- **v0.1 (in progress):** CLI, config load + validate, SQLite + in-memory state store, HTTP client (auth + timeouts), link-header pagination, **poll loop** (single source, link-header or single page, NDJSON to stdout, state commit). Next: retry layer, scheduler, health endpoint.
+- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources. **`hel test --source NAME`** and **`hel state show/reset/export`** implemented.
 
 ## License
 

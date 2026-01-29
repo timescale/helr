@@ -66,16 +66,16 @@ enum Commands {
     /// Validate configuration file
     Validate,
 
-    /// Test a source configuration (future)
+    /// Test a source configuration (one poll tick for the given source)
     Test {
         #[arg(long, value_name = "NAME")]
         source: String,
 
-        #[arg(long)]
+        #[arg(long, help = "Run one poll cycle (default for test)")]
         once: bool,
     },
 
-    /// Inspect or manage state store (future)
+    /// Inspect or manage state store
     State {
         #[command(subcommand)]
         subcommand: Option<StateSubcommand>,
@@ -135,10 +135,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Run { once, source }) => {
             run_collector(&cli.config, *once, source.as_deref()).await
         }
-        Some(Commands::Test { .. }) | Some(Commands::State { .. }) => {
-            tracing::warn!("command not yet implemented");
-            Ok(())
-        }
+        Some(Commands::Test { source, .. }) => run_test(&cli.config, source).await,
+        Some(Commands::State { subcommand }) => run_state(&cli.config, subcommand.as_ref()).await,
         None => run_collector(&cli.config, false, None).await,
     }
 }
@@ -154,6 +152,101 @@ fn run_validate(config_path: &std::path::Path) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// Open state store from config (same logic as run_collector).
+fn open_store(config: &Config) -> anyhow::Result<Arc<dyn StateStore>> {
+    let store: Arc<dyn StateStore> = match &config.global.state {
+        Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
+            let path = state
+                .path
+                .as_deref()
+                .unwrap_or("./hel-state.db");
+            Arc::new(SqliteStateStore::open(Path::new(path))?)
+        }
+        _ => Arc::new(MemoryStateStore::new()),
+    };
+    Ok(store)
+}
+
+/// Run one poll tick for the given source (test).
+async fn run_test(config_path: &Path, source_name: &str) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    if !config.sources.contains_key(source_name) {
+        anyhow::bail!("source {:?} not found in config", source_name);
+    }
+    tracing::info!("testing source {:?} (one poll tick)", source_name);
+    let store = open_store(&config)?;
+    let circuit_store = new_circuit_store();
+    let token_cache = new_oauth2_token_cache();
+    let dedupe_store = dedupe::new_dedupe_store();
+    poll::run_one_tick(
+        &config,
+        store,
+        Some(source_name),
+        circuit_store,
+        token_cache,
+        dedupe_store,
+    )
+    .await
+}
+
+/// State subcommands: show, reset, export.
+async fn run_state(
+    config_path: &Path,
+    subcommand: Option<&StateSubcommand>,
+) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let store = open_store(&config)?;
+    match subcommand {
+        Some(StateSubcommand::Show { source }) => state_show(store.as_ref(), source).await,
+        Some(StateSubcommand::Reset { source }) => state_reset(store.as_ref(), source).await,
+        Some(StateSubcommand::Export) => state_export(store.as_ref()).await,
+        None => {
+            eprintln!("usage: hel state {{show,reset,export}}");
+            eprintln!("  show <source>   show state keys and values for a source");
+            eprintln!("  reset <source>  clear all state for a source");
+            eprintln!("  export         export all state as JSON to stdout");
+            Ok(())
+        }
+    }
+}
+
+async fn state_show(store: &dyn StateStore, source_id: &str) -> anyhow::Result<()> {
+    let keys = store.list_keys(source_id).await?;
+    if keys.is_empty() {
+        println!("{} (no state)", source_id);
+        return Ok(());
+    }
+    println!("{}", source_id);
+    for key in keys {
+        let value = store.get(source_id, &key).await?.unwrap_or_default();
+        println!("  {}: {}", key, value);
+    }
+    Ok(())
+}
+
+async fn state_reset(store: &dyn StateStore, source_id: &str) -> anyhow::Result<()> {
+    store.clear_source(source_id).await?;
+    println!("reset state for source {:?}", source_id);
+    Ok(())
+}
+
+async fn state_export(store: &dyn StateStore) -> anyhow::Result<()> {
+    let sources = store.list_sources().await?;
+    let mut out = serde_json::Map::new();
+    for source_id in sources {
+        let keys = store.list_keys(&source_id).await?;
+        let mut m = serde_json::Map::new();
+        for key in keys {
+            if let Some(v) = store.get(&source_id, &key).await? {
+                m.insert(key, serde_json::Value::String(v));
+            }
+        }
+        out.insert(source_id, serde_json::Value::Object(m));
+    }
+    println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(out))?);
+    Ok(())
 }
 
 async fn run_collector(

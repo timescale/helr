@@ -18,6 +18,12 @@ pub trait StateStore: Send + Sync {
 
     /// List all keys for a source (e.g. cursor, watermark_ts, next_url).
     async fn list_keys(&self, source_id: &str) -> anyhow::Result<Vec<String>>;
+
+    /// List all source_ids that have state.
+    async fn list_sources(&self) -> anyhow::Result<Vec<String>>;
+
+    /// Remove all state for a source (e.g. for reset).
+    async fn clear_source(&self, source_id: &str) -> anyhow::Result<()>;
 }
 
 /// In-memory state store for tests and default when no path is configured.
@@ -52,6 +58,17 @@ impl StateStore for MemoryStateStore {
         Ok(g.get(source_id)
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default())
+    }
+
+    async fn list_sources(&self) -> anyhow::Result<Vec<String>> {
+        let g = self.inner.read().await;
+        Ok(g.keys().cloned().collect())
+    }
+
+    async fn clear_source(&self, source_id: &str) -> anyhow::Result<()> {
+        let mut g = self.inner.write().await;
+        g.remove(source_id);
+        Ok(())
     }
 }
 
@@ -142,6 +159,31 @@ impl StateStore for SqliteStateStore {
         .await
         .map_err(|e| anyhow::anyhow!("spawn_blocking: {}", e))?
     }
+
+    async fn list_sources(&self) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let mut stmt = c.prepare("SELECT DISTINCT source_id FROM hel_state ORDER BY source_id")?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            let ids: Result<Vec<String>, _> = rows.collect();
+            Ok(ids?)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking: {}", e))?
+    }
+
+    async fn clear_source(&self, source_id: &str) -> anyhow::Result<()> {
+        let conn = self.conn.clone();
+        let source_id = source_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            c.execute("DELETE FROM hel_state WHERE source_id = ?1", [&source_id])?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking: {}", e))?
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +202,11 @@ mod tests {
         let keys = store.list_keys("s1").await.unwrap();
         assert!(keys.contains(&"cursor".to_string()));
         assert!(keys.contains(&"watermark".to_string()));
+        let sources = store.list_sources().await.unwrap();
+        assert_eq!(sources, vec!["s1"]);
+        store.clear_source("s1").await.unwrap();
+        assert!(store.list_keys("s1").await.unwrap().is_empty());
+        assert!(store.get("s1", "cursor").await.unwrap().is_none());
         let _ = std::fs::remove_file(&dir);
     }
 }
