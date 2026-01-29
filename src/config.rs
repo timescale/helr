@@ -137,23 +137,21 @@ pub struct SourceConfig {
     #[serde(default)]
     pub dedupe: Option<DedupeConfig>,
 
-    /// When cursor pagination gets 4xx (e.g. expired cursor): "reset" (clear cursor, next poll from start) or "fail".
+    /// When cursor pagination gets 4xx (e.g. expired/invalid cursor): "reset" (clear cursor, next poll from start) or "fail".
     #[serde(default)]
-    pub cursor_expired: Option<CursorExpiredBehavior>,
+    pub on_cursor_error: Option<CursorExpiredBehavior>,
 
-    /// Optional initial "since" value for first request (e.g. ISO timestamp). Use with since_param.
+    /// Start of range for first request (e.g. ISO timestamp). Sent as query param named by from_param.
     #[serde(default)]
-    pub initial_since: Option<String>,
+    pub from: Option<String>,
 
-    /// Query param name for initial_since (e.g. "since", "after"). Default "since" when initial_since is set.
+    /// Query param name for from (e.g. "since", "after", "start_time"). Default "since" when from is set.
     #[serde(default)]
-    pub since_param: Option<String>,
+    pub from_param: Option<String>,
 
-    /// Optional query params added only to the first request (when no saved cursor/next_url).
-    /// Use for limit, until, filter, q, sortOrder, etc. (e.g. Okta System Log: limit, until, filter, q, sortOrder).
-    /// Values can be strings or numbers in YAML (e.g. limit: 20 or limit: "20").
+    /// Query params added only to the first request (when no saved cursor/next_url). Reusable across APIs (limit, until, filter, q, sortOrder, etc.). Values can be strings or numbers in YAML.
     #[serde(default)]
-    pub initial_query_params: Option<HashMap<String, QueryParamValue>>,
+    pub query_params: Option<HashMap<String, QueryParamValue>>,
 
     /// On response parse/event extraction error: "skip" (log and stop this poll) or "fail" (default).
     #[serde(default)]
@@ -165,15 +163,15 @@ pub struct SourceConfig {
 
     /// When response body is not valid UTF-8: "replace" (U+FFFD), "escape", or "fail".
     #[serde(default)]
-    pub invalid_utf8: Option<InvalidUtf8Behavior>,
+    pub on_invalid_utf8: Option<InvalidUtf8Behavior>,
 
-    /// Optional max size in bytes for a single emitted NDJSON line; if exceeded, apply max_event_bytes_behavior.
+    /// Optional max size in bytes for a single emitted NDJSON line; if exceeded, apply max_line_bytes_behavior.
     #[serde(default)]
-    pub max_event_bytes: Option<u64>,
+    pub max_line_bytes: Option<u64>,
 
-    /// When a single event line exceeds max_event_bytes: "truncate", "skip", or "fail".
+    /// When a single output line exceeds max_line_bytes: "truncate", "skip", or "fail".
     #[serde(default)]
-    pub max_event_bytes_behavior: Option<MaxEventBytesBehavior>,
+    pub max_line_bytes_behavior: Option<MaxEventBytesBehavior>,
 
     /// When to checkpoint state: "end_of_tick" (only after full poll) or "per_page" (after each page).
     #[serde(default)]
@@ -206,7 +204,7 @@ pub enum InvalidUtf8Behavior {
     Fail,
 }
 
-/// Behavior when a single event serialized line exceeds max_event_bytes.
+/// Behavior when a single output line exceeds max_line_bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MaxEventBytesBehavior {
@@ -251,8 +249,8 @@ pub enum OnParseErrorBehavior {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DedupeConfig {
-    /// JSON key (or dotted path, e.g. "uuid", "id", "event.id") for event unique ID.
-    pub id_field: String,
+    /// JSON key or dotted path for record unique ID (e.g. "uuid", "id", "event.id"). Reusable across APIs.
+    pub id_path: String,
     /// Max number of event IDs to keep (LRU eviction).
     #[serde(default = "default_dedupe_capacity")]
     pub capacity: u64,
@@ -374,13 +372,13 @@ pub struct ResilienceConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
-    /// When true, use Retry-After or X-RateLimit-Reset / X-Rate-Limit-Reset (Okta) on 429 instead of generic backoff.
+    /// When true, use Retry-After or X-RateLimit-Reset from response on 429 instead of generic backoff.
     #[serde(default = "default_respect_headers")]
     pub respect_headers: bool,
 
-    /// Optional delay in seconds between pagination requests (e.g. 1 for Okta’s 60/min limit). Reduces burst within one poll.
-    #[serde(default, rename = "delay_between_pages_secs")]
-    pub delay_between_pages_secs: Option<u64>,
+    /// Optional delay in seconds between pagination requests. Reduces burst; reusable across APIs.
+    #[serde(default)]
+    pub page_delay_secs: Option<u64>,
 }
 
 fn default_respect_headers() -> bool {
@@ -681,9 +679,9 @@ global:
 sources:
   corner:
     url: "https://example.com/logs"
-    cursor_expired: reset
-    initial_since: "2024-01-01T00:00:00Z"
-    since_param: after
+    on_cursor_error: reset
+    from: "2024-01-01T00:00:00Z"
+    from_param: after
     on_parse_error: skip
     max_response_bytes: 5242880
     on_state_write_error: skip_checkpoint
@@ -694,10 +692,10 @@ sources:
         std::fs::write(&path, yaml).unwrap();
         let config = Config::load(&path).unwrap();
         let s = &config.sources["corner"];
-        assert_eq!(s.cursor_expired, Some(CursorExpiredBehavior::Reset));
-        assert_eq!(s.initial_since.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(s.since_param.as_deref(), Some("after"));
-        assert!(s.initial_query_params.is_none());
+        assert_eq!(s.on_cursor_error, Some(CursorExpiredBehavior::Reset));
+        assert_eq!(s.from.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(s.from_param.as_deref(), Some("after"));
+        assert!(s.query_params.is_none());
         assert_eq!(s.on_parse_error, Some(OnParseErrorBehavior::Skip));
         assert_eq!(s.max_response_bytes, Some(5_242_880));
         assert_eq!(s.on_state_write_error, Some(OnStateWriteErrorBehavior::SkipCheckpoint));
@@ -745,7 +743,7 @@ sources:
     pagination:
       strategy: link_header
       rel: next
-    initial_query_params:
+    query_params:
       limit: 20
       sortOrder: "ASCENDING"
       filter: "eventType eq \"user.session.start\""
@@ -754,7 +752,7 @@ sources:
         .unwrap();
         let config = Config::load(&path).unwrap();
         let s = &config.sources["okta"];
-        let params = s.initial_query_params.as_ref().unwrap();
+        let params = s.query_params.as_ref().unwrap();
         assert_eq!(params.get("limit").map(|v| v.to_param_value()), Some("20".to_string()));
         assert_eq!(params.get("sortOrder").map(|v| v.to_param_value()), Some("ASCENDING".to_string()));
         assert_eq!(

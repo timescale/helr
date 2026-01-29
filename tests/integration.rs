@@ -534,7 +534,7 @@ sources:
       strategy: link_header
       rel: next
     dedupe:
-      id_field: id
+      id_path: id
       capacity: 1000
     resilience:
       timeout_secs: 5

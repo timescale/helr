@@ -192,7 +192,7 @@ async fn poll_link_header(
         .clone()
         .unwrap_or_else(|| source.url.clone());
     if from_store.is_none() {
-        url = url_with_initial_params(&url, source)?;
+        url = url_with_first_request_params(&url, source)?;
     }
 
     let mut page = 0u32;
@@ -200,11 +200,11 @@ async fn poll_link_header(
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
     let mut pending_next_url: Option<String> = None;
-    let delay_between_pages = source
+    let page_delay = source
         .resilience
         .as_ref()
         .and_then(|r| r.rate_limit.as_ref())
-        .and_then(|rl| rl.delay_between_pages_secs);
+        .and_then(|rl| rl.page_delay_secs);
     loop {
         page += 1;
         if page > max_pages {
@@ -212,7 +212,7 @@ async fn poll_link_header(
             break;
         }
         if page > 1 {
-            if let Some(secs) = delay_between_pages {
+            if let Some(secs) = page_delay {
                 tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
                 tokio::time::sleep(Duration::from_secs(secs)).await;
             }
@@ -286,7 +286,7 @@ async fn poll_link_header(
                 &body_bytes,
             )?;
         }
-        let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
+        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes {
             if body.len() as u64 > limit {
                 anyhow::bail!(
@@ -311,7 +311,7 @@ async fn poll_link_header(
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_field).unwrap_or_default();
+                let id = event_id(event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue; // duplicate
                 }
@@ -406,11 +406,11 @@ async fn poll_cursor_pagination(
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
     let mut pending_cursor: Option<String> = None;
-    let delay_between_pages = source
+    let page_delay = source
         .resilience
         .as_ref()
         .and_then(|r| r.rate_limit.as_ref())
-        .and_then(|rl| rl.delay_between_pages_secs);
+        .and_then(|rl| rl.page_delay_secs);
     loop {
         page += 1;
         if page > max_pages {
@@ -418,7 +418,7 @@ async fn poll_cursor_pagination(
             break;
         }
         if page > 1 {
-            if let Some(secs) = delay_between_pages {
+            if let Some(secs) = page_delay {
                 tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
                 tokio::time::sleep(Duration::from_secs(secs)).await;
             }
@@ -428,7 +428,7 @@ async fn poll_cursor_pagination(
             u.query_pairs_mut().append_pair(cursor_param, c);
             u.to_string()
         } else {
-            url_with_initial_params(base_url, source)?
+            url_with_first_request_params(base_url, source)?
         };
         if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
             circuit::allow_request(&circuit_store, source_id, cb)
@@ -486,7 +486,7 @@ async fn poll_cursor_pagination(
                 &body_bytes,
             )?;
         }
-        let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
+        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if !status.is_success() {
             if cursor.is_some()
                 && status.as_u16() >= 400
@@ -497,7 +497,7 @@ async fn poll_cursor_pagination(
                     || lower.contains("expired")
                     || lower.contains("invalid cursor")
                     || lower.contains("cursor invalid");
-                if is_expired && source.cursor_expired == Some(CursorExpiredBehavior::Reset) {
+                if is_expired && source.on_cursor_error == Some(CursorExpiredBehavior::Reset) {
                     store_set_or_skip(&store, source_id, source, "cursor", "").await?;
                     tracing::warn!(
                         source = %source_id,
@@ -553,7 +553,7 @@ async fn poll_cursor_pagination(
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_field).unwrap_or_default();
+                let id = event_id(event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -629,14 +629,14 @@ async fn poll_page_offset_pagination(
     let start = Instant::now();
     let base_url = source.url.as_str();
     let mut total_events = 0u64;
-    let delay_between_pages = source
+    let page_delay = source
         .resilience
         .as_ref()
         .and_then(|r| r.rate_limit.as_ref())
-        .and_then(|rl| rl.delay_between_pages_secs);
+        .and_then(|rl| rl.page_delay_secs);
     for page in 1..=max_pages {
         if page > 1 {
-            if let Some(secs) = delay_between_pages {
+            if let Some(secs) = page_delay {
                 tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
                 tokio::time::sleep(Duration::from_secs(secs)).await;
             }
@@ -645,7 +645,7 @@ async fn poll_page_offset_pagination(
         u.query_pairs_mut().append_pair(page_param, &page.to_string());
         u.query_pairs_mut().append_pair(limit_param, &limit.to_string());
         if page == 1 {
-            if let Some(ref params) = source.initial_query_params {
+            if let Some(ref params) = source.query_params {
                 for (k, v) in params {
                     u.query_pairs_mut().append_pair(k, &v.to_param_value());
                 }
@@ -711,7 +711,7 @@ async fn poll_page_offset_pagination(
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
         }
-        let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
+        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes {
             if body.len() as u64 > limit {
                 anyhow::bail!(
@@ -734,7 +734,7 @@ async fn poll_page_offset_pagination(
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_field).unwrap_or_default();
+                let id = event_id(event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -842,7 +842,7 @@ async fn poll_single_page(
         anyhow::bail!("http {} {}", record_status, body_str);
     }
     let path = record_url.path().to_string();
-    let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
+    let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
     if let Some(limit) = source.max_response_bytes {
         if body.len() as u64 > limit {
             anyhow::bail!(
@@ -867,7 +867,7 @@ async fn poll_single_page(
     let mut emitted_count = 0u64;
     for event_value in &events {
         if let Some(d) = &source.dedupe {
-            let id = event_id(event_value, &d.id_field).unwrap_or_default();
+            let id = event_id(event_value, &d.id_path).unwrap_or_default();
             if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                 continue;
             }
@@ -894,9 +894,9 @@ async fn poll_single_page(
     Ok(())
 }
 
-/// Convert response body bytes to string; apply invalid_utf8 policy (replace/escape/fail).
-fn bytes_to_string(bytes: &[u8], invalid_utf8: Option<InvalidUtf8Behavior>) -> anyhow::Result<String> {
-    match invalid_utf8 {
+/// Convert response body bytes to string; apply on_invalid_utf8 policy (replace/escape/fail).
+fn bytes_to_string(bytes: &[u8], on_invalid_utf8: Option<InvalidUtf8Behavior>) -> anyhow::Result<String> {
+    match on_invalid_utf8 {
         Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
             Ok(String::from_utf8_lossy(bytes).into_owned())
         }
@@ -905,7 +905,7 @@ fn bytes_to_string(bytes: &[u8], invalid_utf8: Option<InvalidUtf8Behavior>) -> a
     }
 }
 
-/// Emit one event line; enforce max_event_bytes, record output errors.
+/// Emit one event line; enforce max_line_bytes, record output errors.
 fn emit_event_line(
     source_id: &str,
     source: &SourceConfig,
@@ -913,9 +913,9 @@ fn emit_event_line(
     emitted: &EmittedEvent,
 ) -> anyhow::Result<()> {
     let line = emitted.to_ndjson_line()?;
-    if let Some(max) = source.max_event_bytes {
+    if let Some(max) = source.max_line_bytes {
         if line.len() as u64 > max {
-            match source.max_event_bytes_behavior.unwrap_or(MaxEventBytesBehavior::Fail) {
+            match source.max_line_bytes_behavior.unwrap_or(MaxEventBytesBehavior::Fail) {
                 MaxEventBytesBehavior::Truncate => {
                     let max_usize = max as usize;
                     let truncated: String = if max_usize >= 3 {
@@ -937,13 +937,13 @@ fn emit_event_line(
                         source = %source_id,
                         line_len = line.len(),
                         max = max,
-                        "event line exceeds max_event_bytes, skipping"
+                        "event line exceeds max_line_bytes, skipping"
                     );
                     return Ok(());
                 }
                 MaxEventBytesBehavior::Fail => {
                     anyhow::bail!(
-                        "event line length {} exceeds max_event_bytes {}",
+                        "event line length {} exceeds max_line_bytes {}",
                         line.len(),
                         max
                     );
@@ -982,15 +982,15 @@ async fn store_set_or_skip(
     }
 }
 
-/// Build first-request URL: add initial_since (if set) and initial_query_params (if set).
+/// Build first-request URL: add from (if set) and query_params (if set).
 /// Used when there is no saved cursor/next_url (link_header, cursor, and page_offset first page).
-fn url_with_initial_params(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
-    let mut u = reqwest::Url::parse(url).context("parse url for initial params")?;
-    if let Some(ref since_val) = source.initial_since {
-        let param = source.since_param.as_deref().unwrap_or("since");
-        u.query_pairs_mut().append_pair(param, since_val);
+fn url_with_first_request_params(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
+    let mut u = reqwest::Url::parse(url).context("parse url for first-request params")?;
+    if let Some(ref from_val) = source.from {
+        let param = source.from_param.as_deref().unwrap_or("since");
+        u.query_pairs_mut().append_pair(param, from_val);
     }
-    if let Some(ref params) = source.initial_query_params {
+    if let Some(ref params) = source.query_params {
         for (k, v) in params {
             u.query_pairs_mut().append_pair(k, &v.to_param_value());
         }
@@ -1032,9 +1032,9 @@ fn json_path_str(value: &serde_json::Value, path: &str) -> Option<String> {
 }
 
 /// Extract event ID from JSON using dotted path (e.g. "uuid", "id", "event.id").
-fn event_id(event: &serde_json::Value, id_field: &str) -> Option<String> {
+fn event_id(event: &serde_json::Value, id_path: &str) -> Option<String> {
     let mut v = event;
-    for segment in id_field.split('.') {
+    for segment in id_path.split('.') {
         v = v.get(segment)?;
     }
     v.as_str().map(|s| s.to_string())
@@ -1128,32 +1128,32 @@ mod tests {
     }
 
     #[test]
-    fn test_url_with_initial_params() {
+    fn test_url_with_first_request_params() {
         let yaml = r#"
 url: "https://example.com/logs"
-initial_since: "2024-01-01T00:00:00Z"
-since_param: "since"
-initial_query_params:
+from: "2024-01-01T00:00:00Z"
+from_param: "since"
+query_params:
   limit: 20
   sortOrder: "ASCENDING"
 "#;
         let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
-        let url = url_with_initial_params("https://example.com/logs", &source).unwrap();
+        let url = url_with_first_request_params("https://example.com/logs", &source).unwrap();
         assert!(url.contains("since=2024-01-01T00%3A00%3A00Z"));
         assert!(url.contains("limit=20"));
         assert!(url.contains("sortOrder=ASCENDING"));
     }
 
     #[test]
-    fn test_url_with_initial_params_only_query_params() {
+    fn test_url_with_first_request_params_only_query_params() {
         let yaml = r#"
 url: "https://example.com/logs"
-initial_query_params:
+query_params:
   limit: "20"
   filter: "eventType eq \"user.session.start\""
 "#;
         let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
-        let url = url_with_initial_params("https://example.com/logs", &source).unwrap();
+        let url = url_with_first_request_params("https://example.com/logs", &source).unwrap();
         assert!(url.contains("limit=20"));
         assert!(url.contains("filter="));
     }

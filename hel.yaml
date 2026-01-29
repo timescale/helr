@@ -19,7 +19,7 @@ sources:
   # in the same shell where you run hel (export OKTA_DOMAIN=... OKTA_API_TOKEN=...).
   # Okta Management API expects Authorization: SSWS <token>, not Bearer.
   # Okta allows ~60 requests/min. "Too many requests" usually comes from pagination: one poll
-  # can fetch many pages back-to-back (no delay). Use max_pages and delay_between_pages_secs to cap burst.
+  # can fetch many pages back-to-back (no delay). Use max_pages and page_delay_secs to cap burst.
   okta-audit:
     url: "https://${OKTA_DOMAIN}/api/v1/logs"
     schedule:
@@ -37,23 +37,23 @@ sources:
     # max_bytes: 10485760   # 10 MiB
     # Optional: skip emitting duplicate events by ID (LRU, per source)
     # dedupe:
-    #   id_field: "uuid"    # or "id", "event.id" (dotted path)
+    #   id_path: "uuid"     # or "id", "event.id" (dotted path). Reusable across APIs.
     #   capacity: 100000
     # Corner-case options:
-    # cursor_expired: reset   # on 4xx (e.g. expired cursor): reset (clear cursor) or fail
-    # initial_since: "2024-01-01T00:00:00Z"   # first request only; use with since_param
-    # since_param: since     # query param name for initial_since (default: since)
-    # initial_query_params:   # optional query params on first request only (generic: limit, until, filter, q, sortOrder)
-    #   limit: "20"          # Okta default 100; smaller pages help stay under rate limit
+    # on_cursor_error: reset  # on 4xx (expired/invalid cursor): reset (clear cursor) or fail
+    # from: "2024-01-01T00:00:00Z"   # start of range for first request; sent as query param named by from_param
+    # from_param: since       # query param name for from (e.g. since, after, start_time). Default: since
+    # query_params:           # query params on first request only (reusable: limit, until, filter, q, sortOrder)
+    #   limit: "20"
     #   sortOrder: "ASCENDING"
-    #   # until: "2025-12-31T23:59:59Z"   # upper time bound for bounded queries (Okta stops returning next)
-    #   # filter: "eventType eq \"user.session.start\""   # Okta filter expression
-    #   # q: "login"         # Okta keyword search (case insensitive)
+    #   # until: "2025-12-31T23:59:59Z"
+    #   # filter: "eventType eq \"user.session.start\""
+    #   # q: "login"
     # on_parse_error: skip   # skip (log and stop this poll) or fail (default)
     # max_response_bytes: 10485760   # fail if a single response body exceeds this
-    # invalid_utf8: replace   # when response body is not UTF-8: replace (U+FFFD), escape, or fail
-    # max_event_bytes: 1048576   # max NDJSON line size; apply max_event_bytes_behavior if exceeded
-    # max_event_bytes_behavior: truncate   # truncate | skip | fail
+    # on_invalid_utf8: replace   # when response body is not valid UTF-8: replace (U+FFFD), escape, or fail
+    # max_line_bytes: 1048576   # max NDJSON line size; apply max_line_bytes_behavior if exceeded
+    # max_line_bytes_behavior: truncate   # truncate | skip | fail
     # checkpoint: end_of_tick   # end_of_tick (commit only after full poll) or per_page
     # on_state_write_error: skip_checkpoint   # when state store write fails (e.g. disk full): fail or skip_checkpoint
     resilience:
@@ -69,8 +69,8 @@ sources:
         success_threshold: 2
         half_open_timeout_secs: 60
       rate_limit:
-        respect_headers: true   # use Retry-After or X-Rate-Limit-Reset (Okta) on 429
-        delay_between_pages_secs: 1   # 1s between pages keeps under 60/min; omit for no delay
+        respect_headers: true   # use Retry-After or X-RateLimit-Reset from response on 429
+        page_delay_secs: 1      # delay between pagination requests; omit for no delay
 
 # OAuth2 example (e.g. Google Workspace):
 #   auth:

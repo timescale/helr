@@ -44,7 +44,7 @@ hel state import
 
 ## Config
 
-See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time. Corner-case options: `cursor_expired`, `initial_since`/`since_param`, **`initial_query_params`** (generic first-request params: limit, until, filter, q, sortOrder — e.g. Okta System Log; cf. [grafana/okta-logs-collector](https://github.com/grafana/okta-logs-collector) which uses since/until + lookback for polling), `on_parse_error`, `max_response_bytes`, `invalid_utf8`, `max_event_bytes`/`max_event_bytes_behavior`, `checkpoint`, `on_state_write_error`. Unset config placeholders and missing auth secrets fail at startup.
+See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time. Corner-case options: **`from`** / **`from_param`** (start of range for first request), **`query_params`** (first-request params: limit, until, filter, q, sortOrder), `on_cursor_error`, `on_parse_error`, `on_invalid_utf8`, `on_state_write_error`, `max_response_bytes`, `max_line_bytes` / `max_line_bytes_behavior`, `checkpoint`, `dedupe.id_path`, `rate_limit.page_delay_secs`. Unset config placeholders and missing auth secrets fail at startup.
 
 **Output:** Events are emitted in page order (order received). Timestamp order across pages is not guaranteed unless the API guarantees it; downstream can sort if needed.
 
