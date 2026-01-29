@@ -50,14 +50,6 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
-    /// Run mock HTTP server for development (requires --mock-config).
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    mock_server: bool,
-
-    /// Mock server config YAML (required when using --mock-server).
-    #[arg(long, value_name = "PATH")]
-    mock_config: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -108,6 +100,13 @@ enum Commands {
         #[command(subcommand)]
         subcommand: Option<StateSubcommand>,
     },
+
+    /// Run mock HTTP server for development (serves YAML-defined responses).
+    MockServer {
+        /// Mock server config YAML (endpoint, response rules).
+        #[arg(value_name = "CONFIG")]
+        config: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -148,18 +147,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if cli.mock_server {
-        init_logging(None, &cli);
-        let path = cli.mock_config.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("--mock-config is required when using --mock-server")
-        })?;
-        return mock_server::run_mock_server(path).await;
-    }
-
     match &cli.command {
         Some(Commands::Validate) => {
             init_logging(None, &cli);
             run_validate(&cli.config)
+        }
+        Some(Commands::MockServer { config }) => {
+            init_logging(None, &cli);
+            mock_server::run_mock_server(config).await
         }
         other => {
             let config = Config::load(&cli.config)?;

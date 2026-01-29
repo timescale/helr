@@ -606,7 +606,7 @@ sources:
     assert!(lines.is_empty(), "expected no events when circuit opens; got {} lines", lines.len());
 }
 
-/// Mock server: hel --mock-server serves YAML-defined responses; hel run --once against it emits NDJSON.
+/// Mock server: hel mock-server <config> serves YAML-defined responses; hel run --once against it emits NDJSON.
 #[tokio::test]
 async fn integration_mock_server_emits_ndjson() {
     let config_dir = std::env::temp_dir().join("hel_integration_mock");
@@ -643,11 +643,7 @@ responses:
     .expect("write mock config");
 
     let mut child = std::process::Command::new(hel_bin())
-        .args([
-            "--mock-server",
-            "--mock-config",
-            mock_config_path.to_str().unwrap(),
-        ])
+        .args(["mock-server", mock_config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
         .current_dir(config_dir.clone())
         .stdout(std::process::Stdio::piped())

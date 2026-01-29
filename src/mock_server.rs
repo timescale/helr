@@ -1,6 +1,6 @@
 //! Mock HTTP server for development and testing.
 //!
-//! Run with `hel --mock-server --mock-config mocks/okta.yaml`. The server
+//! Run with `hel mock-server mocks/okta.yaml`. The server
 //! serves responses according to the YAML: match request path and query params,
 //! then return the first matching response (status, headers, body from file or inline).
 

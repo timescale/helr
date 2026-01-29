@@ -1,5 +1,5 @@
 # Mock server config for Okta-style API (development/testing).
-# Run: hel --mock-server --mock-config mocks/okta.yaml
+# Run: hel mock-server mocks/okta.yaml
 # Then point hel.yaml sources at http://127.0.0.1:<port> (port printed to stderr).
 
 endpoint: "/api/v1/logs"
