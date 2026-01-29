@@ -29,7 +29,7 @@ hel state export
 
 ## Config
 
-See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Env vars: `HEL_*` overrides; placeholders in config like `${OKTA_DOMAIN}` are expanded at load time.
+See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time.
 
 ## Status
 

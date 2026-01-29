@@ -1,6 +1,7 @@
 //! OAuth2 refresh: obtain access_token via refresh_token grant; cache in memory.
+//! Client id/secret/refresh_token can come from env or files (config parity).
 
-use crate::config::AuthConfig;
+use crate::config::{self, AuthConfig};
 use anyhow::Context;
 use reqwest::Client;
 use std::collections::HashMap;
@@ -30,14 +31,33 @@ pub async fn get_oauth_token(
         AuthConfig::OAuth2 {
             token_url,
             client_id_env,
+            client_id_file,
             client_secret_env,
+            client_secret_file,
             refresh_token_env,
+            refresh_token_file,
             scopes: _,
-        } => (token_url, client_id_env, client_secret_env, refresh_token_env),
+        } => (
+            token_url,
+            client_id_env,
+            client_id_file.as_deref(),
+            client_secret_env,
+            client_secret_file.as_deref(),
+            refresh_token_env,
+            refresh_token_file.as_deref(),
+        ),
         _ => anyhow::bail!("get_oauth_token requires OAuth2 auth"),
     };
 
-    let (token_url, client_id_env, client_secret_env, refresh_token_env) = oauth;
+    let (
+        token_url,
+        client_id_env,
+        client_id_file,
+        client_secret_env,
+        client_secret_file,
+        refresh_token_env,
+        refresh_token_file,
+    ) = oauth;
     let now = Instant::now();
     let buffer = Duration::from_secs(REFRESH_BUFFER_SECS);
 
@@ -50,12 +70,9 @@ pub async fn get_oauth_token(
         }
     }
 
-    let client_id = std::env::var(client_id_env)
-        .with_context(|| format!("env {} not set (oauth2 client_id)", client_id_env))?;
-    let client_secret = std::env::var(client_secret_env)
-        .with_context(|| format!("env {} not set (oauth2 client_secret)", client_secret_env))?;
-    let refresh_token = std::env::var(refresh_token_env)
-        .with_context(|| format!("env {} not set (oauth2 refresh_token)", refresh_token_env))?;
+    let client_id = config::read_secret(client_id_file, client_id_env)?;
+    let client_secret = config::read_secret(client_secret_file, client_secret_env)?;
+    let refresh_token = config::read_secret(refresh_token_file, refresh_token_env)?;
 
     let mut form = std::collections::HashMap::new();
     form.insert("grant_type", "refresh_token");

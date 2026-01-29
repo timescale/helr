@@ -93,16 +93,70 @@ enum StateSubcommand {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    if cli.dry_run {
+        tracing::info!("dry-run: would load config from {:?}", cli.config);
+        return Ok(());
+    }
+
+    match &cli.command {
+        Some(Commands::Validate) => {
+            init_logging(None, &cli);
+            run_validate(&cli.config)
+        }
+        other => {
+            let config = Config::load(&cli.config)?;
+            init_logging(Some(&config), &cli);
+            match other {
+                Some(Commands::Run { once, source }) => {
+                    run_collector(&config, *once, source.as_deref()).await
+                }
+                Some(Commands::Test { source, .. }) => run_test(&config, source).await,
+                Some(Commands::State { subcommand }) => {
+                    run_state(&config, subcommand.as_ref()).await
+                }
+                None => run_collector(&config, false, None).await,
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+/// Init tracing from config (log_format, log_level) or env. Config takes precedence; env HEL_LOG_FORMAT, HEL_LOG_LEVEL (or RUST_LOG when no config) override.
+fn init_logging(config: Option<&Config>, cli: &Cli) {
+    let use_json = match config.and_then(|c| c.global.log_format.as_deref()) {
+        Some("json") => true,
+        _ => std::env::var("HEL_LOG_FORMAT").as_deref() == Ok("json")
+            || std::env::var("RUST_LOG_JSON").as_deref() == Ok("1"),
+    };
     let filter = if cli.quiet {
         EnvFilter::new("error")
     } else if cli.verbose {
         EnvFilter::new("hel=debug,tower_http=debug")
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("hel=info"))
+        let level = match config {
+            Some(c) => std::env::var("HEL_LOG_LEVEL")
+                .ok()
+                .and_then(|s| {
+                    let s = s.trim();
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                })
+                .unwrap_or_else(|| c.global.log_level.clone()),
+            None => std::env::var("RUST_LOG")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "info".to_string()),
+        };
+        let filter_str = format!("hel={}", level);
+        if config.is_some() {
+            EnvFilter::new(filter_str)
+        } else {
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter_str))
+        }
     };
-
-    let use_json = std::env::var("HEL_LOG_FORMAT").as_deref() == Ok("json")
-        || std::env::var("RUST_LOG_JSON").as_deref() == Ok("1");
     if use_json {
         tracing_subscriber::registry()
             .with(
@@ -123,21 +177,6 @@ async fn main() -> anyhow::Result<()> {
             )
             .with(filter)
             .init();
-    }
-
-    if cli.dry_run {
-        tracing::info!("dry-run: would load config from {:?}", cli.config);
-        return Ok(());
-    }
-
-    match &cli.command {
-        Some(Commands::Validate) => run_validate(&cli.config),
-        Some(Commands::Run { once, source }) => {
-            run_collector(&cli.config, *once, source.as_deref()).await
-        }
-        Some(Commands::Test { source, .. }) => run_test(&cli.config, source).await,
-        Some(Commands::State { subcommand }) => run_state(&cli.config, subcommand.as_ref()).await,
-        None => run_collector(&cli.config, false, None).await,
     }
 }
 
@@ -170,8 +209,7 @@ fn open_store(config: &Config) -> anyhow::Result<Arc<dyn StateStore>> {
 }
 
 /// Run one poll tick for the given source (test).
-async fn run_test(config_path: &Path, source_name: &str) -> anyhow::Result<()> {
-    let config = Config::load(config_path)?;
+async fn run_test(config: &Config, source_name: &str) -> anyhow::Result<()> {
     if !config.sources.contains_key(source_name) {
         anyhow::bail!("source {:?} not found in config", source_name);
     }
@@ -193,11 +231,10 @@ async fn run_test(config_path: &Path, source_name: &str) -> anyhow::Result<()> {
 
 /// State subcommands: show, reset, export.
 async fn run_state(
-    config_path: &Path,
+    config: &Config,
     subcommand: Option<&StateSubcommand>,
 ) -> anyhow::Result<()> {
-    let config = Config::load(config_path)?;
-    let store = open_store(&config)?;
+    let store = open_store(config)?;
     match subcommand {
         Some(StateSubcommand::Show { source }) => state_show(store.as_ref(), source).await,
         Some(StateSubcommand::Reset { source }) => state_reset(store.as_ref(), source).await,
@@ -250,12 +287,11 @@ async fn state_export(store: &dyn StateStore) -> anyhow::Result<()> {
 }
 
 async fn run_collector(
-    config_path: &Path,
+    config: &Config,
     once: bool,
     source_filter: Option<&str>,
 ) -> anyhow::Result<()> {
-    let config = Config::load(config_path)?;
-    tracing::info!("loaded config from {:?}", config_path);
+    tracing::info!("loaded config");
 
     let store: Arc<dyn StateStore> = match &config.global.state {
         Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {

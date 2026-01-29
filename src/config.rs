@@ -5,6 +5,7 @@
 
 #![allow(dead_code)] // fields used when implementing poll loop
 
+use anyhow::Context;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,8 +23,13 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
+    /// Log level (e.g. "info", "debug"). Env HEL_LOG_LEVEL overrides when set.
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Log format: "json" or "pretty". Env HEL_LOG_FORMAT or RUST_LOG_JSON=1 override.
+    #[serde(default)]
+    pub log_format: Option<String>,
 
     #[serde(default)]
     pub state: Option<GlobalStateConfig>,
@@ -143,17 +149,51 @@ fn default_interval_secs() -> u64 {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub enum AuthConfig {
-    Bearer { token_env: String },
-    ApiKey { header: String, key_env: String },
-    Basic { user_env: String, password_env: String },
+    Bearer {
+        token_env: String,
+        #[serde(default)]
+        token_file: Option<String>,
+    },
+    ApiKey {
+        header: String,
+        key_env: String,
+        #[serde(default)]
+        key_file: Option<String>,
+    },
+    Basic {
+        user_env: String,
+        #[serde(default)]
+        user_file: Option<String>,
+        password_env: String,
+        #[serde(default)]
+        password_file: Option<String>,
+    },
     OAuth2 {
         token_url: String,
         client_id_env: String,
+        #[serde(default)]
+        client_id_file: Option<String>,
         client_secret_env: String,
+        #[serde(default)]
+        client_secret_file: Option<String>,
         refresh_token_env: String,
+        #[serde(default)]
+        refresh_token_file: Option<String>,
         #[serde(default)]
         scopes: Option<Vec<String>>,
     },
+}
+
+/// Resolve a secret from file path (if set) or environment variable. File takes precedence.
+pub fn read_secret(file_path: Option<&str>, env_var: &str) -> anyhow::Result<String> {
+    if let Some(p) = file_path {
+        if !p.is_empty() {
+            let s = std::fs::read_to_string(Path::new(p))
+                .with_context(|| format!("read secret file {:?}", p))?;
+            return Ok(s.trim().to_string());
+        }
+    }
+    std::env::var(env_var).with_context(|| format!("env {} not set", env_var))
 }
 
 #[derive(Debug, Clone, Deserialize)]

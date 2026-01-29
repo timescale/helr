@@ -1,7 +1,8 @@
 //! HTTP client wrapper: build reqwest client with timeouts and auth from config.
 //! Single GET request; pagination is handled by the caller.
+//! Auth secrets can come from env vars or files (config parity).
 
-use crate::config::{AuthConfig, ResilienceConfig, SourceConfig};
+use crate::config::{self, AuthConfig, ResilienceConfig, SourceConfig};
 use anyhow::Context;
 use base64::Engine;
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
@@ -53,16 +54,21 @@ fn add_auth(
     auth: &AuthConfig,
 ) -> anyhow::Result<reqwest::RequestBuilder> {
     let req = match auth {
-        AuthConfig::Bearer { token_env } => {
-            let token = std::env::var(token_env)
-                .with_context(|| format!("env {} not set (bearer auth)", token_env))?;
+        AuthConfig::Bearer {
+            token_env,
+            token_file,
+        } => {
+            let token = config::read_secret(token_file.as_deref(), token_env)?;
             let value = format!("Bearer {}", token);
             let hv = HeaderValue::try_from(value).context("invalid bearer token")?;
             req.header(AUTHORIZATION, hv)
         }
-        AuthConfig::ApiKey { header, key_env } => {
-            let key = std::env::var(key_env)
-                .with_context(|| format!("env {} not set (api key)", key_env))?;
+        AuthConfig::ApiKey {
+            header,
+            key_env,
+            key_file,
+        } => {
+            let key = config::read_secret(key_file.as_deref(), key_env)?;
             let name = HeaderName::try_from(header.as_str())
                 .with_context(|| format!("invalid api key header name: {:?}", header))?;
             let hv = HeaderValue::try_from(key.as_str()).context("invalid api key value")?;
@@ -70,12 +76,12 @@ fn add_auth(
         }
         AuthConfig::Basic {
             user_env,
+            user_file,
             password_env,
+            password_file,
         } => {
-            let user = std::env::var(user_env)
-                .with_context(|| format!("env {} not set (basic auth user)", user_env))?;
-            let password = std::env::var(password_env)
-                .with_context(|| format!("env {} not set (basic auth password)", password_env))?;
+            let user = config::read_secret(user_file.as_deref(), user_env)?;
+            let password = config::read_secret(password_file.as_deref(), password_env)?;
             let encoded = base64::engine::general_purpose::STANDARD
                 .encode(format!("{}:{}", user, password).as_bytes());
             let value = format!("Basic {}", encoded);
