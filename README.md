@@ -44,7 +44,7 @@ hel state import
 
 ## Config
 
-See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time. **Google Workspace (GWS)** audit logs: use the Admin SDK Reports API (GET, cursor `pageToken`/`nextPageToken`) — see commented `gws-login-audit` in `hel.yaml`; [GWS audit in Cloud Logging](https://docs.cloud.google.com/logging/docs/audit/gsuite-audit-logging) uses a POST-only API and is not yet supported. Corner-case options: **`from`** / **`from_param`** (start of range for first request), **`query_params`** (first-request params: limit, until, filter, q, sortOrder), `on_cursor_error`, `on_parse_error`, `on_invalid_utf8`, `on_state_write_error`, `max_response_bytes`, `max_line_bytes` / `max_line_bytes_behavior`, `checkpoint`, `dedupe.id_path`, `rate_limit.page_delay_secs`. Unset config placeholders and missing auth secrets fail at startup.
+See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time. **HTTP method:** use **`method: post`** and **`body`** (JSON) for POST-only APIs (e.g. [Cloud Logging `entries.list`](https://cloud.google.com/logging/docs/reference/v2/rest/v2/entries/list)); with cursor pagination the cursor is merged into the body. Response arrays are read from top-level or from keys: **`items`**, **`data`**, **`events`**, **`logs`**, **`entries`** (Cloud Logging). **Google Workspace (GWS)** audit logs: use the Admin SDK Reports API (GET, cursor `pageToken`/`nextPageToken`) — see commented `gws-login-audit` in `hel.yaml`. Corner-case options: **`from`** / **`from_param`** (start of range for first request), **`query_params`** (first-request params: limit, until, filter, q, sortOrder), `on_cursor_error`, `on_parse_error`, `on_invalid_utf8`, `on_state_write_error`, `max_response_bytes`, `max_line_bytes` / `max_line_bytes_behavior`, `checkpoint`, `dedupe.id_path`, `rate_limit.page_delay_secs`. Unset config placeholders and missing auth secrets fail at startup.
 
 **Output:** Events are emitted in page order (order received). Timestamp order across pages is not guaranteed unless the API guarantees it; downstream can sort if needed.
 
@@ -52,7 +52,7 @@ See `hel.yaml` for a minimal example. Required: `sources` with at least one sour
 
 ## Status
 
-- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources, file output with log rotation, **session replay** (`--record-dir`, `--replay-dir`), **mock server** (`hel mock-server <CONFIG>`). **`hel test --source NAME`** and **`hel state show/reset/set/export/import`** implemented.
+- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, **GET and POST** (optional `body`), link-header / cursor / page-offset pagination (cursor merged into body for POST), poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources, file output with log rotation, **session replay** (`--record-dir`, `--replay-dir`), **mock server** (`hel mock-server <CONFIG>`). **`hel test --source NAME`** and **`hel state show/reset/set/export/import`** implemented.
 
 ## License
 

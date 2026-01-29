@@ -21,15 +21,29 @@ pub fn build_client(resilience: Option<&ResilienceConfig>) -> anyhow::Result<Cli
     Ok(client)
 }
 
-/// Build a GET request for the given URL with auth and optional extra headers from source config.
+/// Build a GET or POST request for the given URL with auth and optional extra headers from source config.
 /// When bearer_override is Some (e.g. from OAuth2 refresh), use it as Bearer and skip source.auth.
+/// For POST, body_override is the request body (merged with cursor etc. by caller); when None and method is POST, uses source.body or {}.
 pub fn build_request(
     client: &Client,
     source: &SourceConfig,
     url: &str,
     bearer_override: Option<&str>,
+    body_override: Option<&serde_json::Value>,
 ) -> anyhow::Result<reqwest::Request> {
-    let mut req = client.get(url);
+    use crate::config::HttpMethod;
+    let mut req = match source.method {
+        HttpMethod::Get => client.get(url),
+        HttpMethod::Post => {
+            let empty: serde_json::Value = serde_json::Value::Object(serde_json::Map::new());
+            let body_value = body_override.or(source.body.as_ref()).unwrap_or(&empty);
+            let body_bytes = serde_json::to_vec(body_value).context("serialize POST body")?;
+            client
+                .post(url)
+                .header("Content-Type", "application/json")
+                .body(body_bytes)
+        }
+    };
     if let Some(token) = bearer_override {
         let value = format!("Bearer {}", token);
         let hv = HeaderValue::try_from(value).context("invalid bearer token")?;

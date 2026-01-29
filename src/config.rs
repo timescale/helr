@@ -108,11 +108,28 @@ impl QueryParamValue {
     }
 }
 
+/// HTTP method for the source request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpMethod {
+    #[default]
+    Get,
+    Post,
+}
+
 /// Per-source config (one entry under sources:).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceConfig {
     pub url: String,
+
+    /// HTTP method: "get" (default) or "post". POST requires body for APIs like Cloud Logging entries.list.
+    #[serde(default)]
+    pub method: HttpMethod,
+
+    /// Request body for POST (JSON object/array). Ignored for GET.
+    #[serde(default)]
+    pub body: Option<serde_json::Value>,
 
     #[serde(default)]
     pub schedule: ScheduleConfig,

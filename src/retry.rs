@@ -90,13 +90,15 @@ async fn bearer_for_request(
     }
 }
 
-/// Execute a GET request with optional retries. Uses source auth and headers.
+/// Execute a GET or POST request with optional retries. Uses source auth and headers.
+/// For POST, body is the request body (merged with cursor etc. by caller); when None, source.body is used.
 /// Retries on: 408, 429, 5xx, and transport errors. On 429, uses Retry-After when rate_limit.respect_headers is true.
 pub async fn execute_with_retry(
     client: &Client,
     source: &SourceConfig,
     source_id: &str,
     url: &str,
+    body: Option<&serde_json::Value>,
     retry: Option<&RetryConfig>,
     rate_limit: Option<&RateLimitConfig>,
     token_cache: Option<&OAuth2TokenCache>,
@@ -105,7 +107,7 @@ pub async fn execute_with_retry(
         Some(r) if r.max_attempts > 0 => r,
         _ => {
             let bearer = bearer_for_request(client, source, source_id, token_cache).await?;
-            let req = build_request(client, source, url, bearer.as_deref())?;
+            let req = build_request(client, source, url, bearer.as_deref(), body)?;
             return client.execute(req).await.context("http request");
         }
     };
@@ -114,7 +116,7 @@ pub async fn execute_with_retry(
     let mut auth_refresh_attempted = false;
     for attempt in 0..retry.max_attempts {
         let bearer = bearer_for_request(client, source, source_id, token_cache).await?;
-        let req = build_request(client, source, url, bearer.as_deref())?;
+        let req = build_request(client, source, url, bearer.as_deref(), body)?;
         match client.execute(req).await {
             Ok(response) => {
                 if response.status().is_success() {

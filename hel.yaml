@@ -104,6 +104,11 @@ sources:
       maxResults: "500"   # default 1000; smaller pages reduce burst
     # from: "2024-01-01T00:00:00Z"   # optional start of range (RFC 3339)
     # from_param: startTime
+    # Optional: POST instead of GET (e.g. Cloud Logging entries.list). With cursor pagination, cursor is merged into body.
+    # method: post
+    # body:
+    #   resourceNames: ["projects/my-project"]
+    #   pageSize: 1000
     resilience:
       timeout_secs: 30
       retries:
@@ -119,8 +124,8 @@ sources:
       # page_delay_secs: 1   # optional: throttle pagination (e.g. stay under 2400/min)
 
 # Note: GWS audit logs in Cloud Logging (https://docs.cloud.google.com/logging/docs/audit/gsuite-audit-logging)
-# are read via the Logging API (POST entries:list with resourceNames, filter, pageToken). Hel does not yet support
-# POST-based list APIs; use the Admin SDK Reports API above for GET-based GWS audit with hel.
+# are read via the Logging API (POST entries.list with resourceNames, filter, pageToken). Use method: post and body
+# (see commented example above) for POST-based APIs; the Admin SDK Reports API above is GET-based.
 
 # Cursor-in-body pagination (e.g. API returns {"items": [...], "next_cursor": "abc"}):
 #   pagination:

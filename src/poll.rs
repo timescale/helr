@@ -229,6 +229,7 @@ async fn poll_link_header(
             source,
             source_id,
             &url,
+            None, // link_header: same URL per page; body from source when POST
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
             source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
@@ -423,12 +424,19 @@ async fn poll_cursor_pagination(
                 tokio::time::sleep(Duration::from_secs(secs)).await;
             }
         }
-        let url = if let Some(ref c) = cursor {
-            let mut u = Url::parse(base_url).context("cursor pagination base url")?;
-            u.query_pairs_mut().append_pair(cursor_param, c);
-            u.to_string()
-        } else {
-            url_with_first_request_params(base_url, source)?
+        use crate::config::HttpMethod;
+        let (url, body_override) = match (&source.method, &cursor) {
+            (HttpMethod::Get, Some(c)) => {
+                let mut u = Url::parse(base_url).context("cursor pagination base url")?;
+                u.query_pairs_mut().append_pair(cursor_param, c);
+                (u.to_string(), None)
+            }
+            (HttpMethod::Get, None) => (url_with_first_request_params(base_url, source)?, None),
+            (HttpMethod::Post, Some(c)) => {
+                let body = merge_cursor_into_body(source.body.as_ref(), cursor_param, c);
+                (base_url.to_string(), Some(body))
+            }
+            (HttpMethod::Post, None) => (base_url.to_string(), None),
         };
         if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
             circuit::allow_request(&circuit_store, source_id, cb)
@@ -441,6 +449,7 @@ async fn poll_cursor_pagination(
             source,
             source_id,
             &url,
+            body_override.as_ref(),
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
             source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
@@ -663,6 +672,7 @@ async fn poll_page_offset_pagination(
             source,
             source_id,
             &url,
+            None, // page_offset: body from source when POST
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
             source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
@@ -794,6 +804,7 @@ async fn poll_single_page(
         source,
         source_id,
         url,
+        None, // single page: body from source when POST
         source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
         source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
         Some(&token_cache),
@@ -982,6 +993,23 @@ async fn store_set_or_skip(
     }
 }
 
+/// Merge cursor into POST body for cursor pagination. Returns a new JSON object with cursor_param set.
+fn merge_cursor_into_body(
+    base: Option<&serde_json::Value>,
+    cursor_param: &str,
+    cursor_value: &str,
+) -> serde_json::Value {
+    let mut obj = base
+        .and_then(|v| v.as_object())
+        .map(|m| m.clone())
+        .unwrap_or_else(serde_json::Map::new);
+    obj.insert(
+        cursor_param.to_string(),
+        serde_json::Value::String(cursor_value.to_string()),
+    );
+    serde_json::Value::Object(obj)
+}
+
 /// Build first-request URL: add from (if set) and query_params (if set).
 /// Used when there is no saved cursor/next_url (link_header, cursor, and page_offset first page).
 fn url_with_first_request_params(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
@@ -1011,7 +1039,7 @@ fn parse_events_from_value(value: &serde_json::Value) -> anyhow::Result<Vec<serd
         return Ok(arr.clone());
     }
     if let Some(obj) = value.as_object() {
-        for key in &["items", "data", "events", "logs"] {
+        for key in &["items", "data", "events", "logs", "entries"] {
             if let Some(v) = obj.get(*key) {
                 if let Some(arr) = v.as_array() {
                     return Ok(arr.clone());
@@ -1117,6 +1145,32 @@ mod tests {
         let events = parse_events_from_value(&v).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].get("id"), Some(&serde_json::json!("a")));
+    }
+
+    #[test]
+    fn test_parse_events_from_value_entries_key() {
+        let v = serde_json::json!({"entries": [{"id": "e1"}], "nextPageToken": "tok"});
+        let events = parse_events_from_value(&v).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].get("id"), Some(&serde_json::json!("e1")));
+    }
+
+    #[test]
+    fn test_merge_cursor_into_body() {
+        let body = serde_json::json!({"resourceNames": ["projects/my-project"], "pageSize": 100});
+        let out = merge_cursor_into_body(Some(&body), "pageToken", "next-token");
+        let obj = out.as_object().unwrap();
+        assert_eq!(obj.get("pageToken"), Some(&serde_json::json!("next-token")));
+        assert_eq!(obj.get("resourceNames"), body.get("resourceNames"));
+        assert_eq!(obj.get("pageSize"), body.get("pageSize"));
+    }
+
+    #[test]
+    fn test_merge_cursor_into_body_empty_base() {
+        let out = merge_cursor_into_body(None, "pageToken", "tok");
+        let obj = out.as_object().unwrap();
+        assert_eq!(obj.get("pageToken"), Some(&serde_json::json!("tok")));
+        assert_eq!(obj.len(), 1);
     }
 
     #[test]
