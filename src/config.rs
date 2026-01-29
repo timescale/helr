@@ -92,6 +92,22 @@ fn default_metrics_port() -> u16 {
     9090
 }
 
+/// Query param value: string or number in YAML (e.g. limit: 20 or limit: "20").
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum QueryParamValue {
+    String(String),
+    Int(i64),
+}
+impl QueryParamValue {
+    pub fn to_param_value(&self) -> String {
+        match self {
+            QueryParamValue::String(s) => s.clone(),
+            QueryParamValue::Int(n) => n.to_string(),
+        }
+    }
+}
+
 /// Per-source config (one entry under sources:).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +148,12 @@ pub struct SourceConfig {
     /// Query param name for initial_since (e.g. "since", "after"). Default "since" when initial_since is set.
     #[serde(default)]
     pub since_param: Option<String>,
+
+    /// Optional query params added only to the first request (when no saved cursor/next_url).
+    /// Use for limit, until, filter, q, sortOrder, etc. (e.g. Okta System Log: limit, until, filter, q, sortOrder).
+    /// Values can be strings or numbers in YAML (e.g. limit: 20 or limit: "20").
+    #[serde(default)]
+    pub initial_query_params: Option<HashMap<String, QueryParamValue>>,
 
     /// On response parse/event extraction error: "skip" (log and stop this poll) or "fail" (default).
     #[serde(default)]
@@ -675,6 +697,7 @@ sources:
         assert_eq!(s.cursor_expired, Some(CursorExpiredBehavior::Reset));
         assert_eq!(s.initial_since.as_deref(), Some("2024-01-01T00:00:00Z"));
         assert_eq!(s.since_param.as_deref(), Some("after"));
+        assert!(s.initial_query_params.is_none());
         assert_eq!(s.on_parse_error, Some(OnParseErrorBehavior::Skip));
         assert_eq!(s.max_response_bytes, Some(5_242_880));
         assert_eq!(s.on_state_write_error, Some(OnStateWriteErrorBehavior::SkipCheckpoint));
@@ -703,6 +726,40 @@ sources:
             err.to_string().contains("unset") || err.to_string().contains("HEL_UNSET_PLACEHOLDER_TEST"),
             "expected unset placeholder error, got: {}",
             err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_initial_query_params_string_and_number() {
+        let dir = std::env::temp_dir().join("hel_config_initial_query_params");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  okta:
+    url: "https://example.okta.com/api/v1/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+    initial_query_params:
+      limit: 20
+      sortOrder: "ASCENDING"
+      filter: "eventType eq \"user.session.start\""
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        let s = &config.sources["okta"];
+        let params = s.initial_query_params.as_ref().unwrap();
+        assert_eq!(params.get("limit").map(|v| v.to_param_value()), Some("20".to_string()));
+        assert_eq!(params.get("sortOrder").map(|v| v.to_param_value()), Some("ASCENDING".to_string()));
+        assert_eq!(
+            params.get("filter").map(|v| v.to_param_value()),
+            Some("eventType eq \"user.session.start\"".to_string())
         );
         let _ = std::fs::remove_file(&path);
     }

@@ -258,13 +258,18 @@ fn init_logging(config: Option<&Config>, cli: &Cli) {
         }
     };
     if use_json {
+        // Omit current_span and span_list so we don't parse span fields as JSON (they're key=value, not JSON).
+        let json_fmt = tracing_subscriber::fmt::format()
+            .json()
+            .with_current_span(false)
+            .with_span_list(false);
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_writer(std::io::stderr)
                     .with_ansi(false)
                     .with_target(false)
-                    .event_format(tracing_subscriber::fmt::format().json()),
+                    .event_format(json_fmt),
             )
             .with(filter)
             .init();

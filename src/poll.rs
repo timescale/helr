@@ -191,8 +191,8 @@ async fn poll_link_header(
     let mut url: String = from_store
         .clone()
         .unwrap_or_else(|| source.url.clone());
-    if from_store.is_none() && source.initial_since.is_some() {
-        url = url_with_initial_since(&url, source)?;
+    if from_store.is_none() {
+        url = url_with_initial_params(&url, source)?;
     }
 
     let mut page = 0u32;
@@ -428,12 +428,7 @@ async fn poll_cursor_pagination(
             u.query_pairs_mut().append_pair(cursor_param, c);
             u.to_string()
         } else {
-            let u = base_url.to_string();
-            if source.initial_since.is_some() {
-                url_with_initial_since(&u, source)?
-            } else {
-                u
-            }
+            url_with_initial_params(base_url, source)?
         };
         if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
             circuit::allow_request(&circuit_store, source_id, cb)
@@ -649,6 +644,13 @@ async fn poll_page_offset_pagination(
         let mut u = Url::parse(base_url).context("page/offset base url")?;
         u.query_pairs_mut().append_pair(page_param, &page.to_string());
         u.query_pairs_mut().append_pair(limit_param, &limit.to_string());
+        if page == 1 {
+            if let Some(ref params) = source.initial_query_params {
+                for (k, v) in params {
+                    u.query_pairs_mut().append_pair(k, &v.to_param_value());
+                }
+            }
+        }
         let url = u.to_string();
         if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
             circuit::allow_request(&circuit_store, source_id, cb)
@@ -980,14 +982,19 @@ async fn store_set_or_skip(
     }
 }
 
-/// Append initial_since query param to URL when configured (for first request).
-fn url_with_initial_since(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
-    let Some(ref since_val) = source.initial_since else {
-        return Ok(url.to_string());
-    };
-    let param = source.since_param.as_deref().unwrap_or("since");
-    let mut u = reqwest::Url::parse(url).context("parse url for initial_since")?;
-    u.query_pairs_mut().append_pair(param, since_val);
+/// Build first-request URL: add initial_since (if set) and initial_query_params (if set).
+/// Used when there is no saved cursor/next_url (link_header, cursor, and page_offset first page).
+fn url_with_initial_params(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
+    let mut u = reqwest::Url::parse(url).context("parse url for initial params")?;
+    if let Some(ref since_val) = source.initial_since {
+        let param = source.since_param.as_deref().unwrap_or("since");
+        u.query_pairs_mut().append_pair(param, since_val);
+    }
+    if let Some(ref params) = source.initial_query_params {
+        for (k, v) in params {
+            u.query_pairs_mut().append_pair(k, &v.to_param_value());
+        }
+    }
     Ok(u.to_string())
 }
 
@@ -1118,5 +1125,36 @@ mod tests {
         let events = parse_events_from_value(&v).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].get("id"), Some(&serde_json::json!(42)));
+    }
+
+    #[test]
+    fn test_url_with_initial_params() {
+        let yaml = r#"
+url: "https://example.com/logs"
+initial_since: "2024-01-01T00:00:00Z"
+since_param: "since"
+initial_query_params:
+  limit: 20
+  sortOrder: "ASCENDING"
+"#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let url = url_with_initial_params("https://example.com/logs", &source).unwrap();
+        assert!(url.contains("since=2024-01-01T00%3A00%3A00Z"));
+        assert!(url.contains("limit=20"));
+        assert!(url.contains("sortOrder=ASCENDING"));
+    }
+
+    #[test]
+    fn test_url_with_initial_params_only_query_params() {
+        let yaml = r#"
+url: "https://example.com/logs"
+initial_query_params:
+  limit: "20"
+  filter: "eventType eq \"user.session.start\""
+"#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let url = url_with_initial_params("https://example.com/logs", &source).unwrap();
+        assert!(url.contains("limit=20"));
+        assert!(url.contains("filter="));
     }
 }
