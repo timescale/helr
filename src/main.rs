@@ -386,9 +386,12 @@ async fn run_collector(
                 .parse()
                 .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
             let listener = tokio::net::TcpListener::bind(addr).await?;
-            tracing::info!(%addr, "health server listening on GET /healthz");
+            tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
             tokio::spawn(async move {
-                let app = axum::Router::new().route("/healthz", get(|| async { StatusCode::OK }));
+                let app = axum::Router::new()
+                    .route("/healthz", get(|| async { StatusCode::OK }))
+                    .route("/readyz", get(|| async { StatusCode::OK }))
+                    .route("/startupz", get(|| async { StatusCode::OK }));
                 if let Err(e) = axum::serve(listener, app).await {
                     tracing::error!("health server error: {}", e);
                 }
