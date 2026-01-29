@@ -2,7 +2,9 @@
 
 use crate::circuit::{self, CircuitStore};
 use crate::client::build_client;
-use crate::config::{Config, PaginationConfig, SourceConfig};
+use crate::config::{
+    Config, CursorExpiredBehavior, OnParseErrorBehavior, PaginationConfig, SourceConfig,
+};
 use crate::dedupe::{self, DedupeStore};
 use crate::event::EmittedEvent;
 use crate::metrics;
@@ -173,11 +175,13 @@ async fn poll_link_header(
     event_sink: Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
-    let mut url: String = store
-        .get(source_id, "next_url")
-        .await?
-        .filter(|s| !s.is_empty())
+    let from_store = store.get(source_id, "next_url").await?.filter(|s| !s.is_empty());
+    let mut url: String = from_store
+        .clone()
         .unwrap_or_else(|| source.url.clone());
+    if from_store.is_none() && source.initial_since.is_some() {
+        url = url_with_initial_since(&url, source)?;
+    }
 
     let mut page = 0u32;
     let mut total_events = 0u64;
@@ -246,8 +250,26 @@ async fn poll_link_header(
         let base_url = response.url().clone();
         let path = base_url.path().to_string();
         let body = response.text().await.context("read body")?;
+        if let Some(limit) = source.max_response_bytes {
+            if body.len() as u64 > limit {
+                anyhow::bail!(
+                    "response body size {} exceeds max_response_bytes {}",
+                    body.len(),
+                    limit
+                );
+            }
+        }
         total_bytes += body.len() as u64;
-        let events = parse_events_from_body(&body)?;
+        let events = match parse_events_from_body(&body) {
+            Ok(ev) => ev,
+            Err(e) => {
+                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                    tracing::warn!(source = %source_id, error = %e, "parse error, stopping pagination");
+                    break;
+                }
+                return Err(e).context("parse response");
+            }
+        };
 
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
@@ -344,7 +366,12 @@ async fn poll_cursor_pagination(
             u.query_pairs_mut().append_pair(cursor_param, c);
             u.to_string()
         } else {
-            base_url.to_string()
+            let u = base_url.to_string();
+            if source.initial_since.is_some() {
+                url_with_initial_since(&u, source)?
+            } else {
+                u
+            }
         };
         if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
             circuit::allow_request(&circuit_store, source_id, cb)
@@ -388,14 +415,39 @@ async fn poll_cursor_pagination(
             }
         };
         if !response.status().is_success() {
-            anyhow::bail!(
-                "http {} {}",
-                response.status(),
-                response.text().await.unwrap_or_default()
-            );
+            let status = response.status();
+            let body_text = response.text().await.unwrap_or_default();
+            if cursor.is_some()
+                && status.as_u16() >= 400
+                && status.as_u16() < 500
+            {
+                let lower = body_text.to_lowercase();
+                let is_expired = status.as_u16() == 410
+                    || lower.contains("expired")
+                    || lower.contains("invalid cursor")
+                    || lower.contains("cursor invalid");
+                if is_expired && source.cursor_expired == Some(CursorExpiredBehavior::Reset) {
+                    store.set(source_id, "cursor", "").await?;
+                    tracing::warn!(
+                        source = %source_id,
+                        "cursor expired (4xx), reset; next poll from start"
+                    );
+                    return Ok(());
+                }
+            }
+            anyhow::bail!("http {} {}", status, body_text);
         }
         let path = response.url().path().to_string();
         let body = response.text().await.context("read body")?;
+        if let Some(limit) = source.max_response_bytes {
+            if body.len() as u64 > limit {
+                anyhow::bail!(
+                    "response body size {} exceeds max_response_bytes {}",
+                    body.len(),
+                    limit
+                );
+            }
+        }
         total_bytes += body.len() as u64;
         if let Some(limit) = max_bytes {
             if total_bytes > limit {
@@ -408,9 +460,26 @@ async fn poll_cursor_pagination(
                 break;
             }
         }
-        let value: serde_json::Value =
-            serde_json::from_str(&body).context("parse response json")?;
-        let events = parse_events_from_value(&value)?;
+        let value: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                    tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                    return Ok(());
+                }
+                return Err(e).context("parse response json");
+            }
+        };
+        let events = match parse_events_from_value(&value) {
+            Ok(ev) => ev,
+            Err(e) => {
+                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                    tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                    return Ok(());
+                }
+                return Err(e).context("extract events");
+            }
+        };
         let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
@@ -533,7 +602,25 @@ async fn poll_page_offset_pagination(
         }
         let path = response.url().path().to_string();
         let body = response.text().await.context("read body")?;
-        let events = parse_events_from_body(&body)?;
+        if let Some(limit) = source.max_response_bytes {
+            if body.len() as u64 > limit {
+                anyhow::bail!(
+                    "response body size {} exceeds max_response_bytes {}",
+                    body.len(),
+                    limit
+                );
+            }
+        }
+        let events = match parse_events_from_body(&body) {
+            Ok(ev) => ev,
+            Err(e) => {
+                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                    tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
+                    continue;
+                }
+                return Err(e).context("parse response");
+            }
+        };
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
             if let Some(d) = &source.dedupe {
@@ -632,7 +719,26 @@ async fn poll_single_page(
 
     let path = response.url().path().to_string();
     let body = response.text().await.context("read body")?;
-    let events = parse_events_from_body(&body)?;
+    if let Some(limit) = source.max_response_bytes {
+        if body.len() as u64 > limit {
+            anyhow::bail!(
+                "response body size {} exceeds max_response_bytes {}",
+                body.len(),
+                limit
+            );
+        }
+    }
+    let events = match parse_events_from_body(&body) {
+        Ok(ev) => ev,
+        Err(e) => {
+            if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                tracing::warn!(source = %source_id, error = %e, "parse error, skipping");
+                let _ = store.set(source_id, "next_url", "").await;
+                return Ok(());
+            }
+            return Err(e).context("parse response");
+        }
+    };
 
     let mut emitted_count = 0u64;
     for event_value in &events {
@@ -662,6 +768,17 @@ async fn poll_single_page(
         "poll completed"
     );
     Ok(())
+}
+
+/// Append initial_since query param to URL when configured (for first request).
+fn url_with_initial_since(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
+    let Some(ref since_val) = source.initial_since else {
+        return Ok(url.to_string());
+    };
+    let param = source.since_param.as_deref().unwrap_or("since");
+    let mut u = reqwest::Url::parse(url).context("parse url for initial_since")?;
+    u.query_pairs_mut().append_pair(param, since_val);
+    Ok(u.to_string())
 }
 
 /// Parse response body: top-level array, or object with "items"/"data"/"events" array.

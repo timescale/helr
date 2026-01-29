@@ -116,6 +116,46 @@ pub struct SourceConfig {
     /// Optional deduplication: track last N event IDs and skip emitting duplicates.
     #[serde(default)]
     pub dedupe: Option<DedupeConfig>,
+
+    /// When cursor pagination gets 4xx (e.g. expired cursor): "reset" (clear cursor, next poll from start) or "fail".
+    #[serde(default)]
+    pub cursor_expired: Option<CursorExpiredBehavior>,
+
+    /// Optional initial "since" value for first request (e.g. ISO timestamp). Use with since_param.
+    #[serde(default)]
+    pub initial_since: Option<String>,
+
+    /// Query param name for initial_since (e.g. "since", "after"). Default "since" when initial_since is set.
+    #[serde(default)]
+    pub since_param: Option<String>,
+
+    /// On response parse/event extraction error: "skip" (log and stop this poll) or "fail" (default).
+    #[serde(default)]
+    pub on_parse_error: Option<OnParseErrorBehavior>,
+
+    /// Optional max size in bytes for a single response body; if exceeded, poll fails.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
+}
+
+/// Behavior when cursor is expired (4xx from API).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorExpiredBehavior {
+    /// Clear saved cursor; next poll starts from first page.
+    Reset,
+    /// Return error and do not clear cursor.
+    Fail,
+}
+
+/// Behavior when parsing response or extracting events fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnParseErrorBehavior {
+    /// Log warning and stop pagination for this tick (emit nothing for this response).
+    Skip,
+    /// Return error (default).
+    Fail,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -466,6 +506,39 @@ sources: {}
         std::fs::write(&path, "global:\n  log_level: [unclosed").unwrap();
         let err = Config::load(&path).unwrap_err();
         assert!(err.to_string().contains("parse") || err.to_string().contains("yaml"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_corner_case_options() {
+        let dir = std::env::temp_dir().join("hel_config_corner_case");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  log_level: info
+  state:
+    backend: memory
+sources:
+  corner:
+    url: "https://example.com/logs"
+    cursor_expired: reset
+    initial_since: "2024-01-01T00:00:00Z"
+    since_param: after
+    on_parse_error: skip
+    max_response_bytes: 5242880
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let s = &config.sources["corner"];
+        assert_eq!(s.cursor_expired, Some(CursorExpiredBehavior::Reset));
+        assert_eq!(s.initial_since.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(s.since_param.as_deref(), Some("after"));
+        assert_eq!(s.on_parse_error, Some(OnParseErrorBehavior::Skip));
+        assert_eq!(s.max_response_bytes, Some(5_242_880));
         let _ = std::fs::remove_file(&path);
     }
 

@@ -35,7 +35,7 @@ hel state import
 
 ## Config
 
-See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time.
+See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time. Corner-case options: `cursor_expired` (reset \| fail), `initial_since` + `since_param`, `on_parse_error` (skip \| fail), `max_response_bytes`.
 
 ## Status
 

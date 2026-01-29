@@ -258,6 +258,64 @@ sources:
     assert_eq!(first["event"]["msg"], "file-one");
 }
 
+/// on_parse_error: skip — invalid JSON response does not fail the run; poll stops for that source.
+#[tokio::test]
+async fn integration_on_parse_error_skip() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not valid json"))
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_parse_skip");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  parse-skip-source:
+    url: "{}/"
+    on_parse_error: skip
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let out = std::process::Command::new(hel_bin())
+        .args(["--config", config_path.to_str().unwrap(), "run", "--once"])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    assert!(
+        out.status.success(),
+        "on_parse_error skip should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let ndjson_lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(
+        ndjson_lines.is_empty(),
+        "expected no events when parse fails with skip, got {}",
+        ndjson_lines.len()
+    );
+}
+
 fn hel_bin() -> String {
     std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
         format!(
