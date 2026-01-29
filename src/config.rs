@@ -45,6 +45,10 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_bearer_prefix() -> String {
+    "Bearer".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalStateConfig {
@@ -257,6 +261,9 @@ pub enum AuthConfig {
         token_env: String,
         #[serde(default)]
         token_file: Option<String>,
+        /// Authorization header prefix (default "Bearer"). Use "SSWS" for Okta API tokens.
+        #[serde(default = "default_bearer_prefix")]
+        prefix: String,
     },
     ApiKey {
         header: String,
@@ -345,9 +352,13 @@ pub struct ResilienceConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
-    /// When true, use Retry-After (and optionally X-RateLimit-Reset) on 429 instead of generic backoff.
+    /// When true, use Retry-After or X-RateLimit-Reset / X-Rate-Limit-Reset (Okta) on 429 instead of generic backoff.
     #[serde(default = "default_respect_headers")]
     pub respect_headers: bool,
+
+    /// Optional delay in seconds between pagination requests (e.g. 1 for Okta’s 60/min limit). Reduces burst within one poll.
+    #[serde(default, rename = "delay_between_pages_secs")]
+    pub delay_between_pages_secs: Option<u64>,
 }
 
 fn default_respect_headers() -> bool {
@@ -428,7 +439,11 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
     for (source_id, source) in &config.sources {
         if let Some(auth) = &source.auth {
             match auth {
-                AuthConfig::Bearer { token_env, token_file } => {
+                AuthConfig::Bearer {
+                    token_env,
+                    token_file,
+                    prefix: _,
+                } => {
                     read_secret(token_file.as_deref(), token_env)
                         .with_context(|| format!("source {}: bearer token", source_id))?;
                 }

@@ -19,7 +19,7 @@ use crate::state::StateStore;
 use anyhow::Context;
 use chrono::Utc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::instrument;
 
 /// Run one poll tick for all sources (or only those matching source_filter).
@@ -69,11 +69,11 @@ pub async fn run_one_tick(
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 metrics::record_error(&source_id);
-                tracing::error!(source = %source_id, "poll failed: {}", e);
+                tracing::error!(source = %source_id, "poll failed: {:#}", e);
             }
             Err(e) => {
                 metrics::record_error(&source_id);
-                tracing::error!(source = %source_id, "task join failed: {}", e);
+                tracing::error!(source = %source_id, "task join failed: {:#}", e);
             }
         }
     }
@@ -200,11 +200,22 @@ async fn poll_link_header(
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
     let mut pending_next_url: Option<String> = None;
+    let delay_between_pages = source
+        .resilience
+        .as_ref()
+        .and_then(|r| r.rate_limit.as_ref())
+        .and_then(|rl| rl.delay_between_pages_secs);
     loop {
         page += 1;
         if page > max_pages {
             tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
             break;
+        }
+        if page > 1 {
+            if let Some(secs) = delay_between_pages {
+                tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+            }
         }
 
         if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
@@ -395,11 +406,22 @@ async fn poll_cursor_pagination(
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
     let mut pending_cursor: Option<String> = None;
+    let delay_between_pages = source
+        .resilience
+        .as_ref()
+        .and_then(|r| r.rate_limit.as_ref())
+        .and_then(|rl| rl.delay_between_pages_secs);
     loop {
         page += 1;
         if page > max_pages {
             tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
             break;
+        }
+        if page > 1 {
+            if let Some(secs) = delay_between_pages {
+                tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+            }
         }
         let url = if let Some(ref c) = cursor {
             let mut u = Url::parse(base_url).context("cursor pagination base url")?;
@@ -612,7 +634,18 @@ async fn poll_page_offset_pagination(
     let start = Instant::now();
     let base_url = source.url.as_str();
     let mut total_events = 0u64;
+    let delay_between_pages = source
+        .resilience
+        .as_ref()
+        .and_then(|r| r.rate_limit.as_ref())
+        .and_then(|rl| rl.delay_between_pages_secs);
     for page in 1..=max_pages {
+        if page > 1 {
+            if let Some(secs) = delay_between_pages {
+                tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+            }
+        }
         let mut u = Url::parse(base_url).context("page/offset base url")?;
         u.query_pairs_mut().append_pair(page_param, &page.to_string());
         u.query_pairs_mut().append_pair(limit_param, &limit.to_string());

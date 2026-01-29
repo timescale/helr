@@ -57,9 +57,10 @@ fn add_auth(
         AuthConfig::Bearer {
             token_env,
             token_file,
+            prefix,
         } => {
             let token = config::read_secret(token_file.as_deref(), token_env)?;
-            let value = format!("Bearer {}", token);
+            let value = format!("{} {}", prefix, token);
             let hv = HeaderValue::try_from(value).context("invalid bearer token")?;
             req.header(AUTHORIZATION, hv)
         }

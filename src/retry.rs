@@ -53,13 +53,15 @@ pub fn retry_after_from_headers(
             return Some(cap_duration(Duration::from_secs(secs), max_cap_secs));
         }
     }
-    // Fallback: X-RateLimit-Reset (often Unix timestamp)
-    if let Some(v) = headers.get("X-RateLimit-Reset") {
-        let s = v.to_str().ok()?.trim();
-        if let Ok(reset_ts) = s.parse::<i64>() {
-            let now_secs = chrono::Utc::now().timestamp();
-            let secs = (reset_ts - now_secs).max(0) as u64;
-            return Some(cap_duration(Duration::from_secs(secs), max_cap_secs));
+    // Fallback: X-RateLimit-Reset or X-Rate-Limit-Reset (Okta) — Unix timestamp when limit resets
+    for name in ["X-RateLimit-Reset", "X-Rate-Limit-Reset"] {
+        if let Some(v) = headers.get(name) {
+            let s = v.to_str().ok()?.trim();
+            if let Ok(reset_ts) = s.parse::<i64>() {
+                let now_secs = chrono::Utc::now().timestamp();
+                let secs = (reset_ts - now_secs).max(0) as u64;
+                return Some(cap_duration(Duration::from_secs(secs), max_cap_secs));
+            }
         }
     }
     None
@@ -141,6 +143,11 @@ pub async fn execute_with_retry(
                     && let Some(d) =
                         retry_after_from_headers(response.headers(), retry.max_backoff_secs)
                 {
+                    let d = if d.as_secs() > 0 {
+                        d
+                    } else {
+                        backoff_duration(retry, attempt)
+                    };
                     warn!(
                         status = %status,
                         attempt = attempt + 1,
@@ -246,5 +253,17 @@ mod tests {
         );
         let d = retry_after_from_headers(&headers, None).unwrap();
         assert!(d.as_secs() >= 88 && d.as_secs() <= 92);
+    }
+
+    #[test]
+    fn test_retry_after_x_rate_limit_reset_okta() {
+        let mut headers = HeaderMap::new();
+        let reset_ts = chrono::Utc::now().timestamp() + 45;
+        headers.insert(
+            "X-Rate-Limit-Reset",
+            reset_ts.to_string().parse().unwrap(),
+        );
+        let d = retry_after_from_headers(&headers, None).unwrap();
+        assert!(d.as_secs() >= 43 && d.as_secs() <= 47);
     }
 }
