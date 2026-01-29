@@ -245,4 +245,10 @@ responses:
         assert!(query_matches(&rule, "since=2024-01-01&after=cursor1"));
         assert!(!query_matches(&rule, "since=2024-01-01&after=cursor2"));
     }
+
+    #[test]
+    fn query_matches_empty_rule_initial_request() {
+        let rule = MatchRule::default();
+        assert!(query_matches(&rule, ""), "empty rule matches no query params (initial request)");
+    }
 }

@@ -1,11 +1,25 @@
 # Mock server config for Okta-style API (development/testing).
 # Run: hel mock-server mocks/okta.yaml
 # Then point hel.yaml sources at http://127.0.0.1:<port> (port printed to stderr).
+#
+# Response order: more specific rules first. Three cases:
+# 1. Next page: after=cursor1 (cursor known from Link header)
+# 2. First page with since: since=<anything> (time-based initial fetch)
+# 3. Initial request: no query params (cursor not known yet)
 
 endpoint: "/api/v1/logs"
 # bind: "127.0.0.1:0"   # default: pick port
 
 responses:
+  - match:
+      query:
+        after: "cursor1"
+    response:
+      status: 200
+      headers:
+        Content-Type: "application/json"
+      body: '[]'
+
   - match:
       query:
         since: "*"
@@ -16,11 +30,12 @@ responses:
         Link: '</api/v1/logs?after=cursor1>; rel="next"'
       body: '[{"uuid":"a1","published":"2024-01-15T12:00:00Z","eventType":"user.session.start"}]'
 
+  # Initial request: no cursor (no query params or GET /api/v1/logs only)
   - match:
-      query:
-        after: "cursor1"
+      query: {}
     response:
       status: 200
       headers:
         Content-Type: "application/json"
-      body: '[]'
+        Link: '</api/v1/logs?after=cursor1>; rel="next"'
+      body: '[{"uuid":"a1","published":"2024-01-15T12:00:00Z","eventType":"user.session.start"}]'
