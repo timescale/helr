@@ -1,0 +1,26 @@
+# Mock server config for Okta-style API (development/testing).
+# Run: hel --mock-server --mock-config mocks/okta.yaml
+# Then point hel.yaml sources at http://127.0.0.1:<port> (port printed to stderr).
+
+endpoint: "/api/v1/logs"
+# bind: "127.0.0.1:0"   # default: pick port
+
+responses:
+  - match:
+      query:
+        since: "*"
+    response:
+      status: 200
+      headers:
+        Content-Type: "application/json"
+        Link: '</api/v1/logs?after=cursor1>; rel="next"'
+      body: '[{"uuid":"a1","published":"2024-01-15T12:00:00Z","eventType":"user.session.start"}]'
+
+  - match:
+      query:
+        after: "cursor1"
+    response:
+      status: 200
+      headers:
+        Content-Type: "application/json"
+      body: '[]'

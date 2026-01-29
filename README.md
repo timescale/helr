@@ -30,9 +30,14 @@ hel test --source okta-audit
 hel run --once --record-dir ./recordings
 hel run --once --replay-dir ./recordings
 
+# Mock server: run a fake API from YAML (match query, serve fixture responses) for development
+hel --mock-server --mock-config mocks/okta.yaml
+# Then point hel.yaml sources at http://127.0.0.1:<port> and run hel run --once in another terminal
+
 # Inspect or manage state
 hel state show okta-audit
 hel state reset okta-audit
+hel state set okta-audit next_url "https://example.com/logs?after=xyz"
 hel state export
 hel state import
 ```
@@ -47,7 +52,7 @@ See `hel.yaml` for a minimal example. Required: `sources` with at least one sour
 
 ## Status
 
-- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources, file output with log rotation, **session replay** (`--record-dir`, `--replay-dir`). **`hel test --source NAME`** and **`hel state show/reset/export/import`** implemented.
+- **v0.1 & v0.2:** CLI (run, validate, test, state), config load, SQLite + in-memory state store, HTTP client, link-header / cursor / page-offset pagination, poll loop, retry, scheduler, health, metrics, graceful shutdown, dedupe, concurrent sources, file output with log rotation, **session replay** (`--record-dir`, `--replay-dir`), **mock server** (`--mock-server --mock-config`). **`hel test --source NAME`** and **`hel state show/reset/set/export/import`** implemented.
 
 ## License
 

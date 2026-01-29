@@ -606,6 +606,192 @@ sources:
     assert!(lines.is_empty(), "expected no events when circuit opens; got {} lines", lines.len());
 }
 
+/// Mock server: hel --mock-server serves YAML-defined responses; hel run --once against it emits NDJSON.
+#[tokio::test]
+async fn integration_mock_server_emits_ndjson() {
+    let config_dir = std::env::temp_dir().join("hel_integration_mock");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let mock_config_path = config_dir.join("mock.yaml");
+    let fixture_path = config_dir.join("page1.json");
+    let hel_config_path = config_dir.join("hel.yaml");
+
+    std::fs::write(
+        &fixture_path,
+        r#"[{"id": "m1", "msg": "from-mock", "published": "2024-01-10T12:00:00Z"}]"#,
+    )
+    .expect("write fixture");
+
+    std::fs::write(
+        &mock_config_path,
+        format!(
+            r#"
+endpoint: "/api/v1/logs"
+bind: "127.0.0.1:19286"
+responses:
+  - match:
+      query:
+        since: "*"
+    response:
+      status: 200
+      headers:
+        Content-Type: "application/json"
+      body_file: "{}"
+"#,
+            fixture_path.file_name().unwrap().to_str().unwrap()
+        ),
+    )
+    .expect("write mock config");
+
+    let mut child = std::process::Command::new(hel_bin())
+        .args([
+            "--mock-server",
+            "--mock-config",
+            mock_config_path.to_str().unwrap(),
+        ])
+        .env("RUST_LOG", "error")
+        .current_dir(config_dir.clone())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn hel mock server");
+
+    std::thread::sleep(Duration::from_millis(500));
+
+    let hel_yaml = r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  mock-source:
+    url: "http://127.0.0.1:19286/api/v1/logs?since=2024-01-01"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#;
+    std::fs::write(&hel_config_path, hel_yaml).expect("write hel config");
+
+    let out = std::process::Command::new(hel_bin())
+        .args([
+            "--config",
+            hel_config_path.to_str().unwrap(),
+            "run",
+            "--once",
+        ])
+        .env("RUST_LOG", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    let _ = child.kill();
+
+    assert!(
+        out.status.success(),
+        "hel run against mock server failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(
+        lines.len() >= 1,
+        "expected at least 1 NDJSON line from mock, got {}: {}",
+        lines.len(),
+        stdout
+    );
+    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(obj["source"], "mock-source");
+    assert_eq!(obj["event"]["id"], "m1");
+    assert_eq!(obj["event"]["msg"], "from-mock");
+}
+
+/// hel state set: set a single key, then show confirms it.
+#[tokio::test]
+async fn integration_state_set_then_show() {
+    let config_dir = std::env::temp_dir().join("hel_integration_state_set");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let state_path = config_dir.join("hel-state.db");
+    let _ = std::fs::remove_file(&state_path);
+
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+global:
+  log_level: error
+  state:
+    backend: sqlite
+    path: "{}"
+sources:
+  set-test-source:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+"#,
+            state_path.display()
+        ),
+    )
+    .expect("write config");
+
+    let out_set = std::process::Command::new(hel_bin())
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "state",
+            "set",
+            "set-test-source",
+            "next_url",
+            "https://example.com/logs?after=xyz",
+        ])
+        .env("RUST_LOG", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel state set");
+
+    assert!(
+        out_set.status.success(),
+        "hel state set failed: stderr={}",
+        String::from_utf8_lossy(&out_set.stderr)
+    );
+
+    let out_show = std::process::Command::new(hel_bin())
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "state",
+            "show",
+            "set-test-source",
+        ])
+        .env("RUST_LOG", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel state show");
+
+    assert!(
+        out_show.status.success(),
+        "hel state show failed: stderr={}",
+        String::from_utf8_lossy(&out_show.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out_show.stdout);
+    assert!(
+        stdout.contains("next_url") && stdout.contains("https://example.com/logs?after=xyz"),
+        "expected next_url in state show output, got: {}",
+        stdout
+    );
+}
+
 /// hel validate rejects invalid config.
 #[tokio::test]
 async fn integration_validate_rejects_invalid_config() {

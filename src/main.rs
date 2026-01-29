@@ -13,6 +13,7 @@ mod config;
 mod dedupe;
 mod event;
 mod metrics;
+mod mock_server;
 mod oauth2;
 mod output;
 mod pagination;
@@ -48,6 +49,14 @@ struct Cli {
 
     #[arg(long, global = true)]
     dry_run: bool,
+
+    /// Run mock HTTP server for development (requires --mock-config).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    mock_server: bool,
+
+    /// Mock server config YAML (required when using --mock-server).
+    #[arg(long, value_name = "PATH")]
+    mock_config: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -105,6 +114,12 @@ enum Commands {
 enum StateSubcommand {
     Show { source: String },
     Reset { source: String },
+    /// Set a single state key for a source
+    Set {
+        source: String,
+        key: String,
+        value: String,
+    },
     Export,
     /// Import state from JSON (same format as export). Reads from stdin.
     Import,
@@ -131,6 +146,14 @@ async fn main() -> anyhow::Result<()> {
     if cli.dry_run {
         tracing::info!("dry-run: would load config from {:?}", cli.config);
         return Ok(());
+    }
+
+    if cli.mock_server {
+        init_logging(None, &cli);
+        let path = cli.mock_config.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--mock-config is required when using --mock-server")
+        })?;
+        return mock_server::run_mock_server(path).await;
     }
 
     match &cli.command {
@@ -326,12 +349,16 @@ async fn run_state(
     match subcommand {
         Some(StateSubcommand::Show { source }) => state_show(store.as_ref(), source).await,
         Some(StateSubcommand::Reset { source }) => state_reset(store.as_ref(), source).await,
+        Some(StateSubcommand::Set { source, key, value }) => {
+            state_set(store.as_ref(), source, key, value).await
+        }
         Some(StateSubcommand::Export) => state_export(store.as_ref()).await,
         Some(StateSubcommand::Import) => state_import(store.as_ref()).await,
         None => {
-            eprintln!("usage: hel state {{show,reset,export,import}}");
+            eprintln!("usage: hel state {{show,reset,set,export,import}}");
             eprintln!("  show <source>   show state keys and values for a source");
             eprintln!("  reset <source>  clear all state for a source");
+            eprintln!("  set <source> <key> <value>  set a single state key");
             eprintln!("  export         write all state as JSON to stdout");
             eprintln!("  import         read state from JSON on stdin (same format as export)");
             Ok(())
@@ -356,6 +383,17 @@ async fn state_show(store: &dyn StateStore, source_id: &str) -> anyhow::Result<(
 async fn state_reset(store: &dyn StateStore, source_id: &str) -> anyhow::Result<()> {
     store.clear_source(source_id).await?;
     println!("reset state for source {:?}", source_id);
+    Ok(())
+}
+
+async fn state_set(
+    store: &dyn StateStore,
+    source_id: &str,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    store.set(source_id, key, value).await?;
+    println!("set {} {} = {:?}", source_id, key, value);
     Ok(())
 }
 
