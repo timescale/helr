@@ -11,9 +11,13 @@ mod client;
 mod config;
 mod event;
 mod pagination;
+mod poll;
 mod state;
 
 use config::Config;
+use state::{MemoryStateStore, SqliteStateStore, StateStore};
+use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "hel")]
@@ -74,7 +78,8 @@ enum StateSubcommand {
     Export,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let filter = if cli.quiet {
@@ -97,12 +102,14 @@ fn main() -> anyhow::Result<()> {
 
     match &cli.command {
         Some(Commands::Validate) => run_validate(&cli.config),
-        Some(Commands::Run { once, source: _ }) => run_collector(&cli.config, *once),
+        Some(Commands::Run { once, source }) => {
+            run_collector(&cli.config, *once, source.as_deref()).await
+        }
         Some(Commands::Test { .. }) | Some(Commands::State { .. }) => {
             tracing::warn!("command not yet implemented");
             Ok(())
         }
-        None => run_collector(&cli.config, false),
+        None => run_collector(&cli.config, false, None).await,
     }
 }
 
@@ -119,13 +126,29 @@ fn run_validate(config_path: &std::path::Path) -> anyhow::Result<()> {
     }
 }
 
-fn run_collector(config_path: &std::path::Path, once: bool) -> anyhow::Result<()> {
-    let _config = Config::load(config_path)?;
+async fn run_collector(
+    config_path: &Path,
+    once: bool,
+    source_filter: Option<&str>,
+) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
     tracing::info!("loaded config from {:?}", config_path);
-    if once {
-        tracing::info!("--once: one poll cycle (not yet implemented)");
-    } else {
-        tracing::info!("continuous mode (not yet implemented)");
+
+    let store: Arc<dyn StateStore> = match &config.global.state {
+        Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
+            let path = state
+                .path
+                .as_deref()
+                .unwrap_or("./hel-state.db");
+            Arc::new(SqliteStateStore::open(Path::new(path))?)
+        }
+        _ => Arc::new(MemoryStateStore::new()),
+    };
+
+    poll::run_one_tick(&config, store, source_filter).await?;
+
+    if !once {
+        tracing::info!("continuous mode (scheduler not yet implemented)");
     }
     Ok(())
 }

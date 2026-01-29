@@ -25,7 +25,7 @@ See `hel.yaml` for a minimal example. Required: `sources` with at least one sour
 
 ## Status
 
-- **v0.1 (in progress):** CLI skeleton, config load + validate, Phase 0 contracts (config schema, `StateStore` trait, `EmittedEvent`). Next: SQLite state store, HTTP client, pagination, poll loop, health endpoint.
+- **v0.1 (in progress):** CLI, config load + validate, SQLite + in-memory state store, HTTP client (auth + timeouts), link-header pagination, **poll loop** (single source, link-header or single page, NDJSON to stdout, state commit). Next: retry layer, scheduler, health endpoint.
 
 ## License
 
