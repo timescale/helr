@@ -4,6 +4,7 @@ use crate::circuit::{self, CircuitStore};
 use crate::client::build_client;
 use crate::config::{Config, PaginationConfig, SourceConfig};
 use crate::event::EmittedEvent;
+use crate::metrics;
 use crate::oauth2::OAuth2TokenCache;
 use crate::pagination::next_link_from_headers;
 use crate::retry::execute_with_retry;
@@ -37,6 +38,7 @@ pub async fn run_one_tick(
         )
         .await
         {
+            metrics::record_error(source_id);
             tracing::error!(source = %source_id, "poll failed: {}", e);
             // continue with other sources
         }
@@ -94,6 +96,7 @@ async fn poll_one_source(
                 .await
                 .context("circuit open")?;
         }
+        let req_start = std::time::Instant::now();
         let response = match execute_with_retry(
             &client,
             source,
@@ -111,6 +114,12 @@ async fn poll_one_source(
                 {
                     circuit::record_result(&circuit_store, source_id, cb, success).await;
                 }
+                let status = r.status().as_u16();
+                metrics::record_request(
+                    source_id,
+                    status_class(status),
+                    req_start.elapsed().as_secs_f64(),
+                );
                 r
             }
             Err(e) => {
@@ -119,6 +128,12 @@ async fn poll_one_source(
                 {
                     circuit::record_result(&circuit_store, source_id, cb, false).await;
                 }
+                metrics::record_request(
+                    source_id,
+                    "error",
+                    req_start.elapsed().as_secs_f64(),
+                );
+                metrics::record_error(source_id);
                 return Err(e).context("http request");
             }
         };
@@ -135,6 +150,7 @@ async fn poll_one_source(
         let events = parse_events_from_body(&body)?;
 
         total_events += events.len() as u64;
+        metrics::record_events(source_id, events.len() as u64);
         for event_value in events.iter() {
             let ts = event_ts(event_value);
             let emitted = EmittedEvent::new(
@@ -185,6 +201,7 @@ async fn poll_single_page(
             .await
             .context("circuit open")?;
     }
+    let req_start = std::time::Instant::now();
     let response = match execute_with_retry(
         client,
         source,
@@ -201,12 +218,19 @@ async fn poll_single_page(
             if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
                 circuit::record_result(&circuit_store, source_id, cb, success).await;
             }
+            metrics::record_request(
+                source_id,
+                status_class(r.status().as_u16()),
+                req_start.elapsed().as_secs_f64(),
+            );
             r
         }
         Err(e) => {
             if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
                 circuit::record_result(&circuit_store, source_id, cb, false).await;
             }
+            metrics::record_request(source_id, "error", req_start.elapsed().as_secs_f64());
+            metrics::record_error(source_id);
             return Err(e).context("http request");
         }
     };
@@ -221,6 +245,7 @@ async fn poll_single_page(
     let body = response.text().await.context("read body")?;
     let events = parse_events_from_body(&body)?;
 
+    metrics::record_events(source_id, events.len() as u64);
     for event_value in &events {
         let ts = event_ts(event_value);
         let emitted = EmittedEvent::new(
@@ -275,5 +300,15 @@ fn event_ts(event: &serde_json::Value) -> String {
         Utc::now().to_rfc3339()
     } else {
         s
+    }
+}
+
+fn status_class(status: u16) -> &'static str {
+    match status {
+        200..=299 => "2xx",
+        300..=399 => "3xx",
+        400..=499 => "4xx",
+        500..=599 => "5xx",
+        _ => "other",
     }
 }

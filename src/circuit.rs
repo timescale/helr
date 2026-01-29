@@ -2,6 +2,7 @@
 //! 5xx and timeouts increment failure count; after threshold we open and fail fast.
 
 use crate::config::CircuitBreakerConfig;
+use crate::metrics::{self, CircuitStateValue};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -63,7 +64,8 @@ pub async fn allow_request(
         Some(CircuitState::HalfOpen { successes: _ }) => (true, None),
     };
     if let Some(s) = new_state {
-        g.insert(source_id.to_string(), s);
+        g.insert(source_id.to_string(), s.clone());
+        metrics::set_circuit_state(source_id, circuit_state_to_value(&s));
     }
     if !allowed {
         if let Some(CircuitState::Open { open_until }) = state {
@@ -128,7 +130,16 @@ pub async fn record_result(
             }
         }
     };
-    g.insert(source_id.to_string(), new_state);
+    g.insert(source_id.to_string(), new_state.clone());
+    metrics::set_circuit_state(source_id, circuit_state_to_value(&new_state));
+}
+
+fn circuit_state_to_value(s: &CircuitState) -> CircuitStateValue {
+    match s {
+        CircuitState::Closed { .. } => CircuitStateValue::Closed,
+        CircuitState::Open { .. } => CircuitStateValue::Open,
+        CircuitState::HalfOpen { .. } => CircuitStateValue::HalfOpen,
+    }
 }
 
 /// Returns true if the error is a circuit-open rejection (so caller can skip recording).

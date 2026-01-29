@@ -10,8 +10,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 mod circuit;
 mod client;
 mod config;
-mod oauth2;
 mod event;
+mod metrics;
+mod oauth2;
 mod pagination;
 mod poll;
 mod retry;
@@ -186,6 +187,38 @@ async fn run_collector(
 
     if once {
         return Ok(());
+    }
+
+    // Metrics: init and serve GET /metrics when enabled
+    if config
+        .global
+        .metrics
+        .as_ref()
+        .map(|m| m.enabled)
+        .unwrap_or(false)
+    {
+        if let Err(e) = metrics::init() {
+            tracing::warn!("metrics init failed: {}", e);
+        } else {
+            let metrics_cfg = config.global.metrics.as_ref().unwrap();
+            let addr: SocketAddr = format!("{}:{}", metrics_cfg.address, metrics_cfg.port)
+                .parse()
+                .map_err(|e| anyhow::anyhow!("metrics address invalid: {}", e))?;
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            tracing::info!(%addr, "metrics server listening on GET /metrics");
+            tokio::spawn(async move {
+                let app = axum::Router::new().route(
+                    "/metrics",
+                    get(|| async {
+                        let body = metrics::encode();
+                        ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
+                    }),
+                );
+                if let Err(e) = axum::serve(listener, app).await {
+                    tracing::error!("metrics server error: {}", e);
+                }
+            });
+        }
     }
 
     // Health server: bind only when enabled and running continuously
