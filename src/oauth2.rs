@@ -20,6 +20,13 @@ pub fn new_oauth2_token_cache() -> OAuth2TokenCache {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
+/// Invalidate cached token for a source so the next request triggers a refresh (e.g. after 401).
+pub async fn invalidate_token(cache: &OAuth2TokenCache, source_id: &str) {
+    let mut g = cache.write().await;
+    g.remove(source_id);
+    debug!(source = %source_id, "oauth2 token invalidated");
+}
+
 /// Returns current valid access_token for the source, refreshing if needed.
 pub async fn get_oauth_token(
     cache: &OAuth2TokenCache,

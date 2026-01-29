@@ -3,7 +3,9 @@
 use crate::circuit::{self, CircuitStore};
 use crate::client::build_client;
 use crate::config::{
-    Config, CursorExpiredBehavior, OnParseErrorBehavior, PaginationConfig, SourceConfig,
+    CheckpointTiming, Config, CursorExpiredBehavior, InvalidUtf8Behavior,
+    MaxEventBytesBehavior, OnParseErrorBehavior, OnStateWriteErrorBehavior, PaginationConfig,
+    SourceConfig,
 };
 use crate::dedupe::{self, DedupeStore};
 use crate::event::EmittedEvent;
@@ -187,6 +189,7 @@ async fn poll_link_header(
     let mut total_events = 0u64;
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
+    let mut pending_next_url: Option<String> = None;
     loop {
         page += 1;
         if page > max_pages {
@@ -249,7 +252,8 @@ async fn poll_link_header(
         let next_url = next_link_from_headers(response.headers(), rel);
         let base_url = response.url().clone();
         let path = base_url.path().to_string();
-        let body = response.text().await.context("read body")?;
+        let body_bytes = response.bytes().await.context("read body")?;
+        let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes {
             if body.len() as u64 > limit {
                 anyhow::bail!(
@@ -288,16 +292,20 @@ async fn poll_link_header(
                 path.clone(),
                 event_value.clone(),
             );
-            event_sink.write_line(&emitted.to_ndjson_line()?)?;
+            emit_event_line(source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
 
+        let checkpoint_per_page = source.checkpoint != Some(CheckpointTiming::EndOfTick);
         let hit_max_bytes = max_bytes.is_some() && total_bytes > max_bytes.unwrap();
         if let Some(next) = next_url {
             let absolute = base_url.join(&next).context("resolve next URL")?;
-            store
-                .set(source_id, "next_url", absolute.as_str())
-                .await?;
+            if checkpoint_per_page {
+                store
+                    .set(source_id, "next_url", absolute.as_str())
+                    .await?;
+            }
+            pending_next_url = Some(absolute.to_string());
             if hit_max_bytes {
                 tracing::warn!(
                     source = %source_id,
@@ -316,7 +324,10 @@ async fn poll_link_header(
                 "next page"
             );
         } else {
-            store.set(source_id, "next_url", "").await?;
+            pending_next_url = Some(String::new());
+            if checkpoint_per_page {
+                store_set_or_skip(&store, source_id, source, "next_url", "").await?;
+            }
             tracing::info!(
                 source = %source_id,
                 pages = page,
@@ -325,6 +336,11 @@ async fn poll_link_header(
                 "poll completed"
             );
             break;
+        }
+    }
+    if source.checkpoint == Some(CheckpointTiming::EndOfTick) {
+        if let Some(ref v) = pending_next_url {
+            store_set_or_skip(&store, source_id, source, "next_url", v).await?;
         }
     }
     Ok(())
@@ -355,6 +371,7 @@ async fn poll_cursor_pagination(
     let mut total_events = 0u64;
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
+    let mut pending_cursor: Option<String> = None;
     loop {
         page += 1;
         if page > max_pages {
@@ -414,20 +431,22 @@ async fn poll_cursor_pagination(
                 return Err(e).context("http request");
             }
         };
-        if !response.status().is_success() {
-            let status = response.status();
-            let body_text = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let path = response.url().path().to_string();
+        let body_bytes = response.bytes().await.context("read body")?;
+        let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
+        if !status.is_success() {
             if cursor.is_some()
                 && status.as_u16() >= 400
                 && status.as_u16() < 500
             {
-                let lower = body_text.to_lowercase();
+                let lower = body.to_lowercase();
                 let is_expired = status.as_u16() == 410
                     || lower.contains("expired")
                     || lower.contains("invalid cursor")
                     || lower.contains("cursor invalid");
                 if is_expired && source.cursor_expired == Some(CursorExpiredBehavior::Reset) {
-                    store.set(source_id, "cursor", "").await?;
+                    store_set_or_skip(&store, source_id, source, "cursor", "").await?;
                     tracing::warn!(
                         source = %source_id,
                         "cursor expired (4xx), reset; next poll from start"
@@ -435,10 +454,8 @@ async fn poll_cursor_pagination(
                     return Ok(());
                 }
             }
-            anyhow::bail!("http {} {}", status, body_text);
+            anyhow::bail!("http {} {}", status, body);
         }
-        let path = response.url().path().to_string();
-        let body = response.text().await.context("read body")?;
         if let Some(limit) = source.max_response_bytes {
             if body.len() as u64 > limit {
                 anyhow::bail!(
@@ -498,12 +515,16 @@ async fn poll_cursor_pagination(
                 path.clone(),
                 event_value.clone(),
             );
-            event_sink.write_line(&emitted.to_ndjson_line()?)?;
+            emit_event_line(source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
+        let checkpoint_per_page = source.checkpoint != Some(CheckpointTiming::EndOfTick);
         match next_cursor {
             Some(c) => {
-                store.set(source_id, "cursor", &c).await?;
+                if checkpoint_per_page {
+                    store_set_or_skip(&store, source_id, source, "cursor", &c).await?;
+                }
+                pending_cursor = Some(c.clone());
                 cursor = Some(c);
                 tracing::debug!(
                     source = %source_id,
@@ -513,7 +534,10 @@ async fn poll_cursor_pagination(
                 );
             }
             None => {
-                store.set(source_id, "cursor", "").await?;
+                if checkpoint_per_page {
+                    store_set_or_skip(&store, source_id, source, "cursor", "").await?;
+                }
+                pending_cursor = Some(String::new());
                 tracing::info!(
                     source = %source_id,
                     pages = page,
@@ -523,6 +547,11 @@ async fn poll_cursor_pagination(
                 );
                 break;
             }
+        }
+    }
+    if source.checkpoint == Some(CheckpointTiming::EndOfTick) {
+        if let Some(ref v) = pending_cursor {
+            store_set_or_skip(&store, source_id, source, "cursor", v).await?;
         }
     }
     Ok(())
@@ -601,7 +630,8 @@ async fn poll_page_offset_pagination(
             );
         }
         let path = response.url().path().to_string();
-        let body = response.text().await.context("read body")?;
+        let body_bytes = response.bytes().await.context("read body")?;
+        let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes {
             if body.len() as u64 > limit {
                 anyhow::bail!(
@@ -638,7 +668,7 @@ async fn poll_page_offset_pagination(
                 path.clone(),
                 event_value.clone(),
             );
-            event_sink.write_line(&emitted.to_ndjson_line()?)?;
+            emit_event_line(source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
         if events.len() < limit as usize {
@@ -655,7 +685,7 @@ async fn poll_page_offset_pagination(
             tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
         }
     }
-    store.set(source_id, "next_url", "").await?;
+    store_set_or_skip(&store, source_id, source, "next_url", "").await?;
     Ok(())
 }
 
@@ -718,7 +748,8 @@ async fn poll_single_page(
     }
 
     let path = response.url().path().to_string();
-    let body = response.text().await.context("read body")?;
+    let body_bytes = response.bytes().await.context("read body")?;
+    let body = bytes_to_string(&body_bytes, source.invalid_utf8)?;
     if let Some(limit) = source.max_response_bytes {
         if body.len() as u64 > limit {
             anyhow::bail!(
@@ -733,7 +764,7 @@ async fn poll_single_page(
         Err(e) => {
             if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
                 tracing::warn!(source = %source_id, error = %e, "parse error, skipping");
-                let _ = store.set(source_id, "next_url", "").await;
+                let _ = store_set_or_skip(&store, source_id, source, "next_url", "").await;
                 return Ok(());
             }
             return Err(e).context("parse response");
@@ -756,11 +787,11 @@ async fn poll_single_page(
             path.clone(),
             event_value.clone(),
         );
-        event_sink.write_line(&emitted.to_ndjson_line()?)?;
+        emit_event_line(source_id, source, &event_sink, &emitted)?;
     }
     metrics::record_events(source_id, emitted_count);
 
-    store.set(source_id, "next_url", "").await?;
+    store_set_or_skip(&store, source_id, source, "next_url", "").await?;
     tracing::info!(
         source = %source_id,
         events = emitted_count,
@@ -768,6 +799,94 @@ async fn poll_single_page(
         "poll completed"
     );
     Ok(())
+}
+
+/// Convert response body bytes to string; apply invalid_utf8 policy (replace/escape/fail).
+fn bytes_to_string(bytes: &[u8], invalid_utf8: Option<InvalidUtf8Behavior>) -> anyhow::Result<String> {
+    match invalid_utf8 {
+        Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
+            Ok(String::from_utf8_lossy(bytes).into_owned())
+        }
+        _ => String::from_utf8(bytes.to_vec())
+            .map_err(|e| anyhow::anyhow!("invalid UTF-8 in response: {}", e)),
+    }
+}
+
+/// Emit one event line; enforce max_event_bytes, record output errors.
+fn emit_event_line(
+    source_id: &str,
+    source: &SourceConfig,
+    event_sink: &Arc<dyn EventSink>,
+    emitted: &EmittedEvent,
+) -> anyhow::Result<()> {
+    let line = emitted.to_ndjson_line()?;
+    if let Some(max) = source.max_event_bytes {
+        if line.len() as u64 > max {
+            match source.max_event_bytes_behavior.unwrap_or(MaxEventBytesBehavior::Fail) {
+                MaxEventBytesBehavior::Truncate => {
+                    let max_usize = max as usize;
+                    let truncated: String = if max_usize >= 3 {
+                        format!(
+                            "{}...",
+                            line.chars().take(max_usize.saturating_sub(3)).collect::<String>()
+                        )
+                    } else {
+                        line.chars().take(max_usize).collect()
+                    };
+                    event_sink.write_line(&truncated).map_err(|e| {
+                        metrics::record_output_error(source_id);
+                        e
+                    })?;
+                    return Ok(());
+                }
+                MaxEventBytesBehavior::Skip => {
+                    tracing::warn!(
+                        source = %source_id,
+                        line_len = line.len(),
+                        max = max,
+                        "event line exceeds max_event_bytes, skipping"
+                    );
+                    return Ok(());
+                }
+                MaxEventBytesBehavior::Fail => {
+                    anyhow::bail!(
+                        "event line length {} exceeds max_event_bytes {}",
+                        line.len(),
+                        max
+                    );
+                }
+            }
+        }
+    }
+    event_sink.write_line(&line).map_err(|e| {
+        metrics::record_output_error(source_id);
+        e
+    })
+}
+
+/// Set state key; on error, fail or skip checkpoint per source config (e.g. state store disk full).
+async fn store_set_or_skip(
+    store: &Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    if let Err(e) = store.set(source_id, key, value).await {
+        if source.on_state_write_error == Some(OnStateWriteErrorBehavior::SkipCheckpoint) {
+            tracing::warn!(
+                source = %source_id,
+                key,
+                error = %e,
+                "state store write failed, skipping checkpoint"
+            );
+            Ok(())
+        } else {
+            Err(e.into())
+        }
+    } else {
+        Ok(())
+    }
 }
 
 /// Append initial_since query param to URL when configured (for first request).

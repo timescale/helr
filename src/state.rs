@@ -1,6 +1,9 @@
 //! State store contract: cursor, watermark, next_url per source.
 //!
 //! Implementations: in-memory (tests), SQLite (v0.1), Redis/Postgres (later).
+//!
+//! **Single-writer assumption:** Only one Hel process should use a given state store (e.g. one SQLite file).
+//! For multi-instance deployments use Redis or Postgres state backend.
 
 use async_trait::async_trait;
 use std::collections::HashMap;

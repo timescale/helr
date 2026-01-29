@@ -136,6 +136,70 @@ pub struct SourceConfig {
     /// Optional max size in bytes for a single response body; if exceeded, poll fails.
     #[serde(default)]
     pub max_response_bytes: Option<u64>,
+
+    /// When response body is not valid UTF-8: "replace" (U+FFFD), "escape", or "fail".
+    #[serde(default)]
+    pub invalid_utf8: Option<InvalidUtf8Behavior>,
+
+    /// Optional max size in bytes for a single emitted NDJSON line; if exceeded, apply max_event_bytes_behavior.
+    #[serde(default)]
+    pub max_event_bytes: Option<u64>,
+
+    /// When a single event line exceeds max_event_bytes: "truncate", "skip", or "fail".
+    #[serde(default)]
+    pub max_event_bytes_behavior: Option<MaxEventBytesBehavior>,
+
+    /// When to checkpoint state: "end_of_tick" (only after full poll) or "per_page" (after each page).
+    #[serde(default)]
+    pub checkpoint: Option<CheckpointTiming>,
+
+    /// When state store write fails (e.g. disk full): "fail" (default) or "skip_checkpoint" (log and continue).
+    #[serde(default)]
+    pub on_state_write_error: Option<OnStateWriteErrorBehavior>,
+}
+
+/// Behavior when state store write fails (e.g. disk full).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnStateWriteErrorBehavior {
+    /// Return error and fail the tick.
+    Fail,
+    /// Log error and continue (checkpoint not persisted; next restart re-ingests from previous).
+    SkipCheckpoint,
+}
+
+/// Behavior when response body contains invalid UTF-8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvalidUtf8Behavior {
+    /// Replace invalid sequences with U+FFFD.
+    Replace,
+    /// Replace with U+FFFD and escape in JSON (same as replace for body).
+    Escape,
+    /// Fail the request.
+    Fail,
+}
+
+/// Behavior when a single event serialized line exceeds max_event_bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaxEventBytesBehavior {
+    /// Truncate line and emit; increment metric.
+    Truncate,
+    /// Skip emitting this event; increment metric.
+    Skip,
+    /// Fail the poll.
+    Fail,
+}
+
+/// When to persist state (cursor/next_url).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointTiming {
+    /// Commit only after full poll tick (all pages). Fewer DB writes; on crash, re-ingest from previous tick.
+    EndOfTick,
+    /// Commit after each page. Fewer duplicates on crash.
+    PerPage,
 }
 
 /// Behavior when cursor is expired (4xx from API).
@@ -344,21 +408,79 @@ fn default_multiplier() -> f64 {
 }
 
 impl Config {
-    /// Load and parse config from path. Expands env vars (`$VAR`, `${VAR}`, `${VAR:-default}`) via shellexpand.
+    /// Load and parse config from path. Expands env vars; fails if any placeholder is unset (no default).
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("read config {:?}: {}", path, e))?;
-        let expanded = expand_env_vars(&s)?;
+        let expanded = expand_env_vars_strict(&s)?;
         let config: Config = serde_yaml::from_str(&expanded)
             .map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
         if config.sources.is_empty() {
             anyhow::bail!("config must have at least one source");
         }
+        validate_auth_secrets(&config)?;
         Ok(config)
     }
 }
 
-/// Expand env vars in config: `$VAR`, `${VAR}`, `${VAR:-default}`. Unset vars expand to empty (like os.ExpandEnv).
+/// Validate that all auth secrets (env or file) can be resolved. Fail at startup so health reflects "not ready".
+pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
+    for (source_id, source) in &config.sources {
+        if let Some(auth) = &source.auth {
+            match auth {
+                AuthConfig::Bearer { token_env, token_file } => {
+                    read_secret(token_file.as_deref(), token_env)
+                        .with_context(|| format!("source {}: bearer token", source_id))?;
+                }
+                AuthConfig::ApiKey { key_env, key_file, .. } => {
+                    read_secret(key_file.as_deref(), key_env)
+                        .with_context(|| format!("source {}: api key", source_id))?;
+                }
+                AuthConfig::Basic {
+                    user_env,
+                    user_file,
+                    password_env,
+                    password_file,
+                } => {
+                    read_secret(user_file.as_deref(), user_env)
+                        .with_context(|| format!("source {}: basic user", source_id))?;
+                    read_secret(password_file.as_deref(), password_env)
+                        .with_context(|| format!("source {}: basic password", source_id))?;
+                }
+                AuthConfig::OAuth2 {
+                    client_id_env,
+                    client_id_file,
+                    client_secret_env,
+                    client_secret_file,
+                    refresh_token_env,
+                    refresh_token_file,
+                    ..
+                } => {
+                    read_secret(client_id_file.as_deref(), client_id_env)
+                        .with_context(|| format!("source {}: oauth2 client_id", source_id))?;
+                    read_secret(client_secret_file.as_deref(), client_secret_env)
+                        .with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
+                    read_secret(refresh_token_file.as_deref(), refresh_token_env)
+                        .with_context(|| format!("source {}: oauth2 refresh_token", source_id))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Expand env vars in config: `$VAR`, `${VAR}`, `${VAR:-default}`. Fails if any var is unset (no default).
+fn expand_env_vars_strict(s: &str) -> anyhow::Result<String> {
+    shellexpand::env_with_context(s, |var: &str| {
+        std::env::var(var)
+            .map(|v| Ok(Some(std::borrow::Cow::Owned(v))))
+            .unwrap_or_else(|e| Err(e))
+    })
+    .map(|cow| cow.into_owned())
+    .map_err(|e| anyhow::anyhow!("config placeholder ${{{}}} is unset: {}", e.var_name, e.cause))
+}
+
+/// Expand env vars; unset vars expand to empty. Used in tests.
 pub(crate) fn expand_env_vars(s: &str) -> anyhow::Result<String> {
     fn context(var: &str) -> Result<Option<std::borrow::Cow<'static, str>>, std::env::VarError> {
         match std::env::var(var) {
@@ -527,6 +649,7 @@ sources:
     since_param: after
     on_parse_error: skip
     max_response_bytes: 5242880
+    on_state_write_error: skip_checkpoint
     pagination:
       strategy: link_header
       rel: next
@@ -539,6 +662,33 @@ sources:
         assert_eq!(s.since_param.as_deref(), Some("after"));
         assert_eq!(s.on_parse_error, Some(OnParseErrorBehavior::Skip));
         assert_eq!(s.max_response_bytes, Some(5_242_880));
+        assert_eq!(s.on_state_write_error, Some(OnStateWriteErrorBehavior::SkipCheckpoint));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_unset_placeholder_fails() {
+        let dir = std::env::temp_dir().join("hel_config_unset_placeholder");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  x:
+    url: "https://${HEL_UNSET_PLACEHOLDER_TEST}/logs"
+    pagination:
+      strategy: link_header
+"#,
+        )
+        .unwrap();
+        let err = Config::load(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("unset") || err.to_string().contains("HEL_UNSET_PLACEHOLDER_TEST"),
+            "expected unset placeholder error, got: {}",
+            err
+        );
         let _ = std::fs::remove_file(&path);
     }
 

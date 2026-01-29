@@ -10,6 +10,7 @@ struct MetricsInner {
     requests_total: IntCounterVec,
     events_emitted_total: IntCounterVec,
     errors_total: IntCounterVec,
+    output_errors_total: IntCounterVec,
     request_duration_seconds: prometheus::HistogramVec,
     circuit_breaker_state: IntGaugeVec,
 }
@@ -26,6 +27,10 @@ pub fn init() -> Result<(), prometheus::Error> {
     )?;
     let errors_total = IntCounterVec::new(
         Opts::new("hel_errors_total", "Total errors by source"),
+        &["source"],
+    )?;
+    let output_errors_total = IntCounterVec::new(
+        Opts::new("hel_output_errors_total", "Output write errors (e.g. broken pipe, disk full)"),
         &["source"],
     )?;
     let request_duration_seconds = prometheus::HistogramVec::new(
@@ -47,6 +52,7 @@ pub fn init() -> Result<(), prometheus::Error> {
     prometheus::register(Box::new(requests_total.clone()))?;
     prometheus::register(Box::new(events_emitted_total.clone()))?;
     prometheus::register(Box::new(errors_total.clone()))?;
+    prometheus::register(Box::new(output_errors_total.clone()))?;
     prometheus::register(Box::new(request_duration_seconds.clone()))?;
     prometheus::register(Box::new(circuit_breaker_state.clone()))?;
 
@@ -54,6 +60,7 @@ pub fn init() -> Result<(), prometheus::Error> {
         requests_total,
         events_emitted_total,
         errors_total,
+        output_errors_total,
         request_duration_seconds,
         circuit_breaker_state,
     });
@@ -81,6 +88,13 @@ pub fn record_events(source: &str, count: u64) {
 pub fn record_error(source: &str) {
     if let Some(m) = METRICS.get() {
         let _ = m.errors_total.with_label_values(&[source]).inc();
+    }
+}
+
+/// Record one output write error (e.g. broken pipe, disk full).
+pub fn record_output_error(source: &str) {
+    if let Some(m) = METRICS.get() {
+        let _ = m.output_errors_total.with_label_values(&[source]).inc();
     }
 }
 

@@ -101,9 +101,23 @@ enum StateSubcommand {
     Import,
 }
 
+/// Ignore SIGPIPE so writes to a broken pipe return EPIPE instead of killing the process.
+#[cfg(unix)]
+fn ignore_sigpipe() {
+    unsafe {
+        let _ = nix::sys::signal::signal(
+            nix::sys::signal::Signal::SIGPIPE,
+            nix::sys::signal::SigHandler::SigIgn,
+        );
+    }
+}
+#[cfg(not(unix))]
+fn ignore_sigpipe() {}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    ignore_sigpipe();
 
     if cli.dry_run {
         tracing::info!("dry-run: would load config from {:?}", cli.config);
@@ -125,18 +139,22 @@ async fn main() -> anyhow::Result<()> {
                     output,
                     output_rotate,
                 }) => {
-                    let event_sink: Arc<dyn EventSink> = match output {
+                    let (event_sink, output_path): (Arc<dyn EventSink>, Option<PathBuf>) = match output {
                         Some(path) => {
                             let rotation = output_rotate
                                 .as_deref()
                                 .map(parse_rotation)
                                 .transpose()?
                                 .unwrap_or(RotationPolicy::None);
-                            Arc::new(FileSink::new(path, rotation)?)
+                            let path_clone = path.clone();
+                            (
+                                Arc::new(FileSink::new(&path, rotation)?),
+                                Some(path_clone),
+                            )
                         }
-                        None => Arc::new(StdoutSink),
+                        None => (Arc::new(StdoutSink), None),
                     };
-                    run_collector(&config, *once, source.as_deref(), event_sink).await
+                    run_collector(&config, *once, source.as_deref(), event_sink, output_path).await
                 }
                 Some(Commands::Test { source, .. }) => {
                     run_test(&config, source, Arc::new(StdoutSink)).await
@@ -145,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
                     run_state(&config, subcommand.as_ref()).await
                 }
                 None => {
-                    run_collector(&config, false, None, Arc::new(StdoutSink)).await
+                    run_collector(&config, false, None, Arc::new(StdoutSink), None).await
                 }
                 _ => unreachable!(),
             }
@@ -352,6 +370,7 @@ async fn run_collector(
     once: bool,
     source_filter: Option<&str>,
     event_sink: Arc<dyn EventSink>,
+    output_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     tracing::info!("loaded config");
 
@@ -423,11 +442,31 @@ async fn run_collector(
                 .parse()
                 .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
             let listener = tokio::net::TcpListener::bind(addr).await?;
+            let output_path_ready = Arc::new(output_path);
             tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
             tokio::spawn(async move {
+                let output_path = output_path_ready;
                 let app = axum::Router::new()
                     .route("/healthz", get(|| async { StatusCode::OK }))
-                    .route("/readyz", get(|| async { StatusCode::OK }))
+                    .route(
+                        "/readyz",
+                        get({
+                            let output_path = output_path.clone();
+                            move || {
+                                let path = output_path.clone();
+                                async move {
+                                    if let Some(p) = path.as_ref() {
+                                        match std::fs::OpenOptions::new().append(true).open(p) {
+                                            Ok(_) => StatusCode::OK,
+                                            Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+                                        }
+                                    } else {
+                                        StatusCode::OK
+                                    }
+                                }
+                            }
+                        }),
+                    )
                     .route("/startupz", get(|| async { StatusCode::OK }));
                 if let Err(e) = axum::serve(listener, app).await {
                     tracing::error!("health server error: {}", e);

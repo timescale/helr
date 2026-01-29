@@ -1,4 +1,7 @@
 //! Event output: stdout or file with optional rotation.
+//!
+//! Line atomicity: each NDJSON line is written with one write + flush so a crash does not split
+//! a line in the middle (best-effort; consumer should skip invalid lines).
 
 use std::io::Write;
 use std::path::Path;
@@ -14,13 +17,22 @@ pub trait EventSink: Send + Sync {
     }
 }
 
-/// Emit to stdout.
+/// Emit to stdout. Handles BrokenPipe (e.g. consumer exited) by returning error so caller can exit non-zero.
 pub struct StdoutSink;
 
 impl EventSink for StdoutSink {
     fn write_line(&self, line: &str) -> anyhow::Result<()> {
-        println!("{}", line);
-        Ok(())
+        let mut out = std::io::stdout().lock();
+        out.write_all(line.as_bytes())
+            .and_then(|()| out.write_all(b"\n"))
+            .and_then(|()| out.flush())
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::BrokenPipe {
+                    anyhow::anyhow!("broken pipe (SIGPIPE): consumer exited")
+                } else {
+                    e.into()
+                }
+            })
     }
 }
 

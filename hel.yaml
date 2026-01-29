@@ -38,6 +38,11 @@ sources:
     # since_param: since     # query param name for initial_since (default: since)
     # on_parse_error: skip   # skip (log and stop this poll) or fail (default)
     # max_response_bytes: 10485760   # fail if a single response body exceeds this
+    # invalid_utf8: replace   # when response body is not UTF-8: replace (U+FFFD), escape, or fail
+    # max_event_bytes: 1048576   # max NDJSON line size; apply max_event_bytes_behavior if exceeded
+    # max_event_bytes_behavior: truncate   # truncate | skip | fail
+    # checkpoint: end_of_tick   # end_of_tick (commit only after full poll) or per_page
+    # on_state_write_error: skip_checkpoint   # when state store write fails (e.g. disk full): fail or skip_checkpoint
     resilience:
       timeout_secs: 30
       retries:

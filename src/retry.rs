@@ -3,7 +3,7 @@
 
 use crate::client::build_request;
 use crate::config::{AuthConfig, RateLimitConfig, RetryConfig, SourceConfig};
-use crate::oauth2::{get_oauth_token, OAuth2TokenCache};
+use crate::oauth2::{get_oauth_token, invalidate_token, OAuth2TokenCache};
 use anyhow::Context;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Response};
@@ -109,6 +109,7 @@ pub async fn execute_with_retry(
     };
 
     let mut last_err = None;
+    let mut auth_refresh_attempted = false;
     for attempt in 0..retry.max_attempts {
         let bearer = bearer_for_request(client, source, source_id, token_cache).await?;
         let req = build_request(client, source, url, bearer.as_deref())?;
@@ -116,6 +117,17 @@ pub async fn execute_with_retry(
             Ok(response) => {
                 if response.status().is_success() {
                     return Ok(response);
+                }
+                if response.status().as_u16() == 401
+                    && matches!(source.auth, Some(AuthConfig::OAuth2 { .. }))
+                    && token_cache.is_some()
+                    && !auth_refresh_attempted
+                {
+                    auth_refresh_attempted = true;
+                    let _ = response.text().await;
+                    invalidate_token(token_cache.unwrap(), source_id).await;
+                    warn!(source = %source_id, "401 Unauthorized, refreshed OAuth token, retrying");
+                    continue;
                 }
                 if !is_retryable_status(response.status()) {
                     let status = response.status();

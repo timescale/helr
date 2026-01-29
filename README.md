@@ -35,7 +35,11 @@ hel state import
 
 ## Config
 
-See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time. Corner-case options: `cursor_expired` (reset \| fail), `initial_since` + `since_param`, `on_parse_error` (skip \| fail), `max_response_bytes`.
+See `hel.yaml` for a minimal example. Required: `sources` with at least one source (`url`, optional `schedule`, `auth`, `pagination`, `resilience`). Placeholders like `${OKTA_DOMAIN}` are expanded at load time. Corner-case options: `cursor_expired`, `initial_since`/`since_param`, `on_parse_error`, `max_response_bytes`, `invalid_utf8`, `max_event_bytes`/`max_event_bytes_behavior`, `checkpoint`, `on_state_write_error`. Unset config placeholders and missing auth secrets fail at startup.
+
+**Output:** Events are emitted in page order (order received). Timestamp order across pages is not guaranteed unless the API guarantees it; downstream can sort if needed.
+
+**State:** Single-writer assumption — only one Hel process should use a given state store (e.g. one SQLite file). For multi-instance deployments use Redis or Postgres state backend.
 
 ## Status
 
