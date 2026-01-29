@@ -77,15 +77,64 @@ async fn poll_one_source(
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
 ) -> anyhow::Result<()> {
-    let start = Instant::now();
     let client = build_client(source.resilience.as_ref())?;
 
-    let (rel, max_pages) = match &source.pagination {
+    match &source.pagination {
         Some(PaginationConfig::LinkHeader { rel, max_pages }) => {
-            (rel.as_str(), max_pages.unwrap_or(100))
+            poll_link_header(
+                store,
+                source_id,
+                source,
+                &client,
+                rel.as_str(),
+                max_pages.unwrap_or(100),
+                circuit_store,
+                token_cache,
+                dedupe_store,
+            )
+            .await
+        }
+        Some(PaginationConfig::Cursor {
+            cursor_param,
+            cursor_path,
+            max_pages,
+        }) => {
+            poll_cursor_pagination(
+                store,
+                source_id,
+                source,
+                &client,
+                cursor_param,
+                cursor_path,
+                max_pages.unwrap_or(100),
+                circuit_store,
+                token_cache,
+                dedupe_store,
+            )
+            .await
+        }
+        Some(PaginationConfig::PageOffset {
+            page_param,
+            limit_param,
+            limit,
+            max_pages,
+        }) => {
+            poll_page_offset_pagination(
+                store,
+                source_id,
+                source,
+                &client,
+                page_param,
+                limit_param,
+                *limit,
+                max_pages.unwrap_or(100),
+                circuit_store,
+                token_cache,
+                dedupe_store,
+            )
+            .await
         }
         _ => {
-            // No link-header pagination: single request
             return poll_single_page(
                 store,
                 source_id,
@@ -98,8 +147,22 @@ async fn poll_one_source(
             )
             .await;
         }
-    };
+    }
+}
 
+/// Link-header pagination: follow rel="next" until no more or max_pages.
+async fn poll_link_header(
+    store: Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    client: &reqwest::Client,
+    rel: &str,
+    max_pages: u32,
+    circuit_store: CircuitStore,
+    token_cache: OAuth2TokenCache,
+    dedupe_store: DedupeStore,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
     let mut url: String = store
         .get(source_id, "next_url")
         .await?
@@ -232,7 +295,268 @@ async fn poll_one_source(
             break;
         }
     }
+    Ok(())
+}
 
+/// Cursor-in-body pagination: get cursor from response JSON path, pass as query param on next request.
+async fn poll_cursor_pagination(
+    store: Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    client: &reqwest::Client,
+    cursor_param: &str,
+    cursor_path: &str,
+    max_pages: u32,
+    circuit_store: CircuitStore,
+    token_cache: OAuth2TokenCache,
+    dedupe_store: DedupeStore,
+) -> anyhow::Result<()> {
+    use reqwest::Url;
+    let start = Instant::now();
+    let base_url = source.url.as_str();
+    let mut cursor: Option<String> = store
+        .get(source_id, "cursor")
+        .await?
+        .filter(|s| !s.is_empty());
+    let mut page = 0u32;
+    let mut total_events = 0u64;
+    let mut total_bytes: u64 = 0;
+    let max_bytes = source.max_bytes;
+    loop {
+        page += 1;
+        if page > max_pages {
+            tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
+            break;
+        }
+        let url = if let Some(ref c) = cursor {
+            let mut u = Url::parse(base_url).context("cursor pagination base url")?;
+            u.query_pairs_mut().append_pair(cursor_param, c);
+            u.to_string()
+        } else {
+            base_url.to_string()
+        };
+        if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+            circuit::allow_request(&circuit_store, source_id, cb)
+                .await
+                .context("circuit open")?;
+        }
+        let req_start = std::time::Instant::now();
+        let response = match execute_with_retry(
+            client,
+            source,
+            source_id,
+            &url,
+            source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
+            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            Some(&token_cache),
+        )
+        .await
+        {
+            Ok(r) => {
+                let success = r.status().as_u16() < 500;
+                if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, success).await;
+                }
+                metrics::record_request(
+                    source_id,
+                    status_class(r.status().as_u16()),
+                    req_start.elapsed().as_secs_f64(),
+                );
+                r
+            }
+            Err(e) => {
+                if let Some(cb) =
+                    source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, false).await;
+                }
+                metrics::record_request(source_id, "error", req_start.elapsed().as_secs_f64());
+                metrics::record_error(source_id);
+                return Err(e).context("http request");
+            }
+        };
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "http {} {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            );
+        }
+        let path = response.url().path().to_string();
+        let body = response.text().await.context("read body")?;
+        total_bytes += body.len() as u64;
+        if let Some(limit) = max_bytes {
+            if total_bytes > limit {
+                tracing::warn!(
+                    source = %source_id,
+                    total_bytes,
+                    max_bytes = limit,
+                    "reached max_bytes limit, stopping cursor pagination"
+                );
+                break;
+            }
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&body).context("parse response json")?;
+        let events = parse_events_from_value(&value)?;
+        let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
+        let mut emitted_count = 0u64;
+        for event_value in events.iter() {
+            if let Some(d) = &source.dedupe {
+                let id = event_id(event_value, &d.id_field).unwrap_or_default();
+                if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                    continue;
+                }
+            }
+            total_events += 1;
+            emitted_count += 1;
+            let ts = event_ts(event_value);
+            let emitted = EmittedEvent::new(
+                ts,
+                source_id.to_string(),
+                path.clone(),
+                event_value.clone(),
+            );
+            println!("{}", emitted.to_ndjson_line()?);
+        }
+        metrics::record_events(source_id, emitted_count);
+        match next_cursor {
+            Some(c) => {
+                store.set(source_id, "cursor", &c).await?;
+                cursor = Some(c);
+                tracing::debug!(
+                    source = %source_id,
+                    page = page,
+                    events = events.len(),
+                    "next cursor page"
+                );
+            }
+            None => {
+                store.set(source_id, "cursor", "").await?;
+                tracing::info!(
+                    source = %source_id,
+                    pages = page,
+                    events = total_events,
+                    duration_ms = start.elapsed().as_millis(),
+                    "poll completed (cursor)"
+                );
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Page/offset pagination: increment page (or offset) each request, stop when empty or max_pages.
+async fn poll_page_offset_pagination(
+    store: Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    client: &reqwest::Client,
+    page_param: &str,
+    limit_param: &str,
+    limit: u32,
+    max_pages: u32,
+    circuit_store: CircuitStore,
+    token_cache: OAuth2TokenCache,
+    dedupe_store: DedupeStore,
+) -> anyhow::Result<()> {
+    use reqwest::Url;
+    let start = Instant::now();
+    let base_url = source.url.as_str();
+    let mut total_events = 0u64;
+    for page in 1..=max_pages {
+        let mut u = Url::parse(base_url).context("page/offset base url")?;
+        u.query_pairs_mut().append_pair(page_param, &page.to_string());
+        u.query_pairs_mut().append_pair(limit_param, &limit.to_string());
+        let url = u.to_string();
+        if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+            circuit::allow_request(&circuit_store, source_id, cb)
+                .await
+                .context("circuit open")?;
+        }
+        let req_start = std::time::Instant::now();
+        let response = match execute_with_retry(
+            client,
+            source,
+            source_id,
+            &url,
+            source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
+            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            Some(&token_cache),
+        )
+        .await
+        {
+            Ok(r) => {
+                let success = r.status().as_u16() < 500;
+                if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, success).await;
+                }
+                metrics::record_request(
+                    source_id,
+                    status_class(r.status().as_u16()),
+                    req_start.elapsed().as_secs_f64(),
+                );
+                r
+            }
+            Err(e) => {
+                if let Some(cb) =
+                    source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, false).await;
+                }
+                metrics::record_request(source_id, "error", req_start.elapsed().as_secs_f64());
+                metrics::record_error(source_id);
+                return Err(e).context("http request");
+            }
+        };
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "http {} {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            );
+        }
+        let path = response.url().path().to_string();
+        let body = response.text().await.context("read body")?;
+        let events = parse_events_from_body(&body)?;
+        let mut emitted_count = 0u64;
+        for event_value in events.iter() {
+            if let Some(d) = &source.dedupe {
+                let id = event_id(event_value, &d.id_field).unwrap_or_default();
+                if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                    continue;
+                }
+            }
+            total_events += 1;
+            emitted_count += 1;
+            let ts = event_ts(event_value);
+            let emitted = EmittedEvent::new(
+                ts,
+                source_id.to_string(),
+                path.clone(),
+                event_value.clone(),
+            );
+            println!("{}", emitted.to_ndjson_line()?);
+        }
+        metrics::record_events(source_id, emitted_count);
+        if events.len() < limit as usize {
+            tracing::info!(
+                source = %source_id,
+                pages = page,
+                events = total_events,
+                duration_ms = start.elapsed().as_millis(),
+                "poll completed (page/offset)"
+            );
+            break;
+        }
+        if page == max_pages {
+            tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
+        }
+    }
+    store.set(source_id, "next_url", "").await?;
     Ok(())
 }
 
@@ -331,6 +655,11 @@ async fn poll_single_page(
 fn parse_events_from_body(body: &str) -> anyhow::Result<Vec<serde_json::Value>> {
     let value: serde_json::Value =
         serde_json::from_str(body).context("parse response json")?;
+    parse_events_from_value(&value)
+}
+
+/// Extract events array from parsed JSON (same keys as parse_events_from_body).
+fn parse_events_from_value(value: &serde_json::Value) -> anyhow::Result<Vec<serde_json::Value>> {
     if let Some(arr) = value.as_array() {
         return Ok(arr.clone());
     }
@@ -343,7 +672,16 @@ fn parse_events_from_body(body: &str) -> anyhow::Result<Vec<serde_json::Value>> 
             }
         }
     }
-    Ok(vec![value])
+    Ok(vec![value.clone()])
+}
+
+/// Get string at dotted path in JSON (e.g. "next_cursor", "meta.next_page_token").
+fn json_path_str(value: &serde_json::Value, path: &str) -> Option<String> {
+    let mut v = value;
+    for segment in path.split('.') {
+        v = v.get(segment)?;
+    }
+    v.as_str().map(|s| s.to_string())
 }
 
 /// Extract event ID from JSON using dotted path (e.g. "uuid", "id", "event.id").
@@ -378,5 +716,44 @@ fn status_class(status: u16) -> &'static str {
         400..=499 => "4xx",
         500..=599 => "5xx",
         _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_events_from_value_top_level_array() {
+        let v = serde_json::json!([{"id": 1}, {"id": 2}]);
+        let events = parse_events_from_value(&v).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].get("id"), Some(&serde_json::json!(1)));
+    }
+
+    #[test]
+    fn test_parse_events_from_value_items_key() {
+        let v = serde_json::json!({"items": [{"id": 1}], "next_cursor": "abc"});
+        let events = parse_events_from_value(&v).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].get("id"), Some(&serde_json::json!(1)));
+    }
+
+    #[test]
+    fn test_json_path_str_simple() {
+        let v = serde_json::json!({"next_cursor": "xyz"});
+        assert_eq!(json_path_str(&v, "next_cursor"), Some("xyz".into()));
+    }
+
+    #[test]
+    fn test_json_path_str_dotted() {
+        let v = serde_json::json!({"meta": {"next_page_token": "token123"}});
+        assert_eq!(json_path_str(&v, "meta.next_page_token"), Some("token123".into()));
+    }
+
+    #[test]
+    fn test_json_path_str_missing() {
+        let v = serde_json::json!({"items": []});
+        assert_eq!(json_path_str(&v, "next_cursor"), None);
     }
 }

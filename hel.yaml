@@ -55,3 +55,18 @@ sources:
 #     client_secret_env: GWS_CLIENT_SECRET
 #     refresh_token_env: GWS_REFRESH_TOKEN
 #     scopes: []
+
+# Cursor-in-body pagination (e.g. API returns {"items": [...], "next_cursor": "abc"}):
+#   pagination:
+#     strategy: cursor
+#     cursor_param: after
+#     cursor_path: next_cursor   # dotted path, e.g. meta.next_page_token
+#     max_pages: 100
+
+# Page/offset pagination (e.g. ?page=1&limit=100):
+#   pagination:
+#     strategy: page_offset
+#     page_param: page
+#     limit_param: limit
+#     limit: 100
+#     max_pages: 100
