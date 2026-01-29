@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+mod circuit;
 mod client;
 mod config;
 mod event;
@@ -17,6 +18,7 @@ mod state;
 
 use axum::http::StatusCode;
 use axum::routing::get;
+use circuit::new_circuit_store;
 use config::Config;
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
 use std::net::SocketAddr;
@@ -169,7 +171,8 @@ async fn run_collector(
         _ => Arc::new(MemoryStateStore::new()),
     };
 
-    poll::run_one_tick(&config, store.clone(), source_filter).await?;
+    let circuit_store = new_circuit_store();
+    poll::run_one_tick(&config, store.clone(), source_filter, circuit_store.clone()).await?;
 
     if once {
         return Ok(());
@@ -198,7 +201,9 @@ async fn run_collector(
         tick += 1;
         tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
         tokio::time::sleep(delay).await;
-        if let Err(e) = poll::run_one_tick(&config, store.clone(), source_filter).await {
+        if let Err(e) =
+            poll::run_one_tick(&config, store.clone(), source_filter, circuit_store.clone()).await
+        {
             tracing::error!("tick failed: {}", e);
             // continue running; next tick may succeed
         }

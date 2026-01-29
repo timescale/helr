@@ -29,3 +29,8 @@ sources:
         initial_backoff_secs: 1
         max_backoff_secs: 30
         multiplier: 2.0
+      circuit_breaker:
+        enabled: true
+        failure_threshold: 5
+        success_threshold: 2
+        half_open_timeout_secs: 60

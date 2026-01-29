@@ -1,5 +1,6 @@
 //! Single poll tick: load state → fetch pages (link-header) → emit NDJSON → commit state.
 
+use crate::circuit::{self, CircuitStore};
 use crate::client::build_client;
 use crate::config::{Config, PaginationConfig, SourceConfig};
 use crate::event::EmittedEvent;
@@ -17,6 +18,7 @@ pub async fn run_one_tick(
     config: &Config,
     store: Arc<dyn StateStore>,
     source_filter: Option<&str>,
+    circuit_store: CircuitStore,
 ) -> anyhow::Result<()> {
     for (source_id, source) in &config.sources {
         if let Some(filter) = source_filter {
@@ -24,7 +26,9 @@ pub async fn run_one_tick(
                 continue;
             }
         }
-        if let Err(e) = poll_one_source(store.clone(), source_id, source).await {
+        if let Err(e) =
+            poll_one_source(store.clone(), source_id, source, circuit_store.clone()).await
+        {
             tracing::error!(source = %source_id, "poll failed: {}", e);
             // continue with other sources
         }
@@ -32,11 +36,12 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source))]
+#[instrument(skip(store, source, circuit_store))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
+    circuit_store: CircuitStore,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let client = build_client(source.resilience.as_ref())?;
@@ -47,7 +52,8 @@ async fn poll_one_source(
         }
         _ => {
             // No link-header pagination: single request
-            return poll_single_page(store, source_id, source, &client, &source.url).await;
+            return poll_single_page(store, source_id, source, &client, &source.url, circuit_store)
+                .await;
         }
     };
 
@@ -66,14 +72,36 @@ async fn poll_one_source(
             break;
         }
 
-        let response = execute_with_retry(
+        if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+            circuit::allow_request(&circuit_store, source_id, cb)
+                .await
+                .context("circuit open")?;
+        }
+        let response = match execute_with_retry(
             &client,
             source,
             &url,
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
         )
         .await
-        .context("http request")?;
+        {
+            Ok(r) => {
+                let success = r.status().as_u16() < 500;
+                if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, success).await;
+                }
+                r
+            }
+            Err(e) => {
+                if let Some(cb) =
+                    source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, false).await;
+                }
+                return Err(e).context("http request");
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -128,16 +156,36 @@ async fn poll_single_page(
     source: &SourceConfig,
     client: &reqwest::Client,
     url: &str,
+    circuit_store: CircuitStore,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
-    let response = execute_with_retry(
+    if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+        circuit::allow_request(&circuit_store, source_id, cb)
+            .await
+            .context("circuit open")?;
+    }
+    let response = match execute_with_retry(
         client,
         source,
         url,
         source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
     )
     .await
-    .context("http request")?;
+    {
+        Ok(r) => {
+            let success = r.status().as_u16() < 500;
+            if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+                circuit::record_result(&circuit_store, source_id, cb, success).await;
+            }
+            r
+        }
+        Err(e) => {
+            if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+                circuit::record_result(&circuit_store, source_id, cb, false).await;
+            }
+            return Err(e).context("http request");
+        }
+    };
 
     if !response.status().is_success() {
         let status = response.status();

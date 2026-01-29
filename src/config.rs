@@ -162,6 +162,34 @@ pub struct ResilienceConfig {
     pub timeout_secs: u64,
     #[serde(default)]
     pub retries: Option<RetryConfig>,
+    #[serde(default)]
+    pub circuit_breaker: Option<CircuitBreakerConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_cb_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+    #[serde(default = "default_success_threshold")]
+    pub success_threshold: u32,
+    #[serde(default = "default_half_open_timeout_secs")]
+    pub half_open_timeout_secs: u64,
+}
+
+fn default_cb_enabled() -> bool {
+    true
+}
+fn default_failure_threshold() -> u32 {
+    5
+}
+fn default_success_threshold() -> u32 {
+    2
+}
+fn default_half_open_timeout_secs() -> u64 {
+    60
 }
 
 fn default_timeout_secs() -> u64 {
