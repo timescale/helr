@@ -95,10 +95,29 @@ async fn main() -> anyhow::Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("hel=info"))
     };
 
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .with(filter)
-        .init();
+    let use_json = std::env::var("HEL_LOG_FORMAT").as_deref() == Ok("json")
+        || std::env::var("RUST_LOG_JSON").as_deref() == Ok("1");
+    if use_json {
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_ansi(false)
+                    .with_target(false)
+                    .event_format(tracing_subscriber::fmt::format().json()),
+            )
+            .with(filter)
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_target(true),
+            )
+            .with(filter)
+            .init();
+    }
 
     if cli.dry_run {
         tracing::info!("dry-run: would load config from {:?}", cli.config);

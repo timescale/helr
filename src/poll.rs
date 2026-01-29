@@ -9,6 +9,7 @@ use crate::state::StateStore;
 use anyhow::Context;
 use chrono::Utc;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::instrument;
 
 /// Run one poll tick for all sources (or only those matching source_filter).
@@ -37,6 +38,7 @@ async fn poll_one_source(
     source_id: &str,
     source: &SourceConfig,
 ) -> anyhow::Result<()> {
+    let start = Instant::now();
     let client = build_client(source.resilience.as_ref())?;
 
     let (rel, max_pages) = match &source.pagination {
@@ -56,6 +58,7 @@ async fn poll_one_source(
         .unwrap_or_else(|| source.url.clone());
 
     let mut page = 0u32;
+    let mut total_events = 0u64;
     loop {
         page += 1;
         if page > max_pages {
@@ -83,6 +86,7 @@ async fn poll_one_source(
         let body = response.text().await.context("read body")?;
         let events = parse_events_from_body(&body)?;
 
+        total_events += events.len() as u64;
         for event_value in events.iter() {
             let ts = event_ts(event_value);
             let emitted = EmittedEvent::new(
@@ -103,7 +107,13 @@ async fn poll_one_source(
             tracing::debug!(source = %source_id, page = page, events = events.len(), "next page");
         } else {
             store.set(source_id, "next_url", "").await?;
-            tracing::info!(source = %source_id, pages = page, "poll done");
+            tracing::info!(
+                source = %source_id,
+                pages = page,
+                events = total_events,
+                duration_ms = start.elapsed().as_millis(),
+                "poll completed"
+            );
             break;
         }
     }
@@ -119,6 +129,7 @@ async fn poll_single_page(
     client: &reqwest::Client,
     url: &str,
 ) -> anyhow::Result<()> {
+    let start = Instant::now();
     let response = execute_with_retry(
         client,
         source,
@@ -150,7 +161,13 @@ async fn poll_single_page(
     }
 
     store.set(source_id, "next_url", "").await?;
-    tracing::info!(source = %source_id, events = events.len(), "poll done");
+    let events_count = events.len();
+    tracing::info!(
+        source = %source_id,
+        events = events_count,
+        duration_ms = start.elapsed().as_millis(),
+        "poll completed"
+    );
     Ok(())
 }
 
