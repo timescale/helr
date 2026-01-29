@@ -1,9 +1,7 @@
-//! OAuth2 refresh using the oauth2 crate (RFC 6749). Tokens cached in memory.
+//! OAuth2 refresh: obtain access_token via refresh_token grant; cache in memory.
 
 use crate::config::AuthConfig;
 use anyhow::Context;
-use oauth2::basic::BasicClient;
-use oauth2::{ClientId, ClientSecret, RefreshToken, TokenResponse, TokenUrl};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,22 +57,35 @@ pub async fn get_oauth_token(
     let refresh_token = std::env::var(refresh_token_env)
         .with_context(|| format!("env {} not set (oauth2 refresh_token)", refresh_token_env))?;
 
-    let oauth2_client = BasicClient::new(ClientId::new(client_id))
-        .set_client_secret(ClientSecret::new(client_secret))
-        .set_token_uri(
-            TokenUrl::new(token_url.clone()).context("oauth2 token_url invalid")?,
-        );
+    let mut form = std::collections::HashMap::new();
+    form.insert("grant_type", "refresh_token");
+    form.insert("client_id", client_id.as_str());
+    form.insert("client_secret", client_secret.as_str());
+    form.insert("refresh_token", refresh_token.as_str());
 
-    let token_result = oauth2_client
-        .exchange_refresh_token(&RefreshToken::new(refresh_token))
-        .request_async(client)
+    let response: reqwest::Response = client
+        .post(token_url.as_str())
+        .form(&form)
+        .send()
         .await
-        .map_err(|e| anyhow::anyhow!("oauth2 token request: {}", e))?;
+        .context("oauth2 token request")?;
 
-    let access_token = token_result.access_token().secret().to_string();
-    let expires_in = token_result
-        .expires_in()
-        .map(|d| d.as_secs())
+    let status = response.status();
+    let body = response.text().await.context("oauth2 token response body")?;
+    if !status.is_success() {
+        anyhow::bail!("oauth2 token error {}: {}", status, body);
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&body).context("oauth2 token response json")?;
+    let access_token = json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .context("oauth2 response missing access_token")?
+        .to_string();
+    let expires_in = json
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
         .unwrap_or(3600);
     let expires_at = now + Duration::from_secs(expires_in);
 
