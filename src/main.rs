@@ -87,6 +87,8 @@ enum StateSubcommand {
     Show { source: String },
     Reset { source: String },
     Export,
+    /// Import state from JSON (same format as export). Reads from stdin.
+    Import,
 }
 
 #[tokio::main]
@@ -239,11 +241,13 @@ async fn run_state(
         Some(StateSubcommand::Show { source }) => state_show(store.as_ref(), source).await,
         Some(StateSubcommand::Reset { source }) => state_reset(store.as_ref(), source).await,
         Some(StateSubcommand::Export) => state_export(store.as_ref()).await,
+        Some(StateSubcommand::Import) => state_import(store.as_ref()).await,
         None => {
-            eprintln!("usage: hel state {{show,reset,export}}");
+            eprintln!("usage: hel state {{show,reset,export,import}}");
             eprintln!("  show <source>   show state keys and values for a source");
             eprintln!("  reset <source>  clear all state for a source");
-            eprintln!("  export         export all state as JSON to stdout");
+            eprintln!("  export         write all state as JSON to stdout");
+            eprintln!("  import         read state from JSON on stdin (same format as export)");
             Ok(())
         }
     }
@@ -283,6 +287,28 @@ async fn state_export(store: &dyn StateStore) -> anyhow::Result<()> {
         out.insert(source_id, serde_json::Value::Object(m));
     }
     println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(out))?);
+    Ok(())
+}
+
+/// Import state from JSON on stdin (same shape as export: { "source_id": { "key": "value", ... }, ... }).
+async fn state_import(store: &dyn StateStore) -> anyhow::Result<()> {
+    let stdin = std::io::stdin();
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut stdin.lock(), &mut input)?;
+    let root: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&input).map_err(|e| anyhow::anyhow!("invalid JSON: {}", e))?;
+    for (source_id, val) in root {
+        let obj = val
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("source {:?} value must be an object", source_id))?;
+        for (key, v) in obj {
+            let s = v
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("state value for {:?}.{} must be a string", source_id, key))?;
+            store.set(&source_id, key, s).await?;
+        }
+    }
+    tracing::info!("state import complete");
     Ok(())
 }
 
