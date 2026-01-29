@@ -84,6 +84,8 @@ async fn poll_one_source(
 
     let mut page = 0u32;
     let mut total_events = 0u64;
+    let mut total_bytes: u64 = 0;
+    let max_bytes = source.max_bytes;
     loop {
         page += 1;
         if page > max_pages {
@@ -147,6 +149,7 @@ async fn poll_one_source(
         let base_url = response.url().clone();
         let path = base_url.path().to_string();
         let body = response.text().await.context("read body")?;
+        total_bytes += body.len() as u64;
         let events = parse_events_from_body(&body)?;
 
         total_events += events.len() as u64;
@@ -162,13 +165,29 @@ async fn poll_one_source(
             println!("{}", emitted.to_ndjson_line()?);
         }
 
+        let hit_max_bytes = max_bytes.is_some() && total_bytes > max_bytes.unwrap();
         if let Some(next) = next_url {
             let absolute = base_url.join(&next).context("resolve next URL")?;
             store
                 .set(source_id, "next_url", absolute.as_str())
                 .await?;
+            if hit_max_bytes {
+                tracing::warn!(
+                    source = %source_id,
+                    total_bytes,
+                    max_bytes = max_bytes.unwrap(),
+                    "reached max_bytes limit, stopping pagination; next poll continues from saved cursor"
+                );
+                break;
+            }
             url = absolute.to_string();
-            tracing::debug!(source = %source_id, page = page, events = events.len(), "next page");
+            tracing::debug!(
+                source = %source_id,
+                page = page,
+                events = events.len(),
+                total_bytes,
+                "next page"
+            );
         } else {
             store.set(source_id, "next_url", "").await?;
             tracing::info!(

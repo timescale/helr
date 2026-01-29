@@ -102,6 +102,10 @@ pub struct SourceConfig {
 
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
+
+    /// Optional safety limit: stop pagination when total response body bytes exceed this (per poll).
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
