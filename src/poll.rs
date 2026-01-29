@@ -756,4 +756,27 @@ mod tests {
         let v = serde_json::json!({"items": []});
         assert_eq!(json_path_str(&v, "next_cursor"), None);
     }
+
+    #[test]
+    fn test_parse_events_from_value_empty_array() {
+        let v = serde_json::json!([]);
+        let events = parse_events_from_value(&v).unwrap();
+        assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_events_from_value_logs_key() {
+        let v = serde_json::json!({"logs": [{"id": "a"}], "next": "x"});
+        let events = parse_events_from_value(&v).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].get("id"), Some(&serde_json::json!("a")));
+    }
+
+    #[test]
+    fn test_parse_events_from_value_single_value_fallback() {
+        let v = serde_json::json!({"id": 42});
+        let events = parse_events_from_value(&v).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].get("id"), Some(&serde_json::json!(42)));
+    }
 }

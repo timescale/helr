@@ -457,4 +457,42 @@ sources: {}
         assert!(err.to_string().contains("at least one source"));
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn config_load_invalid_yaml_fails() {
+        let dir = std::env::temp_dir().join("hel_config_invalid_yaml");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(&path, "global:\n  log_level: [unclosed").unwrap();
+        let err = Config::load(&path).unwrap_err();
+        assert!(err.to_string().contains("parse") || err.to_string().contains("yaml"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_unknown_top_level_field_fails() {
+        let dir = std::env::temp_dir().join("hel_config_unknown_field");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  x:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+unknown_field: 1
+"#,
+        )
+        .unwrap();
+        let err = Config::load(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown") || err.to_string().contains("parse"),
+            "expected unknown field error, got: {}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 }

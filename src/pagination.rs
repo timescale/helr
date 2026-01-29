@@ -82,4 +82,22 @@ mod tests {
             Some("https://api.example.com/next".into())
         );
     }
+
+    #[test]
+    fn empty_link_header_returns_none() {
+        let h = header_map("");
+        assert_eq!(next_link_from_headers(&h, "next"), None);
+    }
+
+    #[test]
+    fn malformed_link_missing_angle_returns_none() {
+        let h = header_map(r#"https://api.example.com/next; rel="next""#);
+        assert_eq!(next_link_from_headers(&h, "next"), None);
+    }
+
+    #[test]
+    fn malformed_link_unclosed_brace_returns_none() {
+        let h = header_map(r#"<https://api.example.com/next; rel="next""#);
+        assert_eq!(next_link_from_headers(&h, "next"), None);
+    }
 }

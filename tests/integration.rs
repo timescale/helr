@@ -177,3 +177,390 @@ sources:
     assert_eq!(first["source"], "retry-source");
     assert_eq!(first["event"]["id"], "r1");
 }
+
+fn hel_bin() -> String {
+    std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+        format!(
+            "{}/target/debug/hel",
+            std::env::var("CARGO_MANIFEST_DIR").unwrap()
+        )
+    })
+}
+
+fn run_hel(args: &[&str], config_path: &str) -> std::process::Output {
+    let mut args_vec = vec!["--config", config_path];
+    args_vec.extend(args);
+    std::process::Command::new(hel_bin())
+        .args(&args_vec)
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel")
+}
+
+/// Dedupe: same event ID twice in one response → only one NDJSON line emitted.
+#[tokio::test]
+async fn integration_dedupe_skips_duplicate_ids() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "dup-1", "msg": "first"},
+                {"id": "dup-1", "msg": "duplicate"}
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_dedupe");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  dedupe-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    dedupe:
+      id_field: id
+      capacity: 1000
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "expected 1 line (duplicate skipped), got {}: {:?}", lines.len(), stdout);
+    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(obj["event"]["id"], "dup-1");
+}
+
+/// Circuit breaker: after N failures, run fails (circuit open).
+#[tokio::test]
+async fn integration_circuit_breaker_opens_after_failures() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(5)
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_circuit");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  circuit-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+      retries:
+        max_attempts: 1
+      circuit_breaker:
+        enabled: true
+        failure_threshold: 2
+        success_threshold: 1
+        half_open_timeout_secs: 60
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stderr.contains("poll failed"),
+        "expected poll failure in stderr; stdout: {} stderr: {}",
+        stdout,
+        stderr
+    );
+    let lines: Vec<&str> = stdout.lines().filter(|s| s.contains("\"event\"")).collect();
+    assert!(lines.is_empty(), "expected no events when circuit opens; got {} lines", lines.len());
+}
+
+/// hel validate rejects invalid config.
+#[tokio::test]
+async fn integration_validate_rejects_invalid_config() {
+    let config_dir = std::env::temp_dir().join("hel_integration_validate");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    std::fs::write(
+        &config_path,
+        r#"
+global: {}
+sources: {}
+"#,
+    )
+    .expect("write config");
+
+    let output = std::process::Command::new(hel_bin())
+        .args(["validate", "--config", config_path.to_str().unwrap()])
+        .env("RUST_LOG", "error")
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
+        .output()
+        .expect("run hel");
+
+    assert!(!output.status.success());
+}
+
+/// Cursor pagination: first page returns next_cursor, second page returns no cursor.
+#[tokio::test]
+async fn integration_cursor_pagination_two_pages() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"id": "c1", "msg": "page1"}],
+                "next_cursor": "token2"
+            })),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"id": "c2", "msg": "page2"}],
+                "next_cursor": ""
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_cursor");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  cursor-source:
+    url: "{}/"
+    pagination:
+      strategy: cursor
+      cursor_param: after
+      cursor_path: next_cursor
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(lines.len() >= 2, "expected 2 events from 2 pages, got {}: {:?}", lines.len(), stdout);
+    let ids: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .unwrap()["event"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert!(ids.contains(&"c1".to_string()));
+    assert!(ids.contains(&"c2".to_string()));
+}
+
+/// Page/offset pagination: two pages then empty.
+#[tokio::test]
+async fn integration_page_offset_pagination_two_pages() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "p1"}, {"id": "p2"}
+            ])),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_page_offset");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  page-source:
+    url: "{}/"
+    pagination:
+      strategy: page_offset
+      page_param: page
+      limit_param: limit
+      limit: 2
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "expected 2 events, got {}: {:?}", lines.len(), stdout);
+    let ids: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .unwrap()["event"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert!(ids.contains(&"p1".to_string()));
+    assert!(ids.contains(&"p2".to_string()));
+}
+
+/// Link-header max_pages: stop after max_pages even if next link present.
+#[tokio::test]
+async fn integration_link_header_respects_max_pages() {
+    let server = MockServer::start().await;
+    let next_link = format!(r#"<{}/>; rel="next""#, server.uri());
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Link", next_link.as_str())
+                .set_body_json(json!([{"id": "m1"}])),
+        )
+        .up_to_n_times(3)
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_max_pages");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  max-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+      max_pages: 2
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "max_pages=2 so 2 requests, 2 events; got {}: {:?}", lines.len(), stdout);
+}
+
+/// Recorded/fixture: mock returns Okta-shaped JSON; parser accepts it.
+#[tokio::test]
+async fn integration_fixture_okta_shaped_events() {
+    let server = MockServer::start().await;
+
+    let body = json!([
+        {
+            "uuid": "dc9fd3c0-598c-11ef-8478-2b7584bf8d5a",
+            "published": "2024-08-13T15:58:20.353Z",
+            "eventType": "user.session.start",
+            "displayMessage": "User login to Okta",
+            "actor": {"id": "00u1", "displayName": "Jane"}
+        }
+    ]);
+
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_fixture");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  okta-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1);
+    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(obj["source"], "okta-source");
+    assert_eq!(obj["event"]["uuid"], "dc9fd3c0-598c-11ef-8478-2b7584bf8d5a");
+    assert_eq!(obj["event"]["eventType"], "user.session.start");
+}
