@@ -15,8 +15,11 @@ mod poll;
 mod retry;
 mod state;
 
+use axum::http::StatusCode;
+use axum::routing::get;
 use config::Config;
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -151,6 +154,23 @@ async fn run_collector(
 
     if once {
         return Ok(());
+    }
+
+    // Health server: bind only when enabled and running continuously
+    if let Some(health) = &config.global.health {
+        if health.enabled {
+            let addr: SocketAddr = format!("{}:{}", health.address, health.port)
+                .parse()
+                .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            tracing::info!(%addr, "health server listening on GET /healthz");
+            tokio::spawn(async move {
+                let app = axum::Router::new().route("/healthz", get(|| async { StatusCode::OK }));
+                if let Err(e) = axum::serve(listener, app).await {
+                    tracing::error!("health server error: {}", e);
+                }
+            });
+        }
     }
 
     let mut tick = 0u64;
