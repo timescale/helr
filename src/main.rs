@@ -38,9 +38,6 @@ use std::time::Duration;
 #[command(name = "hel")]
 #[command(author, version, about = "Generic HTTP API log collector")]
 struct Cli {
-    #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
-    config: PathBuf,
-
     #[arg(short, long, global = true)]
     verbose: bool,
 
@@ -58,6 +55,10 @@ struct Cli {
 enum Commands {
     /// Start the collector (default)
     Run {
+        /// Config file path (sources, schedule, auth, etc.)
+        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        config: PathBuf,
+
         /// Run one poll cycle and exit
         #[arg(long)]
         once: bool,
@@ -84,10 +85,18 @@ enum Commands {
     },
 
     /// Validate configuration file
-    Validate,
+    Validate {
+        /// Config file path
+        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        config: PathBuf,
+    },
 
     /// Test a source configuration (one poll tick for the given source)
     Test {
+        /// Config file path
+        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        config: PathBuf,
+
         #[arg(long, value_name = "NAME")]
         source: String,
 
@@ -97,6 +106,10 @@ enum Commands {
 
     /// Inspect or manage state store
     State {
+        /// Config file path (for global.state backend/path)
+        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        config: PathBuf,
+
         #[command(subcommand)]
         subcommand: Option<StateSubcommand>,
     },
@@ -124,6 +137,18 @@ enum StateSubcommand {
     Import,
 }
 
+/// Path to hel config (sources, state, etc.) for commands that use it. Default "hel.yaml" when no subcommand (implicit run).
+fn hel_config_path(cli: &Cli) -> PathBuf {
+    match &cli.command {
+        None => PathBuf::from("hel.yaml"),
+        Some(Commands::Run { config, .. }) => config.clone(),
+        Some(Commands::Validate { config }) => config.clone(),
+        Some(Commands::Test { config, .. }) => config.clone(),
+        Some(Commands::State { config, .. }) => config.clone(),
+        Some(Commands::MockServer { .. }) => PathBuf::from("hel.yaml"), // MockServer uses its own config
+    }
+}
+
 /// Ignore SIGPIPE so writes to a broken pipe return EPIPE instead of killing the process.
 #[cfg(unix)]
 fn ignore_sigpipe() {
@@ -143,21 +168,21 @@ async fn main() -> anyhow::Result<()> {
     ignore_sigpipe();
 
     if cli.dry_run {
-        tracing::info!("dry-run: would load config from {:?}", cli.config);
+        tracing::info!("dry-run: would load config from {:?}", hel_config_path(&cli));
         return Ok(());
     }
 
     match &cli.command {
-        Some(Commands::Validate) => {
+        Some(Commands::Validate { config }) => {
             init_logging(None, &cli);
-            run_validate(&cli.config)
+            run_validate(config)
         }
         Some(Commands::MockServer { config }) => {
             init_logging(None, &cli);
             mock_server::run_mock_server(config).await
         }
         other => {
-            let config = Config::load(&cli.config)?;
+            let config = Config::load(&hel_config_path(&cli))?;
             init_logging(Some(&config), &cli);
             match other {
                 Some(Commands::Run {
@@ -167,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
                     output_rotate,
                     record_dir,
                     replay_dir,
+                    ..
                 }) => {
                     if record_dir.is_some() && replay_dir.is_some() {
                         anyhow::bail!("cannot use both --record-dir and --replay-dir");
@@ -206,12 +232,8 @@ async fn main() -> anyhow::Result<()> {
                     };
                     run_collector(&config_to_use, *once, source.as_deref(), event_sink, output_path, record_state).await
                 }
-                Some(Commands::Test { source, .. }) => {
-                    run_test(&config, source, Arc::new(StdoutSink)).await
-                }
-                Some(Commands::State { subcommand }) => {
-                    run_state(&config, subcommand.as_ref()).await
-                }
+                Some(Commands::Test { source, .. }) => run_test(&config, source, Arc::new(StdoutSink)).await,
+                Some(Commands::State { subcommand, .. }) => run_state(&config, subcommand.as_ref()).await,
                 None => {
                     run_collector(&config, false, None, Arc::new(StdoutSink), None, None).await
                 }

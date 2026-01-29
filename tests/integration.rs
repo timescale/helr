@@ -50,7 +50,7 @@ sources:
     });
 
     let output = std::process::Command::new(&hel_bin)
-        .args(["--config", config_path.to_str().unwrap(), "run", "--once"])
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
         .current_dir(
@@ -148,7 +148,7 @@ sources:
     });
 
     let output = std::process::Command::new(&hel_bin)
-        .args(["--config", config_path.to_str().unwrap(), "run", "--once"])
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
         .current_dir(
@@ -222,9 +222,9 @@ sources:
 
     let out = std::process::Command::new(hel_bin())
         .args([
+            "run",
             "--config",
             config_path.to_str().unwrap(),
-            "run",
             "--once",
             "--output",
             output_path.to_str().unwrap(),
@@ -293,7 +293,7 @@ sources:
     std::fs::write(&config_path, yaml).expect("write config");
 
     let out = std::process::Command::new(hel_bin())
-        .args(["--config", config_path.to_str().unwrap(), "run", "--once"])
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
         .current_dir(
@@ -356,9 +356,9 @@ sources:
 
     let out = std::process::Command::new(hel_bin())
         .args([
+            "run",
             "--config",
             config_path.to_str().unwrap(),
-            "run",
             "--once",
             "--record-dir",
             record_dir.to_str().unwrap(),
@@ -442,9 +442,9 @@ sources:
 
     let out = std::process::Command::new(hel_bin())
         .args([
+            "run",
             "--config",
             config_path.to_str().unwrap(),
-            "run",
             "--once",
             "--replay-dir",
             replay_dir.to_str().unwrap(),
@@ -490,8 +490,8 @@ fn hel_bin() -> String {
 }
 
 fn run_hel(args: &[&str], config_path: &str) -> std::process::Output {
-    let mut args_vec = vec!["--config", config_path];
-    args_vec.extend(args);
+    let mut args_vec = vec![args[0], "--config", config_path];
+    args_vec.extend(&args[1..]);
     std::process::Command::new(hel_bin())
         .args(&args_vec)
         .env("RUST_LOG", "error")
@@ -671,9 +671,9 @@ sources:
 
     let out = std::process::Command::new(hel_bin())
         .args([
+            "run",
             "--config",
             hel_config_path.to_str().unwrap(),
-            "run",
             "--once",
         ])
         .env("RUST_LOG", "error")
@@ -738,9 +738,9 @@ sources:
 
     let out_set = std::process::Command::new(hel_bin())
         .args([
+            "state",
             "--config",
             config_path.to_str().unwrap(),
-            "state",
             "set",
             "set-test-source",
             "next_url",
@@ -761,9 +761,9 @@ sources:
 
     let out_show = std::process::Command::new(hel_bin())
         .args([
+            "state",
             "--config",
             config_path.to_str().unwrap(),
-            "state",
             "show",
             "set-test-source",
         ])
@@ -1089,7 +1089,7 @@ sources:
     std::fs::write(&config_path, yaml).expect("write config");
 
     let mut child = std::process::Command::new(hel_bin())
-        .args(["--config", config_path.to_str().unwrap(), "run"])
+        .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
         .current_dir(
@@ -1164,7 +1164,7 @@ sources:
     std::fs::write(&config_path, yaml).expect("write config");
 
     let mut child = std::process::Command::new(hel_bin())
-        .args(["--config", config_path.to_str().unwrap(), "run"])
+        .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
         .current_dir(
