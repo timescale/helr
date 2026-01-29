@@ -164,6 +164,20 @@ pub struct ResilienceConfig {
     pub retries: Option<RetryConfig>,
     #[serde(default)]
     pub circuit_breaker: Option<CircuitBreakerConfig>,
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitConfig {
+    /// When true, use Retry-After (and optionally X-RateLimit-Reset) on 429 instead of generic backoff.
+    #[serde(default = "default_respect_headers")]
+    pub respect_headers: bool,
+}
+
+fn default_respect_headers() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]

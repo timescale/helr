@@ -82,6 +82,7 @@ async fn poll_one_source(
             source,
             &url,
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
+            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
         )
         .await
         {
@@ -169,6 +170,7 @@ async fn poll_single_page(
         source,
         url,
         source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
+        source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
     )
     .await
     {

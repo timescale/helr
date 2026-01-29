@@ -34,3 +34,5 @@ sources:
         failure_threshold: 5
         success_threshold: 2
         half_open_timeout_secs: 60
+      rate_limit:
+        respect_headers: true   # use Retry-After / X-RateLimit-Reset on 429
