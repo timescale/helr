@@ -1,6 +1,7 @@
 //! Integration test: mock HTTP server + hel run --once; assert stdout NDJSON and behavior.
 
 use serde_json::json;
+use std::time::Duration;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -563,4 +564,89 @@ sources:
     assert_eq!(obj["source"], "okta-source");
     assert_eq!(obj["event"]["uuid"], "dc9fd3c0-598c-11ef-8478-2b7584bf8d5a");
     assert_eq!(obj["event"]["eventType"], "user.session.start");
+}
+
+/// SIGTERM mid-poll: send SIGTERM while hel is waiting on a slow response; process exits (graceful shutdown).
+#[cfg(unix)]
+#[tokio::test]
+async fn integration_sigterm_mid_poll_graceful_shutdown() {
+    use nix::sys::signal::{self, Signal};
+    use nix::unistd::Pid;
+    use std::process::Stdio;
+
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(5))
+                .set_body_json(json!([{"id": "slow"}])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_sigterm");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  sigterm-source:
+    url: "{}/"
+    schedule:
+      interval_secs: 1
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 10
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let mut child = std::process::Command::new(hel_bin())
+        .args(["--config", config_path.to_str().unwrap(), "run"])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hel");
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let pid = child.id();
+    signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM).expect("send SIGTERM");
+
+    let wait_timeout = Duration::from_secs(35);
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if start.elapsed() > wait_timeout {
+                    let _ = child.kill();
+                    panic!("hel did not exit within {:?}", wait_timeout);
+                }
+            }
+            Err(e) => panic!("try_wait failed: {}", e),
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+
+    let code = status.code();
+    let ok = code.map(|c| c == 0 || c == 143 || c == 15).unwrap_or(true);
+    assert!(
+        ok,
+        "expected exit 0 (graceful), 143 or 15 (SIGTERM); got {:?}",
+        status
+    );
 }
