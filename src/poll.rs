@@ -3,6 +3,7 @@
 use crate::circuit::{self, CircuitStore};
 use crate::client::build_client;
 use crate::config::{Config, PaginationConfig, SourceConfig};
+use crate::dedupe::{self, DedupeStore};
 use crate::event::EmittedEvent;
 use crate::metrics;
 use crate::oauth2::OAuth2TokenCache;
@@ -22,6 +23,7 @@ pub async fn run_one_tick(
     source_filter: Option<&str>,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dedupe_store: DedupeStore,
 ) -> anyhow::Result<()> {
     for (source_id, source) in &config.sources {
         if let Some(filter) = source_filter {
@@ -35,6 +37,7 @@ pub async fn run_one_tick(
             source,
             circuit_store.clone(),
             token_cache.clone(),
+            dedupe_store.clone(),
         )
         .await
         {
@@ -46,13 +49,14 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source, circuit_store, token_cache))]
+#[instrument(skip(store, source, circuit_store, token_cache, dedupe_store))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dedupe_store: DedupeStore,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let client = build_client(source.resilience.as_ref())?;
@@ -71,6 +75,7 @@ async fn poll_one_source(
                 &source.url,
                 circuit_store,
                 token_cache,
+                dedupe_store,
             )
             .await;
         }
@@ -152,9 +157,16 @@ async fn poll_one_source(
         total_bytes += body.len() as u64;
         let events = parse_events_from_body(&body)?;
 
-        total_events += events.len() as u64;
-        metrics::record_events(source_id, events.len() as u64);
+        let mut emitted_count = 0u64;
         for event_value in events.iter() {
+            if let Some(d) = &source.dedupe {
+                let id = event_id(event_value, &d.id_field).unwrap_or_default();
+                if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                    continue; // duplicate
+                }
+            }
+            total_events += 1;
+            emitted_count += 1;
             let ts = event_ts(event_value);
             let emitted = EmittedEvent::new(
                 ts,
@@ -164,6 +176,7 @@ async fn poll_one_source(
             );
             println!("{}", emitted.to_ndjson_line()?);
         }
+        metrics::record_events(source_id, emitted_count);
 
         let hit_max_bytes = max_bytes.is_some() && total_bytes > max_bytes.unwrap();
         if let Some(next) = next_url {
@@ -213,6 +226,7 @@ async fn poll_single_page(
     url: &str,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dedupe_store: DedupeStore,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
@@ -264,8 +278,15 @@ async fn poll_single_page(
     let body = response.text().await.context("read body")?;
     let events = parse_events_from_body(&body)?;
 
-    metrics::record_events(source_id, events.len() as u64);
+    let mut emitted_count = 0u64;
     for event_value in &events {
+        if let Some(d) = &source.dedupe {
+            let id = event_id(event_value, &d.id_field).unwrap_or_default();
+            if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                continue;
+            }
+        }
+        emitted_count += 1;
         let ts = event_ts(event_value);
         let emitted = EmittedEvent::new(
             ts,
@@ -275,12 +296,12 @@ async fn poll_single_page(
         );
         println!("{}", emitted.to_ndjson_line()?);
     }
+    metrics::record_events(source_id, emitted_count);
 
     store.set(source_id, "next_url", "").await?;
-    let events_count = events.len();
     tracing::info!(
         source = %source_id,
-        events = events_count,
+        events = emitted_count,
         duration_ms = start.elapsed().as_millis(),
         "poll completed"
     );
@@ -304,6 +325,15 @@ fn parse_events_from_body(body: &str) -> anyhow::Result<Vec<serde_json::Value>> 
         }
     }
     Ok(vec![value])
+}
+
+/// Extract event ID from JSON using dotted path (e.g. "uuid", "id", "event.id").
+fn event_id(event: &serde_json::Value, id_field: &str) -> Option<String> {
+    let mut v = event;
+    for segment in id_field.split('.') {
+        v = v.get(segment)?;
+    }
+    v.as_str().map(|s| s.to_string())
 }
 
 fn event_ts(event: &serde_json::Value) -> String {

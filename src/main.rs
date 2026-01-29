@@ -10,6 +10,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 mod circuit;
 mod client;
 mod config;
+mod dedupe;
 mod event;
 mod metrics;
 mod oauth2;
@@ -176,12 +177,14 @@ async fn run_collector(
 
     let circuit_store = new_circuit_store();
     let token_cache = new_oauth2_token_cache();
+    let dedupe_store = dedupe::new_dedupe_store();
     poll::run_one_tick(
         &config,
         store.clone(),
         source_filter,
         circuit_store.clone(),
         token_cache.clone(),
+        dedupe_store.clone(),
     )
     .await?;
 
@@ -259,12 +262,14 @@ async fn run_collector(
         let source_filter_ref = source_filter;
         let circuit_store_ref = circuit_store.clone();
         let token_cache_ref = token_cache.clone();
+        let dedupe_store_ref = dedupe_store.clone();
         let mut tick_fut = std::pin::pin!(poll::run_one_tick(
             config_ref,
             store_ref,
             source_filter_ref,
             circuit_store_ref,
             token_cache_ref,
+            dedupe_store_ref,
         ));
 
         tokio::select! {

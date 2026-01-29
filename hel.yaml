@@ -28,6 +28,10 @@ sources:
       max_pages: 100
     # Optional: stop pagination when total response body bytes exceed this (per poll)
     # max_bytes: 10485760   # 10 MiB
+    # Optional: skip emitting duplicate events by ID (LRU, per source)
+    # dedupe:
+    #   id_field: "uuid"    # or "id", "event.id" (dotted path)
+    #   capacity: 100000
     resilience:
       timeout_secs: 30
       retries:

@@ -106,6 +106,24 @@ pub struct SourceConfig {
     /// Optional safety limit: stop pagination when total response body bytes exceed this (per poll).
     #[serde(default)]
     pub max_bytes: Option<u64>,
+
+    /// Optional deduplication: track last N event IDs and skip emitting duplicates.
+    #[serde(default)]
+    pub dedupe: Option<DedupeConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DedupeConfig {
+    /// JSON key (or dotted path, e.g. "uuid", "id", "event.id") for event unique ID.
+    pub id_field: String,
+    /// Max number of event IDs to keep (LRU eviction).
+    #[serde(default = "default_dedupe_capacity")]
+    pub capacity: u64,
+}
+
+fn default_dedupe_capacity() -> u64 {
+    100_000
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
