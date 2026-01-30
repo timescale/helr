@@ -197,7 +197,7 @@ Secrets can be read from env var or file; file takes precedence when set.
 | Doc | Description |
 |-----|-------------|
 | [hel.yaml](hel.yaml) | Example config with Okta and GWS sources (commented where inactive). |
-| [docs/okta-manual.md](docs/okta-manual.md) | Okta System Log: API token, SSWS, link-header pagination, mock server. |
+| [docs/okta.md](docs/okta.md) | Okta System Log: API token, SSWS, link-header pagination, mock server. |
 | [docs/gws-gcp-manual.md](docs/gws-gcp-manual.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
 
 ## How to run with Okta
@@ -206,7 +206,7 @@ Secrets can be read from env var or file; file takes precedence when set.
 2. In `hel.yaml`, add or uncomment an Okta source (see example in repo); set `OKTA_DOMAIN` and `OKTA_API_TOKEN`.
 3. Run: `hel validate` then `hel test --source okta-audit` or `hel run`.
 
-Full steps and troubleshooting: **[docs/okta-manual.md](docs/okta-manual.md)**.
+Full steps and troubleshooting: **[docs/okta.md](docs/okta.md)**.
 
 ## How to run with Google Workspace (GWS)
 
