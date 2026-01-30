@@ -29,9 +29,10 @@ use config::Config;
 use oauth2::new_oauth2_token_cache;
 use output::{parse_rotation, EventSink, FileSink, RotationPolicy, StdoutSink};
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -243,6 +244,92 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Add "source":"hel" to a JSON log line so collector logs and NDJSON events share a consistent source field.
+fn add_source_to_json_log_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return line.to_string();
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("source".to_string(), serde_json::Value::String("hel".to_string()));
+            }
+            let out = serde_json::to_string(&v).unwrap_or_else(|_| line.to_string());
+            if line.ends_with('\n') {
+                out + "\n"
+            } else {
+                out
+            }
+        }
+        Err(_) => line.to_string(),
+    }
+}
+
+/// Writer that buffers stderr until newline, then adds "source":"hel" to JSON lines before writing.
+struct JsonSourceLabelWriter {
+    buffer: Vec<u8>,
+}
+
+impl JsonSourceLabelWriter {
+    fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+}
+
+impl Write for JsonSourceLabelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        let mut stderr = std::io::stderr().lock();
+        while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.buffer.drain(..=pos).collect();
+            let line_str = String::from_utf8_lossy(&line);
+            let out = add_source_to_json_log_line(&line_str);
+            stderr.write_all(out.as_bytes())?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut stderr = std::io::stderr().lock();
+        if !self.buffer.is_empty() {
+            let line_str = String::from_utf8_lossy(&self.buffer).into_owned();
+            self.buffer.clear();
+            let out = add_source_to_json_log_line(&line_str);
+            stderr.write_all(out.as_bytes())?;
+        }
+        stderr.flush()
+    }
+}
+
+/// MakeWriter that returns a writer adding "source":"hel" to JSON log lines (for consistent labeling with NDJSON events).
+struct HelJsonStderr;
+
+impl Write for HelJsonStderr {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        HEL_JSON_WRITER.lock().unwrap().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        HEL_JSON_WRITER.lock().unwrap().flush()
+    }
+}
+
+impl Clone for HelJsonStderr {
+    fn clone(&self) -> Self {
+        HelJsonStderr
+    }
+}
+
+static HEL_JSON_WRITER: once_cell::sync::Lazy<Mutex<JsonSourceLabelWriter>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(JsonSourceLabelWriter::new()));
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for HelJsonStderr {
+    type Writer = HelJsonStderr;
+    fn make_writer(&self) -> Self::Writer {
+        HelJsonStderr
+    }
+}
+
 /// Init tracing from config (log_format, log_level) or env. Config takes precedence; env HEL_LOG_FORMAT, HEL_LOG_LEVEL (or RUST_LOG when no config) override.
 fn init_logging(config: Option<&Config>, cli: &Cli) {
     let use_json = match config.and_then(|c| c.global.log_format.as_deref()) {
@@ -281,6 +368,7 @@ fn init_logging(config: Option<&Config>, cli: &Cli) {
     };
     if use_json {
         // Omit current_span and span_list so we don't parse span fields as JSON (they're key=value, not JSON).
+        // Use HelJsonStderr so each line gets "source":"hel" for consistent labeling with NDJSON events (stdout).
         let json_fmt = tracing_subscriber::fmt::format()
             .json()
             .with_current_span(false)
@@ -288,7 +376,7 @@ fn init_logging(config: Option<&Config>, cli: &Cli) {
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::fmt::layer()
-                    .with_writer(std::io::stderr)
+                    .with_writer(HelJsonStderr)
                     .with_ansi(false)
                     .with_target(false)
                     .event_format(json_fmt),
@@ -674,4 +762,25 @@ fn next_delay(config: &Config) -> Duration {
     };
     let secs = (interval_secs as i64 + delta).max(1) as u64;
     Duration::from_secs(secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_source_to_json_log_line() {
+        let line = r#"{"timestamp":"2024-01-15T12:00:00Z","level":"INFO","message":"started"}"#;
+        let out = add_source_to_json_log_line(line);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("source").and_then(|s| s.as_str()), Some("hel"));
+        assert_eq!(v.get("message").and_then(|s| s.as_str()), Some("started"));
+    }
+
+    #[test]
+    fn test_add_source_to_json_log_line_non_json_unchanged() {
+        let line = "not json\n";
+        let out = add_source_to_json_log_line(line);
+        assert_eq!(out, "not json\n");
+    }
 }
