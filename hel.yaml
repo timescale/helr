@@ -39,6 +39,7 @@ sources:
     # Optional: stop pagination when total response body bytes exceed this (per poll)
     # max_bytes: 10485760   # 10 MiB
     # Optional: key for producer label (default from global.source_label_key). Value: source_label_value or source key.
+    # The following label key/value overrides the global default.
     # source_label_key: service
     # source_label_value: okta_audit
     # Optional: skip emitting duplicate events by ID (LRU, per source)
