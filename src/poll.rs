@@ -322,7 +322,7 @@ async fn poll_link_header(
             let ts = event_ts(event_value);
             let emitted = EmittedEvent::new(
                 ts,
-                source_id.to_string(),
+                effective_source_label(source, source_id),
                 path.clone(),
                 event_value.clone(),
             );
@@ -572,7 +572,7 @@ async fn poll_cursor_pagination(
             let ts = event_ts(event_value);
             let emitted = EmittedEvent::new(
                 ts,
-                source_id.to_string(),
+                effective_source_label(source, source_id),
                 path.clone(),
                 event_value.clone(),
             );
@@ -754,7 +754,7 @@ async fn poll_page_offset_pagination(
             let ts = event_ts(event_value);
             let emitted = EmittedEvent::new(
                 ts,
-                source_id.to_string(),
+                effective_source_label(source, source_id),
                 path.clone(),
                 event_value.clone(),
             );
@@ -887,7 +887,7 @@ async fn poll_single_page(
         let ts = event_ts(event_value);
         let emitted = EmittedEvent::new(
             ts,
-            source_id.to_string(),
+            effective_source_label(source, source_id),
             path.clone(),
             event_value.clone(),
         );
@@ -914,6 +914,15 @@ fn bytes_to_string(bytes: &[u8], on_invalid_utf8: Option<InvalidUtf8Behavior>) -
         _ => String::from_utf8(bytes.to_vec())
             .map_err(|e| anyhow::anyhow!("invalid UTF-8 in response: {}", e)),
     }
+}
+
+/// Value for the "source" field in NDJSON: source_label if set, else the config source key.
+fn effective_source_label(source: &SourceConfig, source_id: &str) -> String {
+    source
+        .source_label
+        .as_deref()
+        .unwrap_or(source_id)
+        .to_string()
 }
 
 /// Emit one event line; enforce max_line_bytes, record output errors.
@@ -1210,5 +1219,22 @@ query_params:
         let url = url_with_first_request_params("https://example.com/logs", &source).unwrap();
         assert!(url.contains("limit=20"));
         assert!(url.contains("filter="));
+    }
+
+    #[test]
+    fn test_effective_source_label_default() {
+        let yaml = r#"url: "https://example.com/logs""#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(effective_source_label(&source, "okta-audit"), "okta-audit");
+    }
+
+    #[test]
+    fn test_effective_source_label_override() {
+        let yaml = r#"
+url: "https://example.com/logs"
+source_label: "okta_audit"
+"#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(effective_source_label(&source, "okta-audit"), "okta_audit");
     }
 }

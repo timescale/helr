@@ -131,6 +131,11 @@ pub struct SourceConfig {
     #[serde(default)]
     pub body: Option<serde_json::Value>,
 
+    /// Value for the "source" field in emitted NDJSON lines. Defaults to the source key (e.g. "okta-audit").
+    /// Override for downstream labeling (e.g. Loki) or to use a stable name across config renames.
+    #[serde(default)]
+    pub source_label: Option<String>,
+
     #[serde(default)]
     pub schedule: ScheduleConfig,
 
