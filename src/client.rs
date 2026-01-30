@@ -107,6 +107,10 @@ fn add_auth(
             // OAuth2 uses bearer_override in build_request; this path is never taken
             unreachable!("OAuth2 auth must use bearer_override in build_request")
         }
+        AuthConfig::GoogleServiceAccount { .. } => {
+            // Google Service Account uses bearer_override in build_request; this path is never taken
+            unreachable!("GoogleServiceAccount auth must use bearer_override in build_request")
+        }
     };
     Ok(req)
 }

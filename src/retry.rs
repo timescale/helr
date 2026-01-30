@@ -3,7 +3,7 @@
 
 use crate::client::build_request;
 use crate::config::{AuthConfig, RateLimitConfig, RetryConfig, SourceConfig};
-use crate::oauth2::{get_oauth_token, invalidate_token, OAuth2TokenCache};
+use crate::oauth2::{get_google_sa_token, get_oauth_token, invalidate_token, OAuth2TokenCache};
 use anyhow::Context;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Response};
@@ -74,7 +74,7 @@ fn cap_duration(d: Duration, max_secs: Option<u64>) -> Duration {
     }
 }
 
-/// Resolve Bearer token when auth is OAuth2 (refresh if needed).
+/// Resolve Bearer token when auth is OAuth2 or Google Service Account (refresh if needed).
 async fn bearer_for_request(
     client: &Client,
     source: &SourceConfig,
@@ -84,6 +84,10 @@ async fn bearer_for_request(
     match (&source.auth, token_cache) {
         (Some(auth @ AuthConfig::OAuth2 { .. }), Some(cache)) => {
             let token = get_oauth_token(cache, client, source_id, auth).await?;
+            Ok(Some(token))
+        }
+        (Some(auth @ AuthConfig::GoogleServiceAccount { .. }), Some(cache)) => {
+            let token = get_google_sa_token(cache, client, source_id, auth).await?;
             Ok(Some(token))
         }
         _ => Ok(None),
@@ -123,7 +127,10 @@ pub async fn execute_with_retry(
                     return Ok(response);
                 }
                 if response.status().as_u16() == 401
-                    && matches!(source.auth, Some(AuthConfig::OAuth2 { .. }))
+                    && matches!(
+                        source.auth,
+                        Some(AuthConfig::OAuth2 { .. } | AuthConfig::GoogleServiceAccount { .. })
+                    )
                     && token_cache.is_some()
                     && !auth_refresh_attempted
                 {

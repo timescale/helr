@@ -347,6 +347,23 @@ pub enum AuthConfig {
         #[serde(default)]
         scopes: Option<Vec<String>>,
     },
+    /// Google Service Account (JWT bearer grant). For GWS Admin SDK use domain-wide delegation: set subject to admin user email.
+    #[serde(rename = "google_service_account")]
+    GoogleServiceAccount {
+        /// Path to service account JSON key file (or use credentials_env).
+        #[serde(default)]
+        credentials_file: Option<String>,
+        /// Env var containing full service account JSON string (or use credentials_file).
+        #[serde(default)]
+        credentials_env: Option<String>,
+        /// Env var for delegated user email (domain-wide delegation). Required for Admin SDK Reports API.
+        #[serde(default)]
+        subject_env: Option<String>,
+        /// File containing delegated user email (domain-wide delegation).
+        #[serde(default)]
+        subject_file: Option<String>,
+        scopes: Vec<String>,
+    },
 }
 
 /// Resolve a secret from file path (if set) or environment variable. File takes precedence.
@@ -531,6 +548,46 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         .with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
                     read_secret(refresh_token_file.as_deref(), refresh_token_env)
                         .with_context(|| format!("source {}: oauth2 refresh_token", source_id))?;
+                }
+                AuthConfig::GoogleServiceAccount {
+                    credentials_file,
+                    credentials_env,
+                    subject_env,
+                    subject_file,
+                    scopes: _,
+                } => {
+                    let json_str = if let Some(path) = credentials_file.as_deref() {
+                        if path.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                std::fs::read_to_string(Path::new(path))
+                                    .with_context(|| format!("source {}: google_service_account credentials_file", source_id))?,
+                            )
+                        }
+                    } else {
+                        None
+                    };
+                    let json_str = json_str.or_else(|| {
+                        credentials_env
+                            .as_deref()
+                            .and_then(|e| std::env::var(e).ok())
+                    });
+                    let json_str = json_str
+                        .with_context(|| format!("source {}: google_service_account credentials (set credentials_file or credentials_env)", source_id))?;
+                    let creds: serde_json::Value =
+                        serde_json::from_str(&json_str).with_context(|| format!("source {}: google_service_account credentials JSON", source_id))?;
+                    creds.get("client_email").with_context(|| format!("source {}: credentials missing client_email", source_id))?;
+                    creds.get("private_key").with_context(|| format!("source {}: credentials missing private_key", source_id))?;
+                    if let Some(env) = subject_env.as_deref() {
+                        read_secret(subject_file.as_deref(), env)
+                            .with_context(|| format!("source {}: google_service_account subject (domain-wide delegation)", source_id))?;
+                    } else if let Some(path) = subject_file.as_deref() {
+                        if !path.is_empty() {
+                            std::fs::read_to_string(Path::new(path))
+                                .with_context(|| format!("source {}: google_service_account subject file", source_id))?;
+                        }
+                    }
                 }
             }
         }

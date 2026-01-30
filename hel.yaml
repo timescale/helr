@@ -1,10 +1,8 @@
-# Hel v0.1: minimal config for validation
+# Hel — minimal config. See README and docs/gws-gcp-manual.md.
+
 global:
   log_level: info
   log_format: json
-  # Producer label in NDJSON and Hel's JSON logs (default key "source", value "hel" for collector logs)
-  # source_label_key: source
-  # source_label_value: hel
   state:
     backend: sqlite
     path: "./hel-state.db"
@@ -18,11 +16,39 @@ global:
     port: 9090
 
 sources:
-  # Okta: set OKTA_DOMAIN (e.g. dev-12345.okta.com, no https://) and OKTA_API_TOKEN
-  # in the same shell where you run hel (export OKTA_DOMAIN=... OKTA_API_TOKEN=...).
-  # Okta Management API expects Authorization: SSWS <token>, not Bearer.
-  # Okta allows ~60 requests/min. "Too many requests" usually comes from pagination: one poll
-  # can fetch many pages back-to-back (no delay). Use max_pages and page_delay_secs to cap burst.
+  # --- GWS (Admin SDK): docs/gws-gcp-manual.md. One source per app; duplicate and change URL path for drive, admin, etc.
+  gws-login:
+    url: "https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/login"
+    schedule:
+      interval_secs: 300
+      jitter_secs: 30
+    auth:
+      type: google_service_account
+      credentials_file: "./credentials.json"
+      subject_env: GWS_DELEGATED_USER
+      scopes:
+        - "https://www.googleapis.com/auth/admin.reports.audit.readonly"
+    pagination:
+      strategy: cursor
+      cursor_param: pageToken
+      cursor_path: nextPageToken
+      max_pages: 50
+    query_params:
+      maxResults: "500"
+    resilience:
+      timeout_secs: 30
+      retries:
+        max_attempts: 5
+        initial_backoff_secs: 2
+        max_backoff_secs: 60
+        multiplier: 2.0
+      circuit_breaker:
+        enabled: true
+        failure_threshold: 5
+        success_threshold: 2
+        half_open_timeout_secs: 60
+
+  # --- Okta: set OKTA_DOMAIN and OKTA_API_TOKEN; auth prefix SSWS.
   okta-audit:
     url: "https://${OKTA_DOMAIN}/api/v1/logs"
     schedule:
@@ -36,33 +62,6 @@ sources:
       strategy: link_header
       rel: next
       max_pages: 20
-    # Optional: stop pagination when total response body bytes exceed this (per poll)
-    # max_bytes: 10485760   # 10 MiB
-    # Optional: key for producer label (default from global.source_label_key). Value: source_label_value or source key.
-    # The following label key/value overrides the global default.
-    # source_label_key: service
-    # source_label_value: okta_audit
-    # Optional: skip emitting duplicate events by ID (LRU, per source)
-    # dedupe:
-    #   id_path: "uuid"     # or "id", "event.id" (dotted path). Reusable across APIs.
-    #   capacity: 100000
-    # Corner-case options:
-    # on_cursor_error: reset  # on 4xx (expired/invalid cursor): reset (clear cursor) or fail
-    # from: "2024-01-01T00:00:00Z"   # start of range for first request; sent as query param named by from_param
-    # from_param: since       # query param name for from (e.g. since, after, start_time). Default: since
-    # query_params:           # query params on first request only (reusable: limit, until, filter, q, sortOrder)
-    #   limit: "20"
-    #   sortOrder: "ASCENDING"
-    #   # until: "2025-12-31T23:59:59Z"
-    #   # filter: "eventType eq \"user.session.start\""
-    #   # q: "login"
-    # on_parse_error: skip   # skip (log and stop this poll) or fail (default)
-    # max_response_bytes: 10485760   # fail if a single response body exceeds this
-    # on_invalid_utf8: replace   # when response body is not valid UTF-8: replace (U+FFFD), escape, or fail
-    # max_line_bytes: 1048576   # max NDJSON line size; apply max_line_bytes_behavior if exceeded
-    # max_line_bytes_behavior: truncate   # truncate | skip | fail
-    # checkpoint: end_of_tick   # end_of_tick (commit only after full poll) or per_page
-    # on_state_write_error: skip_checkpoint   # when state store write fails (e.g. disk full): fail or skip_checkpoint
     resilience:
       timeout_secs: 30
       retries:
@@ -76,46 +75,34 @@ sources:
         success_threshold: 2
         half_open_timeout_secs: 60
       rate_limit:
-        respect_headers: true   # use Retry-After or X-RateLimit-Reset from response on 429
-        page_delay_secs: 1      # delay between pagination requests; omit for no delay
+        respect_headers: true
+        page_delay_secs: 1
 
-  # --- Google Workspace (GWS) audit logs (Admin SDK Reports API) ---
-  # Uses GET-based activities.list; response has "items" and "nextPageToken".
-  # See: https://developers.google.com/admin-sdk/reports/v1/get-start/overview
-  # Rate limits: https://developers.google.com/admin-sdk/reports/v1/limits — default 2,400 queries/min;
-  # rate limit returns 503 (retried by hel). Use page_delay_secs if you want to throttle.
-  # OAuth2: create credentials in Google Cloud Console, get refresh token (e.g. script or Playground),
-  # scope https://www.googleapis.com/auth/admin.reports.audit.readonly (domain-wide delegation if service account).
-  # Application names: login (Login Audit), admin (Admin Audit), drive, calendar, token, etc.
-  # Uncomment and set GWS_CLIENT_ID, GWS_CLIENT_SECRET, GWS_REFRESH_TOKEN (and optional from for startTime).
-  #
-  # gws-login-audit:
-  #   url: "https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/login"
+  # --- GWS via Cloud Logging (LogEntry format): POST entries:list, auth oauth2, scope logging.read.
+  # gws-audit-cloud-logging:
+  #   url: "https://logging.googleapis.com/v2/entries:list"
+  #   method: post
+  #   body:
+  #     resourceNames: ["organizations/123"]
+  #     filter: 'logName="organizations/123/logs/cloudaudit.googleapis.com%2Fdata_access"'
+  #     orderBy: "timestamp asc"
+  #     pageSize: 500
   #   schedule:
   #     interval_secs: 300
   #     jitter_secs: 30
   #   auth:
   #     type: oauth2
   #     token_url: "https://oauth2.googleapis.com/token"
-  #     client_id_env: GWS_CLIENT_ID
-  #     client_secret_env: GWS_CLIENT_SECRET
-  #     refresh_token_env: GWS_REFRESH_TOKEN
+  #     client_id_env: GCP_CLIENT_ID
+  #     client_secret_env: GCP_CLIENT_SECRET
+  #     refresh_token_env: GCP_REFRESH_TOKEN
   #     scopes:
-  #       - "https://www.googleapis.com/auth/admin.reports.audit.readonly"
+  #       - "https://www.googleapis.com/auth/logging.read"
   #   pagination:
   #     strategy: cursor
   #     cursor_param: pageToken
   #     cursor_path: nextPageToken
   #     max_pages: 50
-  #   query_params:
-  #     maxResults: "500"   # default 1000; smaller pages reduce burst
-  #   # from: "2024-01-01T00:00:00Z"   # optional start of range (RFC 3339)
-  #   # from_param: startTime
-  #   # Optional: POST instead of GET (e.g. Cloud Logging entries.list). With cursor pagination, cursor is merged into body.
-  #   # method: post
-  #   # body:
-  #   #   resourceNames: ["projects/my-project"]
-  #   #   pageSize: 1000
   #   resilience:
   #     timeout_secs: 30
   #     retries:
@@ -128,26 +115,3 @@ sources:
   #       failure_threshold: 5
   #       success_threshold: 2
   #       half_open_timeout_secs: 60
-  #     # page_delay_secs: 1   # optional: throttle pagination (e.g. stay under 2400/min)
-
-# --- Reference ---
-
-# GWS in Cloud Logging: audit logs are read via the Logging API (POST entries.list with resourceNames,
-# filter, pageToken). Use method: post and body (see commented example under gws-login-audit above).
-
-# Other pagination patterns (snippets for sources):
-#
-# Cursor (response has items + next_cursor):
-#   pagination:
-#     strategy: cursor
-#     cursor_param: after
-#     cursor_path: next_cursor   # or dotted path, e.g. meta.next_page_token
-#     max_pages: 100
-#
-# Page/offset (?page=1&limit=100):
-#   pagination:
-#     strategy: page_offset
-#     page_param: page
-#     limit_param: limit
-#     limit: 100
-#     max_pages: 100
