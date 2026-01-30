@@ -1,27 +1,17 @@
-# GWS & GCP manual
+# GWS & GCP
 
-Manual for collecting **Google Workspace (GWS)** audit logs with Hel, using either **Google Cloud (GCP)** OAuth credentials only or a GCP service account with domain-wide delegation.
-
----
-
-## What is GWS?
-
-**Google Workspace** (formerly G Suite) is Google’s productivity suite for organizations: Gmail, Drive, Calendar, Meet, Chat, Admin, and related services. **GWS audit logs** record who did what across your domain—logins, file access, admin changes, and so on. Hel pulls these logs via the **Admin SDK Reports API** (`activities.list`), one stream per application (login, drive, admin, user_accounts, chat, calendar, token, etc.). You need a **Workspace admin** (or Admin console access) to grant access.
-
----
+**Google Workspace (GWS)** (formerly G Suite) is Google's productivity suite for organizations: Gmail, Drive, Calendar, Meet, Chat, Admin, and related services. **GWS audit logs** record who did what across your domain—logins, file access, admin changes, and so on. Hel pulls these logs via the **Admin SDK Reports API** (`activities.list`), one stream per application (login, drive, admin, user_accounts, chat, calendar, token, etc.). You need a **Workspace admin** (or Admin console access) to grant access.
 
 ## Auth options
 
 | | Option A: OAuth2 refresh token | Option B: Service account |
-|--|--------------------------------|---------------------------|
+|--------|--------|--------|
 | **GCP** | OAuth Client ID only (Cloud Console) | Project, Admin SDK API, service account + JSON key |
 | **GWS Admin** | Not needed | Domain-wide delegation required |
 | **Setup** | One-time browser sign-in to get refresh token | No interactive sign-in after setup |
 | **Hel auth** | `type: oauth2` | `type: google_service_account` |
 
 Both options use OAuth credentials from [Google Cloud Console](https://console.cloud.google.com/). Option A avoids service accounts and domain-wide delegation; Option B (like [sansfor509 GWS log collection](https://github.com/dlcowen/sansfor509/tree/main/GWS/gws-log-collection)) is better for unattended automation.
-
----
 
 ## Option A: OAuth2 with refresh token
 
@@ -96,8 +86,6 @@ hel test --source gws-login
 
 To add more apps (drive, admin, etc.), duplicate the source and change the URL path to `.../applications/drive`, `.../applications/admin`, and so on.
 
----
-
 ## Option B: Service account with domain-wide delegation
 
 **Requires:** GCP project, service account JSON key, and GWS Admin access to enable domain-wide delegation.
@@ -147,16 +135,14 @@ Optional: `hel run --once` or `hel run` for continuous collection.
 
 Duplicate the `gws-login` source; change the source key and URL path:
 
-| Source key       | URL path              |
-|------------------|------------------------|
-| `gws-drive`      | `.../applications/drive` |
-| `gws-admin`      | `.../applications/admin` |
+| Source key | URL path |
+|--------|--------|
+| `gws-drive` | `.../applications/drive` |
+| `gws-admin` | `.../applications/admin` |
 | `gws-user_accounts` | `.../applications/user_accounts` |
-| `gws-chat`       | `.../applications/chat` |
-| `gws-calendar`   | `.../applications/calendar` |
-| `gws-token`      | `.../applications/token` |
-
----
+| `gws-chat` | `.../applications/chat` |
+| `gws-calendar` | `.../applications/calendar` |
+| `gws-token` | `.../applications/token` |
 
 ## Troubleshooting
 
@@ -169,8 +155,6 @@ Duplicate the `gws-login` source; change the source key and URL path:
 | **B:** `401 Unauthorized` | `GWS_DELEGATED_USER` is a **Workspace admin** email (same domain). |
 | No events | No activity in that app recently; try another app or check Admin SDK quota. |
 | Config placeholder unset | Any `${VAR}` in `hel.yaml` must have that env var set. |
-
----
 
 ## Quick reference
 

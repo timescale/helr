@@ -198,7 +198,7 @@ Secrets can be read from env var or file; file takes precedence when set.
 |-----|-------------|
 | [hel.yaml](hel.yaml) | Example config with Okta and GWS sources (commented where inactive). |
 | [docs/okta.md](docs/okta.md) | Okta System Log: API token, SSWS, link-header pagination, mock server. |
-| [docs/gws-gcp-manual.md](docs/gws-gcp-manual.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
+| [docs/gws-gcp.md](docs/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
 
 ## How to run with Okta
 
@@ -214,7 +214,7 @@ Full steps and troubleshooting: **[docs/okta.md](docs/okta.md)**.
 
 **Option B (service account):** Create a service account in GCP, enable domain-wide delegation in GWS Admin for the Admin SDK Reports API scope, download the JSON key, then use `auth.type: google_service_account` with `credentials_file` and `subject_env` (admin email).
 
-Full steps: **[docs/gws-gcp-manual.md](docs/gws-gcp-manual.md)**.
+Full steps: **[docs/gws-gcp.md](docs/gws-gcp.md)**.
 
 ## Mock server and replay
 
