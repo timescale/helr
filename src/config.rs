@@ -338,14 +338,25 @@ pub enum AuthConfig {
         client_id_env: String,
         #[serde(default)]
         client_id_file: Option<String>,
-        client_secret_env: String,
+        #[serde(default)]
+        client_secret_env: Option<String>,
         #[serde(default)]
         client_secret_file: Option<String>,
-        refresh_token_env: String,
+        /// When set, use private_key_jwt for token endpoint client auth (e.g. Okta Org AS). PEM from env or file.
+        #[serde(default)]
+        client_private_key_env: Option<String>,
+        #[serde(default)]
+        client_private_key_file: Option<String>,
+        /// When set, use refresh_token grant; when omitted, use client_credentials grant (any provider).
+        #[serde(default)]
+        refresh_token_env: Option<String>,
         #[serde(default)]
         refresh_token_file: Option<String>,
         #[serde(default)]
         scopes: Option<Vec<String>>,
+        /// When true, send DPoP (Demonstrating Proof-of-Possession) header on token and API requests (e.g. Okta).
+        #[serde(default)]
+        dpop: bool,
     },
     /// Google Service Account (JWT bearer grant). For GWS Admin SDK use domain-wide delegation: set subject to admin user email.
     #[serde(rename = "google_service_account")]
@@ -538,16 +549,43 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     client_id_file,
                     client_secret_env,
                     client_secret_file,
+                    client_private_key_env,
+                    client_private_key_file,
                     refresh_token_env,
                     refresh_token_file,
                     ..
                 } => {
                     read_secret(client_id_file.as_deref(), client_id_env)
                         .with_context(|| format!("source {}: oauth2 client_id", source_id))?;
-                    read_secret(client_secret_file.as_deref(), client_secret_env)
-                        .with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
-                    read_secret(refresh_token_file.as_deref(), refresh_token_env)
-                        .with_context(|| format!("source {}: oauth2 refresh_token", source_id))?;
+                    let has_private_key = client_private_key_env.as_deref().map_or(false, |e| !e.is_empty())
+                        || client_private_key_file.as_deref().map_or(false, |p| !p.is_empty());
+                    let has_secret = client_secret_env.as_deref().map_or(false, |e| !e.is_empty())
+                        || client_secret_file.as_deref().map_or(false, |p| !p.is_empty());
+                    if !has_private_key && !has_secret {
+                        anyhow::bail!(
+                            "source {}: oauth2 requires client_secret (client_secret_env/client_secret_file) \
+                             or client_private_key (client_private_key_env/client_private_key_file) for token endpoint auth",
+                            source_id
+                        );
+                    }
+                    if has_private_key {
+                        read_secret(
+                            client_private_key_file.as_deref(),
+                            client_private_key_env.as_deref().unwrap_or(""),
+                        ).with_context(|| format!("source {}: oauth2 client_private_key (PEM)", source_id))?;
+                    } else {
+                        read_secret(
+                            client_secret_file.as_deref(),
+                            client_secret_env.as_deref().unwrap_or(""),
+                        ).with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
+                    }
+                    let has_refresh = refresh_token_env.as_deref().map_or(false, |e| !e.is_empty())
+                        || refresh_token_file.as_deref().map_or(false, |p| !p.is_empty());
+                    if has_refresh {
+                        let rt_env = refresh_token_env.as_deref().unwrap_or("");
+                        read_secret(refresh_token_file.as_deref(), rt_env)
+                            .with_context(|| format!("source {}: oauth2 refresh_token", source_id))?;
+                    }
                 }
                 AuthConfig::GoogleServiceAccount {
                     credentials_file,

@@ -10,6 +10,7 @@ use crate::config::{
 use crate::dedupe::{self, DedupeStore};
 use crate::event::EmittedEvent;
 use crate::metrics;
+use crate::dpop::DPoPKeyCache;
 use crate::oauth2::OAuth2TokenCache;
 use crate::output::EventSink;
 use crate::pagination::next_link_from_headers;
@@ -30,6 +31,7 @@ pub async fn run_one_tick(
     source_filter: Option<&str>,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dpop_key_cache: Option<DPoPKeyCache>,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
@@ -47,6 +49,7 @@ pub async fn run_one_tick(
         let global = config.global.clone();
         let circuit_store = circuit_store.clone();
         let token_cache = token_cache.clone();
+        let dpop_key_cache = dpop_key_cache.clone();
         let dedupe_store = dedupe_store.clone();
         let event_sink = event_sink.clone();
         let record_state = record_state.clone();
@@ -58,6 +61,7 @@ pub async fn run_one_tick(
                 &global,
                 circuit_store,
                 token_cache,
+                dpop_key_cache,
                 dedupe_store,
                 event_sink,
                 record_state,
@@ -82,7 +86,7 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source, global, circuit_store, token_cache, dedupe_store, event_sink, record_state))]
+#[instrument(skip(store, source, global, circuit_store, token_cache, dpop_key_cache, dedupe_store, event_sink, record_state))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
@@ -90,6 +94,7 @@ async fn poll_one_source(
     global: &GlobalConfig,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dpop_key_cache: Option<DPoPKeyCache>,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
@@ -108,6 +113,7 @@ async fn poll_one_source(
                 max_pages.unwrap_or(100),
                 circuit_store,
                 token_cache,
+                dpop_key_cache.clone(),
                 dedupe_store,
                 event_sink,
                 record_state,
@@ -130,6 +136,7 @@ async fn poll_one_source(
                 max_pages.unwrap_or(100),
                 circuit_store,
                 token_cache,
+                dpop_key_cache.clone(),
                 dedupe_store,
                 event_sink,
                 record_state,
@@ -154,6 +161,7 @@ async fn poll_one_source(
                 max_pages.unwrap_or(100),
                 circuit_store,
                 token_cache,
+                dpop_key_cache.clone(),
                 dedupe_store,
                 event_sink,
                 record_state,
@@ -170,6 +178,7 @@ async fn poll_one_source(
                 &source.url,
                 circuit_store,
                 token_cache,
+                dpop_key_cache.clone(),
                 dedupe_store,
                 event_sink,
                 record_state.clone(),
@@ -190,6 +199,7 @@ async fn poll_link_header(
     max_pages: u32,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dpop_key_cache: Option<DPoPKeyCache>,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
@@ -241,6 +251,7 @@ async fn poll_link_header(
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
             source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
+            dpop_key_cache.as_ref(),
         )
         .await
         {
@@ -400,6 +411,7 @@ async fn poll_cursor_pagination(
     max_pages: u32,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dpop_key_cache: Option<DPoPKeyCache>,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
@@ -462,6 +474,7 @@ async fn poll_cursor_pagination(
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
             source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
+            dpop_key_cache.as_ref(),
         )
         .await
         {
@@ -640,6 +653,7 @@ async fn poll_page_offset_pagination(
     max_pages: u32,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dpop_key_cache: Option<DPoPKeyCache>,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
@@ -686,6 +700,7 @@ async fn poll_page_offset_pagination(
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
             source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
+            dpop_key_cache.as_ref(),
         )
         .await
         {
@@ -799,6 +814,7 @@ async fn poll_single_page(
     url: &str,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
+    dpop_key_cache: Option<DPoPKeyCache>,
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
@@ -819,6 +835,7 @@ async fn poll_single_page(
         source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
         source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
         Some(&token_cache),
+        dpop_key_cache.as_ref(),
     )
     .await
     {

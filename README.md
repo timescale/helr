@@ -7,7 +7,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 ## Supported features
 
 - **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries) with Link-header or cursor pagination
-- **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token), Google Service Account (JWT, domain-wide delegation for GWS)
+- **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset
 - **Resilience:** Retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
@@ -80,7 +80,7 @@ Configuration is merged in this order (later overrides earlier):
 3. **Environment variables** — `HEL_LOG_LEVEL` and `HEL_LOG_FORMAT` override global log settings when set; placeholders like `${OKTA_DOMAIN}` are expanded from the environment at load time (no default; unset = error)
 4. **CLI flags** — e.g. `--config` to choose the config file (no other config overrides via CLI today)
 
-- **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token), `google_service_account` (GWS).
+- **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
 - **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `max_pages`, and others — see `hel.yaml` comments and the manuals below.
@@ -152,7 +152,7 @@ Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override
 | `bearer` | `token_env` | `token_file`, `prefix` (default `Bearer`; use `SSWS` for Okta) |
 | `api_key` | `header`, `key_env` | `key_file` |
 | `basic` | `user_env`, `password_env` | `user_file`, `password_file` |
-| `oauth2` | `token_url`, `client_id_env`, `client_secret_env`, `refresh_token_env` | `*_file` for each, `scopes` |
+| `oauth2` | `token_url`, `client_id_env`; `client_secret_env` **or** `client_private_key_env` (PEM) | `refresh_token_env` (omit for client_credentials), `*_file` for each, `scopes`, `dpop` (true when server requires DPoP, e.g. Okta). Use `client_private_key_*` for Okta Org AS (private_key_jwt). Provider-agnostic. |
 | `google_service_account` | `scopes` (list) | `credentials_file` or `credentials_env`; `subject_env` or `subject_file` (admin email for domain-wide delegation) |
 
 Secrets can be read from env var or file; file takes precedence when set.
@@ -196,14 +196,14 @@ Secrets can be read from env var or file; file takes precedence when set.
 | Doc | Description |
 |-----|-------------|
 | [hel.yaml](hel.yaml) | Example config with Okta and GWS sources (commented where inactive). |
-| [docs/okta.md](docs/okta.md) | Okta System Log: API token, SSWS, link-header pagination, replay. |
+| [docs/okta.md](docs/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
 | [docs/gws-gcp.md](docs/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
 
 ## How to run with Okta
 
-1. Create an API token in Okta Admin (**Security** → **API** → **Tokens**).
-2. In `hel.yaml`, add or uncomment an Okta source (see example in repo); set `OKTA_DOMAIN` and `OKTA_API_TOKEN`.
-3. Run: `hel validate` then `hel test --source okta-audit` or `hel run`.
+**API token (SSWS):** Create an API token in Okta Admin (**Security** → **API** → **Tokens**). In `hel.yaml`, add an Okta source; set `OKTA_DOMAIN` and `OKTA_API_TOKEN`. Run: `hel validate` then `hel test --source okta-audit` or `hel run`.
+
+**OAuth2 (App Integration):** Use an API Services app with client credentials, private key (JWT), and optional DPoP — see [docs/okta.md](docs/okta.md).
 
 Full steps and troubleshooting: **[docs/okta.md](docs/okta.md)**.
 

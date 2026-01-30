@@ -21,15 +21,14 @@ pub fn build_client(resilience: Option<&ResilienceConfig>) -> anyhow::Result<Cli
     Ok(client)
 }
 
-/// Build a GET or POST request for the given URL with auth and optional extra headers from source config.
-/// When bearer_override is Some (e.g. from OAuth2 refresh), use it as Bearer and skip source.auth.
-/// For POST, body_override is the request body (merged with cursor etc. by caller); when None and method is POST, uses source.body or {}.
+/// Build GET or POST request with auth and optional headers. bearer_override/dpop_proof used when set (e.g. OAuth2).
 pub fn build_request(
     client: &Client,
     source: &SourceConfig,
     url: &str,
     bearer_override: Option<&str>,
     body_override: Option<&serde_json::Value>,
+    dpop_proof: Option<String>,
 ) -> anyhow::Result<reqwest::Request> {
     use crate::config::HttpMethod;
     let mut req = match source.method {
@@ -45,11 +44,19 @@ pub fn build_request(
         }
     };
     if let Some(token) = bearer_override {
-        let value = format!("Bearer {}", token);
+        let scheme = if dpop_proof.is_some() { "DPoP" } else { "Bearer" };
+        let value = format!("{} {}", scheme, token);
         let hv = HeaderValue::try_from(value).context("invalid bearer token")?;
         req = req.header(AUTHORIZATION, hv);
-    } else if let Some(auth) = &source.auth {
-        req = add_auth(req, auth)?;
+    }
+    if let Some(proof) = dpop_proof {
+        let hv = HeaderValue::try_from(proof).context("invalid DPoP proof")?;
+        req = req.header("DPoP", hv);
+    }
+    if bearer_override.is_none() {
+        if let Some(auth) = &source.auth {
+            req = add_auth(req, auth)?;
+        }
     }
     if let Some(headers) = &source.headers {
         for (k, v) in headers {
@@ -104,11 +111,9 @@ fn add_auth(
             req.header(AUTHORIZATION, hv)
         }
         AuthConfig::OAuth2 { .. } => {
-            // OAuth2 uses bearer_override in build_request; this path is never taken
             unreachable!("OAuth2 auth must use bearer_override in build_request")
         }
         AuthConfig::GoogleServiceAccount { .. } => {
-            // Google Service Account uses bearer_override in build_request; this path is never taken
             unreachable!("GoogleServiceAccount auth must use bearer_override in build_request")
         }
     };

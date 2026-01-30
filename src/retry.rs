@@ -2,8 +2,10 @@
 //! On 429, uses Retry-After (or X-RateLimit-Reset) when configured.
 
 use crate::client::build_request;
-use crate::config::{AuthConfig, RateLimitConfig, RetryConfig, SourceConfig};
+use crate::config::{AuthConfig, HttpMethod, RateLimitConfig, RetryConfig, SourceConfig};
+use crate::dpop::{build_dpop_proof, get_or_create_dpop_key, DPoPKeyCache};
 use crate::oauth2::{get_google_sa_token, get_oauth_token, invalidate_token, OAuth2TokenCache};
+use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Response};
@@ -32,7 +34,6 @@ pub fn retry_after_from_headers(
     headers: &HeaderMap,
     max_cap_secs: Option<u64>,
 ) -> Option<Duration> {
-    // Retry-After: delta-seconds (e.g. "120") or HTTP-date (e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
     if let Some(v) = headers.get("Retry-After") {
         let s = v.to_str().ok()?.trim();
         if let Ok(secs) = s.parse::<u64>() {
@@ -45,7 +46,6 @@ pub fn retry_after_from_headers(
             let secs = (until - now).num_seconds().max(0) as u64;
             return Some(cap_duration(Duration::from_secs(secs), max_cap_secs));
         }
-        // Try common HTTP-date format
         if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%a, %d %b %Y %H:%M:%S %Z") {
             let until = dt.with_timezone(&chrono::Utc);
             let now = chrono::Utc::now();
@@ -53,7 +53,6 @@ pub fn retry_after_from_headers(
             return Some(cap_duration(Duration::from_secs(secs), max_cap_secs));
         }
     }
-    // Fallback: X-RateLimit-Reset or X-Rate-Limit-Reset (Okta) — Unix timestamp when limit resets
     for name in ["X-RateLimit-Reset", "X-Rate-Limit-Reset"] {
         if let Some(v) = headers.get(name) {
             let s = v.to_str().ok()?.trim();
@@ -80,10 +79,11 @@ async fn bearer_for_request(
     source: &SourceConfig,
     source_id: &str,
     token_cache: Option<&OAuth2TokenCache>,
+    dpop_key_cache: Option<&DPoPKeyCache>,
 ) -> anyhow::Result<Option<String>> {
     match (&source.auth, token_cache) {
         (Some(auth @ AuthConfig::OAuth2 { .. }), Some(cache)) => {
-            let token = get_oauth_token(cache, client, source_id, auth).await?;
+            let token = get_oauth_token(cache, client, source_id, auth, dpop_key_cache).await?;
             Ok(Some(token))
         }
         (Some(auth @ AuthConfig::GoogleServiceAccount { .. }), Some(cache)) => {
@@ -94,9 +94,45 @@ async fn bearer_for_request(
     }
 }
 
+fn need_dpop_proof(source: &SourceConfig) -> bool {
+    matches!(
+        &source.auth,
+        Some(AuthConfig::OAuth2 { dpop: true, .. })
+    )
+}
+
+/// DPoP proof for this request when source has dpop; optional nonce and access_token for ath.
+async fn dpop_proof_for_request(
+    source_id: &str,
+    source: &SourceConfig,
+    url: &str,
+    dpop_key_cache: Option<&DPoPKeyCache>,
+    nonce: Option<&str>,
+    access_token: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    if !need_dpop_proof(source) {
+        return Ok(None);
+    }
+    let key_cache = match dpop_key_cache {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let key = get_or_create_dpop_key(key_cache, source_id).await?;
+    let method = match source.method {
+        HttpMethod::Get => "GET",
+        HttpMethod::Post => "POST",
+    };
+    let iat = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system time")?
+        .as_secs();
+    let jti = format!("{}-{}-{}", source_id, iat, std::time::Instant::now().elapsed().as_nanos());
+    let proof = build_dpop_proof(method, url, &key, &jti, iat, nonce, access_token)?;
+    Ok(Some(proof))
+}
+
 /// Execute a GET or POST request with optional retries. Uses source auth and headers.
-/// For POST, body is the request body (merged with cursor etc. by caller); when None, source.body is used.
-/// Retries on: 408, 429, 5xx, and transport errors. On 429, uses Retry-After when rate_limit.respect_headers is true.
+/// Retries on 408, 429, 5xx, and transport errors; on 429 uses Retry-After when rate_limit.respect_headers is true.
 pub async fn execute_with_retry(
     client: &Client,
     source: &SourceConfig,
@@ -106,12 +142,14 @@ pub async fn execute_with_retry(
     retry: Option<&RetryConfig>,
     rate_limit: Option<&RateLimitConfig>,
     token_cache: Option<&OAuth2TokenCache>,
+    dpop_key_cache: Option<&DPoPKeyCache>,
 ) -> anyhow::Result<Response> {
     let retry = match retry {
         Some(r) if r.max_attempts > 0 => r,
         _ => {
-            let bearer = bearer_for_request(client, source, source_id, token_cache).await?;
-            let req = build_request(client, source, url, bearer.as_deref(), body)?;
+            let bearer = bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
+            let dpop_proof = dpop_proof_for_request(source_id, source, url, dpop_key_cache, None, bearer.as_deref()).await?;
+            let req = build_request(client, source, url, bearer.as_deref(), body, dpop_proof)?;
             return client.execute(req).await.context("http request");
         }
     };
@@ -119,8 +157,9 @@ pub async fn execute_with_retry(
     let mut last_err = None;
     let mut auth_refresh_attempted = false;
     for attempt in 0..retry.max_attempts {
-        let bearer = bearer_for_request(client, source, source_id, token_cache).await?;
-        let req = build_request(client, source, url, bearer.as_deref(), body)?;
+        let bearer = bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
+        let dpop_proof = dpop_proof_for_request(source_id, source, url, dpop_key_cache, None, bearer.as_deref()).await?;
+        let req = build_request(client, source, url, bearer.as_deref(), body, dpop_proof)?;
         match client.execute(req).await {
             Ok(response) => {
                 if response.status().is_success() {
@@ -142,10 +181,59 @@ pub async fn execute_with_retry(
                 }
                 if !is_retryable_status(response.status()) {
                     let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    anyhow::bail!("http {} {}", status, body);
+                    let dpop_nonce_header = response
+                        .headers()
+                        .get("DPoP-Nonce")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.trim().to_string());
+                    let response_body = response.text().await.unwrap_or_default();
+                    if need_dpop_proof(source)
+                        && (status.as_u16() == 400 || status.as_u16() == 401)
+                        && dpop_key_cache.is_some()
+                    {
+                        let nonce = dpop_nonce_header.or_else(|| {
+                            serde_json::from_str::<serde_json::Value>(&response_body)
+                                .ok()
+                                .and_then(|v| {
+                                    v.get("nonce")
+                                        .or(v.get("dpop_nonce"))
+                                        .and_then(|n| n.as_str())
+                                        .map(|s| s.to_string())
+                                })
+                        });
+                        if let Some(ref nonce) = nonce {
+                            let dpop_proof_with_nonce =
+                                dpop_proof_for_request(source_id, source, url, dpop_key_cache, Some(nonce), bearer.as_deref())
+                                    .await?;
+                            let retry_req = build_request(
+                                client,
+                                source,
+                                url,
+                                bearer.as_deref(),
+                                body,
+                                dpop_proof_with_nonce,
+                            )?;
+                            match client.execute(retry_req).await {
+                                Ok(retry_response) if retry_response.status().is_success() => {
+                                    return Ok(retry_response);
+                                }
+                                Ok(retry_response) => {
+                                    let retry_status = retry_response.status();
+                                    let retry_body =
+                                        retry_response.text().await.unwrap_or_default();
+                                    anyhow::bail!(
+                                        "http {} {} (url: {}, after DPoP nonce retry)",
+                                        retry_status,
+                                        retry_body,
+                                        url
+                                    );
+                                }
+                                Err(e) => return Err(anyhow::Error::from(e)).context("http request"),
+                            }
+                        }
+                    }
+                    anyhow::bail!("http {} {} (url: {})", status, response_body, url);
                 }
-                // Retryable status: prefer Retry-After on 429 when rate_limit.respect_headers
                 let status = response.status();
                 let delay = if status.as_u16() == 429
                     && rate_limit.map_or(false, |r| r.respect_headers)
@@ -184,7 +272,6 @@ pub async fn execute_with_retry(
                 }
             }
             Err(e) => {
-                // Transport/network errors: retry
                 last_err = Some(e.into());
                 if attempt + 1 < retry.max_attempts {
                     let delay = backoff_duration(retry, attempt);

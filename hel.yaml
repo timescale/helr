@@ -17,47 +17,83 @@ global:
 
 sources:
   # --- GWS (Admin SDK): docs/gws-gcp-manual.md. One source per app; duplicate and change URL path for drive, admin, etc.
-  gws-login:
-    url: "https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/login"
-    schedule:
-      interval_secs: 300
-      jitter_secs: 30
-    auth:
-      type: google_service_account
-      credentials_file: "./credentials.json"
-      subject_env: GWS_DELEGATED_USER
-      scopes:
-        - "https://www.googleapis.com/auth/admin.reports.audit.readonly"
-    pagination:
-      strategy: cursor
-      cursor_param: pageToken
-      cursor_path: nextPageToken
-      max_pages: 50
-    query_params:
-      maxResults: "500"
-    resilience:
-      timeout_secs: 30
-      retries:
-        max_attempts: 5
-        initial_backoff_secs: 2
-        max_backoff_secs: 60
-        multiplier: 2.0
-      circuit_breaker:
-        enabled: true
-        failure_threshold: 5
-        success_threshold: 2
-        half_open_timeout_secs: 60
+  # gws-login:
+  #   url: "https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/login"
+  #   schedule:
+  #     interval_secs: 300
+  #     jitter_secs: 30
+  #   auth:
+  #     type: google_service_account
+  #     credentials_file: "./credentials.json"
+  #     subject_env: GWS_DELEGATED_USER
+  #     scopes:
+  #       - "https://www.googleapis.com/auth/admin.reports.audit.readonly"
+  #   pagination:
+  #     strategy: cursor
+  #     cursor_param: pageToken
+  #     cursor_path: nextPageToken
+  #     max_pages: 50
+  #   query_params:
+  #     maxResults: "500"
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
 
-  # --- Okta: set OKTA_DOMAIN and OKTA_API_TOKEN; auth prefix SSWS.
-  okta-audit:
+  # --- Okta: set OKTA_DOMAIN and OKTA_API_TOKEN; auth prefix SSWS. See docs/okta.md.
+  # okta-audit:
+  #   url: "https://${OKTA_DOMAIN}/api/v1/logs"
+  #   schedule:
+  #     interval_secs: 60
+  #     jitter_secs: 10
+  #   auth:
+  #     type: bearer
+  #     token_env: OKTA_API_TOKEN
+  #     prefix: SSWS
+  #   pagination:
+  #     strategy: link_header
+  #     rel: next
+  #     max_pages: 20
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
+  #     rate_limit:
+  #       respect_headers: true
+  #       page_delay_secs: 1
+
+  # --- Okta via OAuth2 (API service integration): client_credentials, org server.
+  # Org AS requires private_key_jwt: set OKTA_DOMAIN, OKTA_CLIENT_ID, OKTA_CLIENT_PRIVATE_KEY (PEM).
+  # See docs/okta.md and https://developer.okta.com/docs/guides/build-api-integration/main/
+  okta-audit-oauth2:
     url: "https://${OKTA_DOMAIN}/api/v1/logs"
     schedule:
       interval_secs: 60
       jitter_secs: 10
     auth:
-      type: bearer
-      token_env: OKTA_API_TOKEN
-      prefix: SSWS
+      type: oauth2
+      token_url: "https://${OKTA_DOMAIN}/oauth2/v1/token"
+      client_id_env: OKTA_CLIENT_ID
+      client_private_key_file: "./private-key.pem"
+      scopes:
+        - "okta.logs.read"
+      dpop: true
     pagination:
       strategy: link_header
       rel: next

@@ -11,6 +11,7 @@ mod circuit;
 mod client;
 mod config;
 mod dedupe;
+mod dpop;
 mod event;
 mod metrics;
 mod oauth2;
@@ -25,6 +26,7 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use circuit::new_circuit_store;
 use config::Config;
+use dpop::new_dpop_key_cache;
 use oauth2::new_oauth2_token_cache;
 use output::{parse_rotation, EventSink, FileSink, RotationPolicy, StdoutSink};
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
@@ -452,6 +454,7 @@ async fn run_test(
     let store = open_store(&config)?;
     let circuit_store = new_circuit_store();
     let token_cache = new_oauth2_token_cache();
+    let dpop_key_cache = Some(new_dpop_key_cache());
     let dedupe_store = dedupe::new_dedupe_store();
     poll::run_one_tick(
         &config,
@@ -459,6 +462,7 @@ async fn run_test(
         Some(source_name),
         circuit_store,
         token_cache,
+        dpop_key_cache,
         dedupe_store,
         event_sink,
         None,
@@ -585,6 +589,7 @@ async fn run_collector(
 
     let circuit_store = new_circuit_store();
     let token_cache = new_oauth2_token_cache();
+    let dpop_key_cache = Some(new_dpop_key_cache());
     let dedupe_store = dedupe::new_dedupe_store();
     poll::run_one_tick(
         &config,
@@ -592,6 +597,7 @@ async fn run_collector(
         source_filter,
         circuit_store.clone(),
         token_cache.clone(),
+        dpop_key_cache.clone(),
         dedupe_store.clone(),
         event_sink.clone(),
         record_state.clone(),
@@ -695,6 +701,7 @@ async fn run_collector(
         let source_filter_ref = source_filter;
         let circuit_store_ref = circuit_store.clone();
         let token_cache_ref = token_cache.clone();
+        let dpop_key_cache_ref = dpop_key_cache.clone();
         let dedupe_store_ref = dedupe_store.clone();
         let event_sink_ref = event_sink.clone();
         let record_state_ref = record_state.as_ref();
@@ -704,6 +711,7 @@ async fn run_collector(
             source_filter_ref,
             circuit_store_ref,
             token_cache_ref,
+            dpop_key_cache_ref,
             dedupe_store_ref,
             event_sink_ref,
             record_state_ref.cloned(),
