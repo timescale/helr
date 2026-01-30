@@ -13,7 +13,6 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
 - **Session replay:** Record API responses to disk, replay without hitting the live API
-- **Mock server:** Run a fake API from a YAML spec for development (`hel mock-server mocks/okta.yaml`)
 
 ## Install
 
@@ -197,7 +196,7 @@ Secrets can be read from env var or file; file takes precedence when set.
 | Doc | Description |
 |-----|-------------|
 | [hel.yaml](hel.yaml) | Example config with Okta and GWS sources (commented where inactive). |
-| [docs/okta.md](docs/okta.md) | Okta System Log: API token, SSWS, link-header pagination, mock server. |
+| [docs/okta.md](docs/okta.md) | Okta System Log: API token, SSWS, link-header pagination, replay. |
 | [docs/gws-gcp.md](docs/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
 
 ## How to run with Okta
@@ -216,10 +215,9 @@ Full steps and troubleshooting: **[docs/okta.md](docs/okta.md)**.
 
 Full steps: **[docs/gws-gcp.md](docs/gws-gcp.md)**.
 
-## Mock server and replay
+## Session replay
 
-- **Mock:** `hel mock-server mocks/okta.yaml` (or `mocks/gws.yaml`) — serves a fake API from YAML. Point a source in `hel.yaml` at `http://127.0.0.1:<port>/...` and run `hel run --once` to test the pipeline without live credentials.
-- **Replay:** `hel run --once --record-dir ./recordings` to save responses; `hel run --once --replay-dir ./recordings` to replay from disk.
+Record API responses once, then replay from disk to test the pipeline without hitting the live API: `hel run --once --record-dir ./recordings` to save; `hel run --once --replay-dir ./recordings` to replay.
 
 ## License
 

@@ -1,4 +1,4 @@
-//! Integration test: mock HTTP server + hel run --once; assert stdout NDJSON and behavior.
+//! Integration tests: replay + wiremock + hel run --once; assert stdout NDJSON and behavior.
 
 use base64::Engine;
 use serde_json::json;
@@ -317,7 +317,7 @@ sources:
     );
 }
 
-/// Session replay --record-dir: run against mock server, then verify recording files exist.
+/// Session replay --record-dir: run against wiremock, then verify recording files exist.
 #[tokio::test]
 async fn integration_record_dir_writes_recordings() {
     let server = MockServer::start().await;
@@ -604,106 +604,6 @@ sources:
     );
     let lines: Vec<&str> = stdout.lines().filter(|s| s.contains("\"event\"")).collect();
     assert!(lines.is_empty(), "expected no events when circuit opens; got {} lines", lines.len());
-}
-
-/// Mock server: hel mock-server <config> serves YAML-defined responses; hel run --once against it emits NDJSON.
-#[tokio::test]
-async fn integration_mock_server_emits_ndjson() {
-    let config_dir = std::env::temp_dir().join("hel_integration_mock");
-    let _ = std::fs::create_dir_all(&config_dir);
-    let mock_config_path = config_dir.join("mock.yaml");
-    let fixture_path = config_dir.join("page1.json");
-    let hel_config_path = config_dir.join("hel.yaml");
-
-    std::fs::write(
-        &fixture_path,
-        r#"[{"id": "m1", "msg": "from-mock", "published": "2024-01-10T12:00:00Z"}]"#,
-    )
-    .expect("write fixture");
-
-    std::fs::write(
-        &mock_config_path,
-        format!(
-            r#"
-endpoint: "/api/v1/logs"
-bind: "127.0.0.1:19286"
-responses:
-  - match:
-      query:
-        since: "*"
-    response:
-      status: 200
-      headers:
-        Content-Type: "application/json"
-      body_file: "{}"
-"#,
-            fixture_path.file_name().unwrap().to_str().unwrap()
-        ),
-    )
-    .expect("write mock config");
-
-    let mut child = std::process::Command::new(hel_bin())
-        .args(["mock-server", mock_config_path.to_str().unwrap()])
-        .env("RUST_LOG", "error")
-        .current_dir(config_dir.clone())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn hel mock server");
-
-    std::thread::sleep(Duration::from_millis(500));
-
-    let hel_yaml = r#"
-global:
-  log_level: error
-  state:
-    backend: memory
-sources:
-  mock-source:
-    url: "http://127.0.0.1:19286/api/v1/logs?since=2024-01-01"
-    pagination:
-      strategy: link_header
-      rel: next
-    resilience:
-      timeout_secs: 5
-"#;
-    std::fs::write(&hel_config_path, hel_yaml).expect("write hel config");
-
-    let out = std::process::Command::new(hel_bin())
-        .args([
-            "run",
-            "--config",
-            hel_config_path.to_str().unwrap(),
-            "--once",
-        ])
-        .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
-        .output()
-        .expect("run hel");
-
-    let _ = child.kill();
-
-    assert!(
-        out.status.success(),
-        "hel run against mock server failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 1,
-        "expected at least 1 NDJSON line from mock, got {}: {}",
-        lines.len(),
-        stdout
-    );
-    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(obj["source"], "mock-source");
-    assert_eq!(obj["event"]["id"], "m1");
-    assert_eq!(obj["event"]["msg"], "from-mock");
 }
 
 /// hel state set: set a single key, then show confirms it.
@@ -995,7 +895,7 @@ sources:
     assert_eq!(lines.len(), 2, "max_pages=2 so 2 requests, 2 events; got {}: {:?}", lines.len(), stdout);
 }
 
-/// Recorded/fixture: mock returns Okta-shaped JSON; parser accepts it.
+/// Recorded/fixture: wiremock returns Okta-shaped JSON; parser accepts it.
 #[tokio::test]
 async fn integration_fixture_okta_shaped_events() {
     let server = MockServer::start().await;

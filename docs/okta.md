@@ -90,20 +90,9 @@ Example: only events after a date and a filter:
 - **Dedupe:** To skip duplicate events by ID (e.g. after replay or overlapping polls), add `dedupe.id_path: "uuid"` (or `"id"`) and `capacity`.
 - **Rate limit:** Okta allows about 60 requests/min. One poll can request many pages in a row. Use `max_pages` and `rate_limit.page_delay_secs` to cap burst; Hel uses `Retry-After` on 429 when `respect_headers: true`.
 
-## Testing with the mock server
+## Testing with replay
 
-To test the pipeline without calling Okta:
-
-1. **Terminal 1:**  
-   `hel mock-server mocks/okta.yaml`  
-   Note the port (e.g. `127.0.0.1:54321`).
-
-2. **hel.yaml:** Add a source with the same shape as Okta but URL `http://127.0.0.1:54321/api/v1/logs`, auth `bearer` with any token (e.g. `token_env: HEL_MOCK_TOKEN`), same pagination (`link_header`, `rel: next`).
-
-3. **Terminal 2:**  
-   `export HEL_MOCK_TOKEN=any`  
-   `hel test --source okta-audit`  
-   (Use the source key you gave that mock URL.)
+To test the pipeline without calling Okta repeatedly: run once with `--record-dir ./recordings` (with valid credentials) to save responses, then use `hel run --once --replay-dir ./recordings` to replay from disk. No live API calls during replay.
 
 ## Troubleshooting
 

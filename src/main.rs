@@ -13,7 +13,6 @@ mod config;
 mod dedupe;
 mod event;
 mod metrics;
-mod mock_server;
 mod oauth2;
 mod output;
 mod pagination;
@@ -115,12 +114,6 @@ enum Commands {
         subcommand: Option<StateSubcommand>,
     },
 
-    /// Run mock HTTP server for development (serves YAML-defined responses).
-    MockServer {
-        /// Mock server config YAML (endpoint, response rules).
-        #[arg(value_name = "CONFIG")]
-        config: PathBuf,
-    },
 }
 
 #[derive(Subcommand)]
@@ -146,7 +139,6 @@ fn hel_config_path(cli: &Cli) -> PathBuf {
         Some(Commands::Validate { config }) => config.clone(),
         Some(Commands::Test { config, .. }) => config.clone(),
         Some(Commands::State { config, .. }) => config.clone(),
-        Some(Commands::MockServer { .. }) => PathBuf::from("hel.yaml"), // MockServer uses its own config
     }
 }
 
@@ -177,10 +169,6 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Validate { config }) => {
             init_logging(None, &cli);
             run_validate(config)
-        }
-        Some(Commands::MockServer { config }) => {
-            init_logging(None, &cli);
-            mock_server::run_mock_server(config).await
         }
         other => {
             let config = Config::load(&hel_config_path(&cli))?;
