@@ -3,7 +3,7 @@
 use crate::circuit::{self, CircuitStore};
 use crate::client::build_client;
 use crate::config::{
-    CheckpointTiming, Config, CursorExpiredBehavior, InvalidUtf8Behavior,
+    CheckpointTiming, Config, CursorExpiredBehavior, GlobalConfig, InvalidUtf8Behavior,
     MaxEventBytesBehavior, OnParseErrorBehavior, OnStateWriteErrorBehavior, PaginationConfig,
     SourceConfig,
 };
@@ -44,6 +44,7 @@ pub async fn run_one_tick(
         let store = store.clone();
         let source_id_key = source_id.clone();
         let source = source.clone();
+        let global = config.global.clone();
         let circuit_store = circuit_store.clone();
         let token_cache = token_cache.clone();
         let dedupe_store = dedupe_store.clone();
@@ -54,6 +55,7 @@ pub async fn run_one_tick(
                 store,
                 &source_id_key,
                 &source,
+                &global,
                 circuit_store,
                 token_cache,
                 dedupe_store,
@@ -80,11 +82,12 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source, circuit_store, token_cache, dedupe_store, event_sink, record_state))]
+#[instrument(skip(store, source, global, circuit_store, token_cache, dedupe_store, event_sink, record_state))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
+    global: &GlobalConfig,
     circuit_store: CircuitStore,
     token_cache: OAuth2TokenCache,
     dedupe_store: DedupeStore,
@@ -99,6 +102,7 @@ async fn poll_one_source(
                 store,
                 source_id,
                 source,
+                global,
                 &client,
                 rel.as_str(),
                 max_pages.unwrap_or(100),
@@ -119,6 +123,7 @@ async fn poll_one_source(
                 store,
                 source_id,
                 source,
+                global,
                 &client,
                 cursor_param,
                 cursor_path,
@@ -141,6 +146,7 @@ async fn poll_one_source(
                 store,
                 source_id,
                 source,
+                global,
                 &client,
                 page_param,
                 limit_param,
@@ -159,6 +165,7 @@ async fn poll_one_source(
                 store,
                 source_id,
                 source,
+                global,
                 &client,
                 &source.url,
                 circuit_store,
@@ -177,6 +184,7 @@ async fn poll_link_header(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
+    global: &GlobalConfig,
     client: &reqwest::Client,
     rel: &str,
     max_pages: u32,
@@ -326,7 +334,7 @@ async fn poll_link_header(
                 path.clone(),
                 event_value.clone(),
             );
-            emit_event_line(source_id, source, &event_sink, &emitted)?;
+            emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
 
@@ -385,6 +393,7 @@ async fn poll_cursor_pagination(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
+    global: &GlobalConfig,
     client: &reqwest::Client,
     cursor_param: &str,
     cursor_path: &str,
@@ -576,7 +585,7 @@ async fn poll_cursor_pagination(
                 path.clone(),
                 event_value.clone(),
             );
-            emit_event_line(source_id, source, &event_sink, &emitted)?;
+            emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
         let checkpoint_per_page = source.checkpoint != Some(CheckpointTiming::EndOfTick);
@@ -623,6 +632,7 @@ async fn poll_page_offset_pagination(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
+    global: &GlobalConfig,
     client: &reqwest::Client,
     page_param: &str,
     limit_param: &str,
@@ -758,7 +768,7 @@ async fn poll_page_offset_pagination(
                 path.clone(),
                 event_value.clone(),
             );
-            emit_event_line(source_id, source, &event_sink, &emitted)?;
+            emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
         if events.len() < limit as usize {
@@ -784,6 +794,7 @@ async fn poll_single_page(
     store: Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
+    global: &GlobalConfig,
     client: &reqwest::Client,
     url: &str,
     circuit_store: CircuitStore,
@@ -891,7 +902,7 @@ async fn poll_single_page(
             path.clone(),
             event_value.clone(),
         );
-        emit_event_line(source_id, source, &event_sink, &emitted)?;
+        emit_event_line(global, source_id, source, &event_sink, &emitted)?;
     }
     metrics::record_events(source_id, emitted_count);
 
@@ -916,23 +927,34 @@ fn bytes_to_string(bytes: &[u8], on_invalid_utf8: Option<InvalidUtf8Behavior>) -
     }
 }
 
-/// Value for the "source" field in NDJSON: source_label if set, else the config source key.
+/// Value for the producer label in NDJSON: source_label_value if set, else the config source key.
 fn effective_source_label(source: &SourceConfig, source_id: &str) -> String {
     source
-        .source_label
+        .source_label_value
         .as_deref()
         .unwrap_or(source_id)
         .to_string()
 }
 
+/// Key for the producer label in NDJSON: source override, else global, else "source".
+fn effective_source_label_key<'a>(global: &'a GlobalConfig, source: &'a SourceConfig) -> &'a str {
+    source
+        .source_label_key
+        .as_deref()
+        .or(global.source_label_key.as_deref())
+        .unwrap_or("source")
+}
+
 /// Emit one event line; enforce max_line_bytes, record output errors.
 fn emit_event_line(
+    global: &GlobalConfig,
     source_id: &str,
     source: &SourceConfig,
     event_sink: &Arc<dyn EventSink>,
     emitted: &EmittedEvent,
 ) -> anyhow::Result<()> {
-    let line = emitted.to_ndjson_line()?;
+    let label_key = effective_source_label_key(global, source);
+    let line = emitted.to_ndjson_line_with_label_key(label_key)?;
     if let Some(max) = source.max_line_bytes {
         if line.len() as u64 > max {
             match source.max_line_bytes_behavior.unwrap_or(MaxEventBytesBehavior::Fail) {
@@ -1232,9 +1254,25 @@ query_params:
     fn test_effective_source_label_override() {
         let yaml = r#"
 url: "https://example.com/logs"
-source_label: "okta_audit"
+source_label_value: "okta_audit"
 "#;
         let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(effective_source_label(&source, "okta-audit"), "okta_audit");
+    }
+
+    #[test]
+    fn test_effective_source_label_key() {
+        use crate::config::GlobalConfig;
+        let mut global = GlobalConfig::default();
+        let yaml = r#"url: "https://example.com/logs""#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(effective_source_label_key(&global, &source), "source");
+        global.source_label_key = Some("service".to_string());
+        assert_eq!(effective_source_label_key(&global, &source), "service");
+        let yaml_override = r#"url: "https://example.com/logs"
+source_label_key: "origin"
+"#;
+        let source_override: SourceConfig = serde_yaml::from_str(yaml_override).unwrap();
+        assert_eq!(effective_source_label_key(&global, &source_override), "origin");
     }
 }

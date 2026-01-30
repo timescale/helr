@@ -31,6 +31,14 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub log_format: Option<String>,
 
+    /// Key for the producer label in NDJSON events and Hel's JSON log lines (default "source"). Overridable per source with source_label_key.
+    #[serde(default)]
+    pub source_label_key: Option<String>,
+
+    /// Value for the producer label in Hel's own JSON log lines (default "hel").
+    #[serde(default)]
+    pub source_label_value: Option<String>,
+
     #[serde(default)]
     pub state: Option<GlobalStateConfig>,
 
@@ -131,10 +139,13 @@ pub struct SourceConfig {
     #[serde(default)]
     pub body: Option<serde_json::Value>,
 
-    /// Value for the "source" field in emitted NDJSON lines. Defaults to the source key (e.g. "okta-audit").
-    /// Override for downstream labeling (e.g. Loki) or to use a stable name across config renames.
+    /// Key for the producer label in emitted NDJSON (default from global.source_label_key). Use to align with downstream (e.g. "service", "origin").
     #[serde(default)]
-    pub source_label: Option<String>,
+    pub source_label_key: Option<String>,
+
+    /// Value for the producer label in emitted NDJSON. Defaults to the source key (e.g. "okta-audit").
+    #[serde(default)]
+    pub source_label_value: Option<String>,
 
     #[serde(default)]
     pub schedule: ScheduleConfig,

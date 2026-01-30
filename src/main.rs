@@ -244,7 +244,11 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Add "source":"hel" to a JSON log line so collector logs and NDJSON events share a consistent source field.
+/// Key/value for the producer label in Hel's JSON log lines (set in init_logging).
+static HEL_LOG_LABEL_KEY: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+static HEL_LOG_LABEL_VALUE: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+
+/// Post-process a JSON log line: add configurable producer label (key/value), rename "target" to "module" so "source" (or configured key) is the sole producer field.
 fn add_source_to_json_log_line(line: &str) -> String {
     let trimmed = line.trim();
     if !trimmed.starts_with('{') {
@@ -253,7 +257,19 @@ fn add_source_to_json_log_line(line: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(trimmed) {
         Ok(mut v) => {
             if let Some(obj) = v.as_object_mut() {
-                obj.insert("source".to_string(), serde_json::Value::String("hel".to_string()));
+                let key = HEL_LOG_LABEL_KEY
+                    .get()
+                    .map(|s| s.as_str())
+                    .unwrap_or("source");
+                let value = HEL_LOG_LABEL_VALUE
+                    .get()
+                    .map(|s| s.as_str())
+                    .unwrap_or("hel");
+                obj.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                // Rename tracing "target" (module path) to "module" so the producer field is unambiguous.
+                if let Some(t) = obj.remove("target") {
+                    obj.insert("module".to_string(), t);
+                }
             }
             let out = serde_json::to_string(&v).unwrap_or_else(|_| line.to_string());
             if line.ends_with('\n') {
@@ -337,6 +353,18 @@ fn init_logging(config: Option<&Config>, cli: &Cli) {
         _ => std::env::var("HEL_LOG_FORMAT").as_deref() == Ok("json")
             || std::env::var("RUST_LOG_JSON").as_deref() == Ok("1"),
     };
+    if use_json {
+        let key = config
+            .and_then(|c| c.global.source_label_key.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "source".to_string());
+        let value = config
+            .and_then(|c| c.global.source_label_value.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "hel".to_string());
+        let _ = HEL_LOG_LABEL_KEY.set(key);
+        let _ = HEL_LOG_LABEL_VALUE.set(value);
+    }
     let filter = if cli.quiet {
         EnvFilter::new("error")
     } else if cli.verbose {
@@ -770,11 +798,13 @@ mod tests {
 
     #[test]
     fn test_add_source_to_json_log_line() {
-        let line = r#"{"timestamp":"2024-01-15T12:00:00Z","level":"INFO","message":"started"}"#;
+        let line = r#"{"timestamp":"2024-01-15T12:00:00Z","level":"INFO","target":"hel","message":"started"}"#;
         let out = add_source_to_json_log_line(line);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v.get("source").and_then(|s| s.as_str()), Some("hel"));
         assert_eq!(v.get("message").and_then(|s| s.as_str()), Some("started"));
+        assert!(v.get("target").is_none(), "target should be renamed to module");
+        assert_eq!(v.get("module").and_then(|s| s.as_str()), Some("hel"));
     }
 
     #[test]

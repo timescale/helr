@@ -2,6 +2,9 @@
 global:
   log_level: info
   log_format: json
+  # Producer label in NDJSON and Hel's JSON logs (default key "source", value "hel" for collector logs)
+  # source_label_key: source
+  # source_label_value: hel
   state:
     backend: sqlite
     path: "./hel-state.db"
@@ -35,8 +38,9 @@ sources:
       max_pages: 20
     # Optional: stop pagination when total response body bytes exceed this (per poll)
     # max_bytes: 10485760   # 10 MiB
-    # Optional: value for the "source" field in NDJSON (default: source key). Use for Loki labels or stable names.
-    # source_label: okta_audit
+    # Optional: key for producer label (default from global.source_label_key). Value: source_label_value or source key.
+    # source_label_key: service
+    # source_label_value: okta_audit
     # Optional: skip emitting duplicate events by ID (LRU, per source)
     # dedupe:
     #   id_path: "uuid"     # or "id", "event.id" (dotted path). Reusable across APIs.

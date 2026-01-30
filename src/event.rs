@@ -4,6 +4,7 @@
 
 #![allow(dead_code)] // used when implementing poll loop
 
+use anyhow::anyhow;
 use serde::Serialize;
 
 /// One log event emitted to stdout (NDJSON line).
@@ -49,8 +50,20 @@ impl EmittedEvent {
     }
 
     /// Serialize to one NDJSON line (no trailing newline; caller adds).
+    /// `label_key` is the key for the producer field (default "source"; configurable via global/source source_label_key).
+    pub fn to_ndjson_line_with_label_key(&self, label_key: &str) -> anyhow::Result<String> {
+        let mut val = serde_json::to_value(self).map_err(anyhow::Error::from)?;
+        let obj = val
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("expected object"))?;
+        let source_val = obj.remove("source").unwrap_or(serde_json::Value::String(String::new()));
+        obj.insert(label_key.to_string(), source_val);
+        serde_json::to_string(&val).map_err(anyhow::Error::from)
+    }
+
+    /// Serialize with default label key "source" (for tests that don't pass config).
     pub fn to_ndjson_line(&self) -> anyhow::Result<String> {
-        serde_json::to_string(self).map_err(Into::into)
+        self.to_ndjson_line_with_label_key("source")
     }
 }
 
