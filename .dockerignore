@@ -1,0 +1,27 @@
+# Git and IDE
+.git
+.gitignore
+.cursor
+.vscode
+*.swp
+*~
+
+# Build artifacts (we build inside the image)
+target/
+
+# Local state and secrets (never bake into image)
+*.db
+hel-state.db
+credentials.json
+*.pem
+.env
+.env.*
+
+# Docs and tests (not needed for the binary)
+docs/
+tests/
+README.md
+*.md
+
+# Config is mounted at runtime
+hel.yaml
