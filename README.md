@@ -6,7 +6,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 
 ## Supported features
 
-- **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, 1Password Events API (audit), GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries) with Link-header or cursor pagination
+- **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, 1Password Events API (audit), Tailscale configuration audit and network flow logs, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries/logs) with Link-header or cursor pagination
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset
 - **Resilience:** Retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
@@ -59,6 +59,8 @@ hel test --source gws-login
 hel test --source github-audit
 hel test --source slack-audit
 hel test --source 1password-audit
+hel test --source tailscale-audit
+hel test --source tailscale-network
 
 # State (inspect, reset, set cursor, export/import)
 hel state show okta-audit
@@ -198,12 +200,13 @@ Secrets can be read from env var or file; file takes precedence when set.
 
 | Doc | Description |
 |-----|-------------|
-| [hel.yaml](hel.yaml) | Example config with Okta, GWS, GitHub, Slack, and 1Password sources (commented where inactive). |
+| [hel.yaml](hel.yaml) | Example config with Okta, GWS, GitHub, Slack, 1Password, and Tailscale sources (commented where inactive). |
 | [docs/okta.md](docs/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
 | [docs/gws-gcp.md](docs/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
 | [docs/github.md](docs/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
 | [docs/slack.md](docs/slack.md) | Slack Enterprise audit logs: user token (xoxp) with auditlogs:read; cursor pagination; Enterprise only. |
 | [docs/1password.md](docs/1password.md) | 1Password Events API (audit): bearer token from Events Reporting; POST, cursor in body. |
+| [docs/tailscale.md](docs/tailscale.md) | Tailscale configuration audit logs and network flow logs: API token (Basic auth); time-window GET; no pagination. |
 
 ## How to run with Okta
 
@@ -238,6 +241,12 @@ Full steps and troubleshooting: **[docs/slack.md](docs/slack.md)**.
 Create an **Events Reporting integration** in your 1Password Business account (**Integrations** → **Directory** → Events Reporting). Issue a bearer token with **Audit events** enabled and save it (e.g. as `ONEPASSWORD_EVENTS_TOKEN`). Uncomment the `1password-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source 1password-audit` or `hel run`. The audit endpoint is **POST** with cursor-in-body pagination.
 
 Full steps and troubleshooting: **[docs/1password.md](docs/1password.md)**.
+
+## How to run with Tailscale
+
+Create an **API access token** with **logs:configuration:read** (and optionally **logs:network:read** for network flow logs) in the Tailscale admin console (**Settings** → **Keys**). Set `TAILNET_ID` (your tailnet name, e.g. `example.com`), `TAILSCALE_START` and `TAILSCALE_END` (RFC3339 time window), `TAILSCALE_API_TOKEN` (the token), and `TAILSCALE_API_TOKEN_PASSWORD=""` (empty password for Basic auth). Uncomment the `tailscale-audit` source (and `tailscale-network` for [network flow logs](https://tailscale.com/kb/1219/network-flow-logs/) — Premium/Enterprise only; enable in admin console) in `hel.yaml` and run: `hel validate` then `hel test --source tailscale-audit` or `hel test --source tailscale-network` or `hel run`. Both APIs return all events in the window in one response (no pagination).
+
+Full steps and troubleshooting: **[docs/tailscale.md](docs/tailscale.md)**.
 
 ## Session replay
 

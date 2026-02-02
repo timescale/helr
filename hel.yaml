@@ -220,6 +220,56 @@ sources:
   #       respect_headers: true
   #       page_delay_secs: 1
 
+  # --- Tailscale configuration audit logs. API token with logs:configuration:read; Basic auth (token as user, empty password). No pagination; start/end in URL. See docs/tailscale.md.
+  # tailscale-audit:
+  #   url: "https://api.tailscale.com/api/v2/tailnet/${TAILNET_ID}/logging/configuration?start=${TAILSCALE_START}&end=${TAILSCALE_END}"
+  #   schedule:
+  #     interval_secs: 3600
+  #     jitter_secs: 60
+  #   auth:
+  #     type: basic
+  #     user_env: TAILSCALE_API_TOKEN
+  #     password_env: TAILSCALE_API_TOKEN_PASSWORD
+  #   headers:
+  #     Accept: "application/json"
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
+
+  # --- Tailscale network flow logs. Premium/Enterprise only; enable in admin console. API token with logs:network:read. See docs/tailscale.md.
+  # tailscale-network:
+  #   url: "https://api.tailscale.com/api/v2/tailnet/${TAILNET_ID}/logging/network?start=${TAILSCALE_START}&end=${TAILSCALE_END}"
+  #   schedule:
+  #     interval_secs: 3600
+  #     jitter_secs: 60
+  #   auth:
+  #     type: basic
+  #     user_env: TAILSCALE_API_TOKEN
+  #     password_env: TAILSCALE_API_TOKEN_PASSWORD
+  #   headers:
+  #     Accept: "application/json"
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
+
   # --- GWS via Cloud Logging (LogEntry format): POST entries:list, auth oauth2, scope logging.read.
   # gws-audit-cloud-logging:
   #   url: "https://logging.googleapis.com/v2/entries:list"
