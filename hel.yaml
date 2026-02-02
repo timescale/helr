@@ -185,6 +185,41 @@ sources:
   #       respect_headers: true
   #       page_delay_secs: 2
 
+  # --- 1Password Events API (audit events). Bearer token from Events Reporting integration with auditevents. POST, cursor in body. See docs/1password.md.
+  # 1password-audit:
+  #   url: "https://events.1password.com/api/v2/auditevents"
+  #   method: post
+  #   body: {}
+  #   schedule:
+  #     interval_secs: 300
+  #     jitter_secs: 30
+  #   auth:
+  #     type: bearer
+  #     token_env: ONEPASSWORD_EVENTS_TOKEN
+  #   headers:
+  #     Accept: "application/json"
+  #     Content-Type: "application/json"
+  #   pagination:
+  #     strategy: cursor
+  #     cursor_param: cursor
+  #     cursor_path: cursor
+  #     max_pages: 50
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
+  #     rate_limit:
+  #       respect_headers: true
+  #       page_delay_secs: 1
+
   # --- GWS via Cloud Logging (LogEntry format): POST entries:list, auth oauth2, scope logging.read.
   # gws-audit-cloud-logging:
   #   url: "https://logging.googleapis.com/v2/entries:list"
