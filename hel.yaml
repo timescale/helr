@@ -49,15 +49,51 @@ sources:
   #       half_open_timeout_secs: 60
 
   # --- Okta: set OKTA_DOMAIN and OKTA_API_TOKEN; auth prefix SSWS. See docs/okta.md.
-  # okta-audit:
+  okta-audit:
+    url: "https://${OKTA_DOMAIN}/api/v1/logs"
+    schedule:
+      interval_secs: 60
+      jitter_secs: 10
+    auth:
+      type: bearer
+      token_env: OKTA_API_TOKEN
+      prefix: SSWS
+    pagination:
+      strategy: link_header
+      rel: next
+      max_pages: 20
+    resilience:
+      timeout_secs: 30
+      retries:
+        max_attempts: 5
+        initial_backoff_secs: 2
+        max_backoff_secs: 60
+        multiplier: 2.0
+      circuit_breaker:
+        enabled: true
+        failure_threshold: 5
+        success_threshold: 2
+        half_open_timeout_secs: 60
+      rate_limit:
+        respect_headers: true
+        page_delay_secs: 1
+
+  # --- Okta via OAuth2 (API service integration): client_credentials, org server.
+  # Org AS requires private_key_jwt: set OKTA_DOMAIN, OKTA_CLIENT_ID, OKTA_CLIENT_PRIVATE_KEY (PEM).
+  # See docs/okta.md and https://developer.okta.com/docs/guides/build-api-integration/main/
+  # okta-audit-oauth2:
   #   url: "https://${OKTA_DOMAIN}/api/v1/logs"
   #   schedule:
   #     interval_secs: 60
   #     jitter_secs: 10
   #   auth:
-  #     type: bearer
-  #     token_env: OKTA_API_TOKEN
-  #     prefix: SSWS
+  #     type: oauth2
+  #     token_url: "https://${OKTA_DOMAIN}/oauth2/v1/token"
+  #     client_id_env: OKTA_CLIENT_ID
+  #     client_private_key_file: "./private-key.pem"
+  #     scopes:
+  #       - "okta.logs.read"
+  #     dpop: true
   #   pagination:
   #     strategy: link_header
   #     rel: next
@@ -78,41 +114,42 @@ sources:
   #       respect_headers: true
   #       page_delay_secs: 1
 
-  # --- Okta via OAuth2 (API service integration): client_credentials, org server.
-  # Org AS requires private_key_jwt: set OKTA_DOMAIN, OKTA_CLIENT_ID, OKTA_CLIENT_PRIVATE_KEY (PEM).
-  # See docs/okta.md and https://developer.okta.com/docs/guides/build-api-integration/main/
-  okta-audit-oauth2:
-    url: "https://${OKTA_DOMAIN}/api/v1/logs"
-    schedule:
-      interval_secs: 60
-      jitter_secs: 10
-    auth:
-      type: oauth2
-      token_url: "https://${OKTA_DOMAIN}/oauth2/v1/token"
-      client_id_env: OKTA_CLIENT_ID
-      client_private_key_file: "./private-key.pem"
-      scopes:
-        - "okta.logs.read"
-      dpop: true
-    pagination:
-      strategy: link_header
-      rel: next
-      max_pages: 20
-    resilience:
-      timeout_secs: 30
-      retries:
-        max_attempts: 5
-        initial_backoff_secs: 2
-        max_backoff_secs: 60
-        multiplier: 2.0
-      circuit_breaker:
-        enabled: true
-        failure_threshold: 5
-        success_threshold: 2
-        half_open_timeout_secs: 60
-      rate_limit:
-        respect_headers: true
-        page_delay_secs: 1
+  # --- GitHub audit log. Org endpoint: GET orgs/{org}/audit-log (only for orgs on Enterprise Cloud).
+  # If you get 404, use the enterprise endpoint instead: url "https://${GITHUB_API_HOST}/enterprises/${GITHUB_ENTERPRISE}/audit-log", set GITHUB_ENTERPRISE and GITHUB_API_HOST. See docs/github.md.
+  # github-audit:
+  #   url: "https://api.github.com/orgs/${GITHUB_ORG}/audit-log"
+  #   schedule:
+  #     interval_secs: 300
+  #     jitter_secs: 30
+  #   auth:
+  #     type: bearer
+  #     token_env: GITHUB_TOKEN
+  #   headers:
+  #     Accept: "application/vnd.github+json"
+  #     X-GitHub-Api-Version: "2022-11-28"
+  #     User-Agent: "Hel"
+  #   query_params:
+  #     per_page: "100"
+  #     order: "asc"
+  #   pagination:
+  #     strategy: link_header
+  #     rel: next
+  #     max_pages: 15
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
+  #     rate_limit:
+  #       respect_headers: true
+  #       page_delay_secs: 2
 
   # --- GWS via Cloud Logging (LogEntry format): POST entries:list, auth oauth2, scope logging.read.
   # gws-audit-cloud-logging:

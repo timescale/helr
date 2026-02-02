@@ -1,12 +1,12 @@
 # Hel
 
-Hel is a generic HTTP API log collector. It polls audit-log and event APIs (Okta, Google Workspace, Cloud Logging, and others), handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout or to a file for downstream collectors (Grafana Alloy, Vector, Fluent Bit, Loki).
+Hel is a generic HTTP API log collector. It polls audit-log and event APIs (Okta, Google Workspace, GitHub, Cloud Logging, and others), handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout or to a file for downstream collectors (Grafana Alloy, Vector, Fluent Bit, Loki).
 
 You configure one or more **sources** in YAML (URL, auth, pagination, schedule). Hel runs on an interval, fetches pages, checkpoints cursors, and writes one JSON object per event per line. Single binary, no runtime dependencies beyond the config and secrets.
 
 ## Supported features
 
-- **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries) with Link-header or cursor pagination
+- **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries) with Link-header or cursor pagination
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset
 - **Resilience:** Retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
@@ -56,6 +56,7 @@ hel run --output /var/log/hel/events.ndjson --output-rotate size:100
 # Test one source
 hel test --source okta-audit
 hel test --source gws-login
+hel test --source github-audit
 
 # State (inspect, reset, set cursor, export/import)
 hel state show okta-audit
@@ -83,7 +84,7 @@ Configuration is merged in this order (later overrides earlier):
 - **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `max_pages`, and others — see `hel.yaml` comments and the manuals below.
+- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
 
@@ -195,9 +196,10 @@ Secrets can be read from env var or file; file takes precedence when set.
 
 | Doc | Description |
 |-----|-------------|
-| [hel.yaml](hel.yaml) | Example config with Okta and GWS sources (commented where inactive). |
+| [hel.yaml](hel.yaml) | Example config with Okta, GWS, and GitHub sources (commented where inactive). |
 | [docs/okta.md](docs/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
 | [docs/gws-gcp.md](docs/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
+| [docs/github.md](docs/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
 
 ## How to run with Okta
 
@@ -214,6 +216,12 @@ Full steps and troubleshooting: **[docs/okta.md](docs/okta.md)**.
 **Option B (service account):** Create a service account in GCP, enable domain-wide delegation in GWS Admin for the Admin SDK Reports API scope, download the JSON key, then use `auth.type: google_service_account` with `credentials_file` and `subject_env` (admin email).
 
 Full steps: **[docs/gws-gcp.md](docs/gws-gcp.md)**.
+
+## How to run with GitHub
+
+Create a personal access token (classic) with **read:audit_log**. You must be an **organization owner**. Set `GITHUB_ORG` (your org login) and `GITHUB_TOKEN`. Uncomment the `github-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source github-audit` or `hel run`.
+
+Full steps and troubleshooting: **[docs/github.md](docs/github.md)**.
 
 ## Session replay
 
