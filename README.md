@@ -6,7 +6,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 
 ## Supported features
 
-- **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries) with Link-header or cursor pagination
+- **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries) with Link-header or cursor pagination
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset
 - **Resilience:** Retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
@@ -57,6 +57,7 @@ hel run --output /var/log/hel/events.ndjson --output-rotate size:100
 hel test --source okta-audit
 hel test --source gws-login
 hel test --source github-audit
+hel test --source slack-audit
 
 # State (inspect, reset, set cursor, export/import)
 hel state show okta-audit
@@ -196,10 +197,11 @@ Secrets can be read from env var or file; file takes precedence when set.
 
 | Doc | Description |
 |-----|-------------|
-| [hel.yaml](hel.yaml) | Example config with Okta, GWS, and GitHub sources (commented where inactive). |
+| [hel.yaml](hel.yaml) | Example config with Okta, GWS, GitHub, and Slack sources (commented where inactive). |
 | [docs/okta.md](docs/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
 | [docs/gws-gcp.md](docs/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
 | [docs/github.md](docs/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
+| [docs/slack.md](docs/slack.md) | Slack Enterprise audit logs: user token (xoxp) with auditlogs:read; cursor pagination; Enterprise only. |
 
 ## How to run with Okta
 
@@ -222,6 +224,12 @@ Full steps: **[docs/gws-gcp.md](docs/gws-gcp.md)**.
 Create a personal access token (classic) with **read:audit_log**. You must be an **organization owner**. Set `GITHUB_ORG` (your org login) and `GITHUB_TOKEN`. Uncomment the `github-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source github-audit` or `hel run`.
 
 Full steps and troubleshooting: **[docs/github.md](docs/github.md)**.
+
+## How to run with Slack (Enterprise)
+
+Create a Slack app with the **auditlogs:read** user token scope. Install it on your **Enterprise organization** (not a single workspace) as the **Owner**. Copy the user OAuth token (`xoxp-...`) and set `SLACK_AUDIT_TOKEN`. Uncomment the `slack-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source slack-audit` or `hel run`. The Audit Logs API is **only available for Slack Enterprise** workspaces.
+
+Full steps and troubleshooting: **[docs/slack.md](docs/slack.md)**.
 
 ## Session replay
 

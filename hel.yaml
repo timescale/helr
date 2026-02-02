@@ -151,6 +151,40 @@ sources:
   #       respect_headers: true
   #       page_delay_secs: 2
 
+  # --- Slack Audit Logs API. Enterprise only. User token (xoxp) with auditlogs:read, installed by Org Owner. See docs/slack.md.
+  # slack-audit:
+  #   url: "https://api.slack.com/audit/v1/logs"
+  #   schedule:
+  #     interval_secs: 300
+  #     jitter_secs: 30
+  #   auth:
+  #     type: bearer
+  #     token_env: SLACK_AUDIT_TOKEN
+  #   headers:
+  #     Accept: "application/json"
+  #   query_params:
+  #     limit: "200"
+  #   pagination:
+  #     strategy: cursor
+  #     cursor_param: cursor
+  #     cursor_path: response_metadata.next_cursor
+  #     max_pages: 25
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
+  #     rate_limit:
+  #       respect_headers: true
+  #       page_delay_secs: 2
+
   # --- GWS via Cloud Logging (LogEntry format): POST entries:list, auth oauth2, scope logging.read.
   # gws-audit-cloud-logging:
   #   url: "https://logging.googleapis.com/v2/entries:list"
