@@ -634,14 +634,31 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
 }
 
 /// Expand env vars in config: `$VAR`, `${VAR}`, `${VAR:-default}`. Fails if any var is unset (no default).
+/// Lines that are comments (after trim, empty or starting with #) are not expanded, so placeholders in comments are left as-is.
 fn expand_env_vars_strict(s: &str) -> anyhow::Result<String> {
-    shellexpand::env_with_context(s, |var: &str| {
-        std::env::var(var)
-            .map(|v| Ok(Some(std::borrow::Cow::Owned(v))))
-            .unwrap_or_else(|e| Err(e))
-    })
-    .map(|cow| cow.into_owned())
-    .map_err(|e| anyhow::anyhow!("config placeholder ${{{}}} is unset: {}", e.var_name, e.cause))
+    let mut out = String::with_capacity(s.len());
+    for line in s.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            out.push_str(line);
+        } else {
+            let expanded = shellexpand::env_with_context(line, |var: &str| {
+                std::env::var(var)
+                    .map(|v| Ok(Some(std::borrow::Cow::Owned(v))))
+                    .unwrap_or_else(|e| Err(e))
+            })
+            .map(|cow| cow.into_owned())
+            .map_err(|e| anyhow::anyhow!("config placeholder ${{{}}} is unset: {}", e.var_name, e.cause))?;
+            out.push_str(&expanded);
+        }
+        out.push('\n');
+    }
+    if s.ends_with('\n') {
+        // lines() strips a trailing newline; preserve it if original had it
+    } else if !s.is_empty() {
+        out.pop(); // remove the extra \n we added for the last "line"
+    }
+    Ok(out)
 }
 
 /// Expand env vars; unset vars expand to empty. Used in tests.
@@ -854,6 +871,37 @@ sources:
             "expected unset placeholder error, got: {}",
             err
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_comment_lines_not_expanded() {
+        // Placeholders in comment lines must not be expanded (so unset vars in comments don't fail load).
+        let dir = std::env::temp_dir().join("hel_config_comment_no_expand");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  # use enterprise URL: https://${GITHUB_API_HOST}/enterprises/${GITHUB_ENTERPRISE}/audit-log
+  x:
+    url: "https://${HEL_TEST_COMMENT_EXPAND_BASE}/logs"
+    pagination:
+      strategy: link_header
+"#,
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("HEL_TEST_COMMENT_EXPAND_BASE", "api.example.com");
+        }
+        let result = Config::load(&path);
+        unsafe {
+            std::env::remove_var("HEL_TEST_COMMENT_EXPAND_BASE");
+        }
+        let config = result.expect("load should succeed; comment placeholders must not be expanded");
+        assert_eq!(config.sources["x"].url, "https://api.example.com/logs");
         let _ = std::fs::remove_file(&path);
     }
 
