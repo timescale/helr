@@ -234,3 +234,206 @@ pub async fn startupz_handler(State(state): State<Arc<HealthState>>) -> impl Int
         axum::Json(body),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::circuit::{self, CircuitState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    static HEALTH_TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn minimal_config() -> Config {
+        let n = HEALTH_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("hel_health_test_{}", n));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global: {}
+sources:
+  s1:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+      rel: next
+  s2:
+    url: "https://example.com/two"
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        Config::load(&path).unwrap()
+    }
+
+    fn health_state_with(
+        output_path: Option<std::path::PathBuf>,
+        started_at: Instant,
+    ) -> HealthState {
+        let config = Arc::new(minimal_config());
+        let circuit_store = circuit::new_circuit_store();
+        let last_errors = Arc::new(RwLock::new(HashMap::new()));
+        HealthState {
+            config,
+            circuit_store,
+            last_errors,
+            started_at,
+            output_path,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_health_body_has_version_uptime_sources() {
+        let started_at = Instant::now() - Duration::from_secs(5);
+        let state = health_state_with(None, started_at);
+        let body = build_health_body(&state).await;
+        assert!(!body.version.is_empty(), "version should be non-empty");
+        assert!(body.uptime_secs >= 5.0 && body.uptime_secs <= 10.0, "uptime_secs ~5");
+        assert_eq!(body.sources.len(), 2);
+        assert!(body.sources.contains_key("s1"));
+        assert!(body.sources.contains_key("s2"));
+    }
+
+    #[tokio::test]
+    async fn test_build_health_body_source_ok_when_closed_no_error() {
+        let state = health_state_with(None, Instant::now());
+        let body = build_health_body(&state).await;
+        let s1 = body.sources.get("s1").unwrap();
+        assert_eq!(s1.status, "ok");
+        assert_eq!(s1.circuit_state.state, "closed");
+        assert_eq!(s1.circuit_state.failures, Some(0));
+        assert!(s1.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_health_body_source_degraded_when_last_error() {
+        let mut errors = HashMap::new();
+        errors.insert("s1".to_string(), "connection refused".to_string());
+        let config = Arc::new(minimal_config());
+        let state = HealthState {
+            config,
+            circuit_store: circuit::new_circuit_store(),
+            last_errors: Arc::new(RwLock::new(errors)),
+            started_at: Instant::now(),
+            output_path: None,
+        };
+        let body = build_health_body(&state).await;
+        let s1 = body.sources.get("s1").unwrap();
+        assert_eq!(s1.status, "degraded");
+        assert_eq!(s1.circuit_state.state, "closed");
+        assert_eq!(s1.last_error.as_deref(), Some("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_build_health_body_source_unhealthy_when_circuit_open() {
+        let config = Arc::new(minimal_config());
+        let circuit_store = circuit::new_circuit_store();
+        {
+            let mut g = circuit_store.write().await;
+            g.insert(
+                "s1".to_string(),
+                CircuitState::Open {
+                    open_until: Instant::now() + Duration::from_secs(60),
+                },
+            );
+        }
+        let state = HealthState {
+            config,
+            circuit_store,
+            last_errors: Arc::new(RwLock::new(HashMap::new())),
+            started_at: Instant::now(),
+            output_path: None,
+        };
+        let body = build_health_body(&state).await;
+        let s1 = body.sources.get("s1").unwrap();
+        assert_eq!(s1.status, "unhealthy");
+        assert_eq!(s1.circuit_state.state, "open");
+        assert!(s1.circuit_state.open_until_secs.unwrap_or(0.0) > 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_build_health_body_circuit_half_open_has_successes() {
+        let config = Arc::new(minimal_config());
+        let circuit_store = circuit::new_circuit_store();
+        {
+            let mut g = circuit_store.write().await;
+            g.insert(
+                "s1".to_string(),
+                CircuitState::HalfOpen { successes: 1 },
+            );
+        }
+        let state = HealthState {
+            config,
+            circuit_store,
+            last_errors: Arc::new(RwLock::new(HashMap::new())),
+            started_at: Instant::now(),
+            output_path: None,
+        };
+        let body = build_health_body(&state).await;
+        let s1 = body.sources.get("s1").unwrap();
+        assert_eq!(s1.status, "ok");
+        assert_eq!(s1.circuit_state.state, "half_open");
+        assert_eq!(s1.circuit_state.successes, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_build_ready_body_stdout_ready_true() {
+        let state = health_state_with(None, Instant::now());
+        let body = build_ready_body(&state).await;
+        assert!(body.ready);
+        assert!(body.output_writable.is_none());
+        assert_eq!(body.sources.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_build_ready_body_output_writable_false_when_directory() {
+        let dir = std::env::temp_dir().join("hel_health_ready_dir");
+        let _ = std::fs::create_dir_all(&dir);
+        let state = health_state_with(Some(dir), Instant::now());
+        let body = build_ready_body(&state).await;
+        // Opening a directory for append fails on Unix/Windows
+        assert_eq!(body.output_writable, Some(false));
+        assert!(!body.ready);
+    }
+
+    #[tokio::test]
+    async fn test_build_startup_body_has_started_true() {
+        let state = health_state_with(None, Instant::now());
+        let body = build_startup_body(&state).await;
+        assert!(body.started);
+        assert!(!body.version.is_empty());
+        assert!(body.uptime_secs >= 0.0);
+        assert_eq!(body.sources.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_open_circuit_overrides_last_error_status() {
+        // When circuit is open, status is unhealthy even if last_error is set
+        let mut errors = HashMap::new();
+        errors.insert("s1".to_string(), "previous failure".to_string());
+        let config = Arc::new(minimal_config());
+        let circuit_store = circuit::new_circuit_store();
+        {
+            let mut g = circuit_store.write().await;
+            g.insert(
+                "s1".to_string(),
+                CircuitState::Open {
+                    open_until: Instant::now() + Duration::from_secs(30),
+                },
+            );
+        }
+        let state = HealthState {
+            config,
+            circuit_store,
+            last_errors: Arc::new(RwLock::new(errors)),
+            started_at: Instant::now(),
+            output_path: None,
+        };
+        let body = build_health_body(&state).await;
+        let s1 = body.sources.get("s1").unwrap();
+        assert_eq!(s1.status, "unhealthy");
+        assert_eq!(s1.circuit_state.state, "open");
+        assert_eq!(s1.last_error.as_deref(), Some("previous failure"));
+    }
+}
