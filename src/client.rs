@@ -9,15 +9,34 @@ use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use reqwest::Client;
 use std::time::Duration;
 
+/// Effective timeout values: from split timeouts when set, else from legacy timeout_secs.
+/// Connect and request are always set (fallback to legacy); read and idle only when configured.
+fn effective_timeouts(resilience: Option<&ResilienceConfig>) -> (Duration, Duration, Option<Duration>, Option<Duration>) {
+    let legacy_secs = resilience.map(|r| r.timeout_secs).unwrap_or(30);
+    let t = resilience.and_then(|r| r.timeouts.as_ref());
+    let connect_secs = t.and_then(|t| t.connect_secs).unwrap_or_else(|| std::cmp::min(10, legacy_secs));
+    let request_secs = t.and_then(|t| t.request_secs).unwrap_or(legacy_secs);
+    let connect = Duration::from_secs(connect_secs);
+    let request = Duration::from_secs(request_secs);
+    let read = t.and_then(|t| t.read_secs).map(Duration::from_secs);
+    let idle = t.and_then(|t| t.idle_secs).map(Duration::from_secs);
+    (connect, request, read, idle)
+}
+
 /// Build a reqwest client with timeouts from resilience config.
+/// Uses split timeouts (connect, request, read, idle) when set; otherwise timeout_secs for request and min(10, timeout_secs) for connect.
 pub fn build_client(resilience: Option<&ResilienceConfig>) -> anyhow::Result<Client> {
-    let timeout_secs = resilience.map(|r| r.timeout_secs).unwrap_or(30);
-    let timeout = Duration::from_secs(timeout_secs);
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(std::cmp::min(10, timeout_secs)))
-        .timeout(timeout)
-        .build()
-        .context("build reqwest client")?;
+    let (connect, request, read, idle) = effective_timeouts(resilience);
+    let mut builder = Client::builder()
+        .connect_timeout(connect)
+        .timeout(request);
+    if let Some(d) = read {
+        builder = builder.read_timeout(d);
+    }
+    if let Some(d) = idle {
+        builder = builder.pool_idle_timeout(d);
+    }
+    let client = builder.build().context("build reqwest client")?;
     Ok(client)
 }
 

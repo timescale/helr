@@ -59,8 +59,13 @@ pub async fn run_one_tick(
         let dedupe_store = dedupe_store.clone();
         let event_sink = event_sink.clone();
         let record_state = record_state.clone();
+        let poll_tick_secs = source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.timeouts.as_ref())
+            .and_then(|t| t.poll_tick_secs);
         let h = tokio::spawn(async move {
-            poll_one_source(
+            let poll_fut = poll_one_source(
                 store,
                 &source_id_key,
                 &source,
@@ -71,8 +76,17 @@ pub async fn run_one_tick(
                 dedupe_store,
                 event_sink,
                 record_state,
-            )
-            .await
+            );
+            match poll_tick_secs {
+                Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), poll_fut).await {
+                    Ok(inner) => inner,
+                    Err(_) => Err(anyhow::anyhow!(
+                        "poll tick timed out after {}s",
+                        secs
+                    )),
+                },
+                None => poll_fut.await,
+            }
         });
         handles.push((source_id, h));
     }

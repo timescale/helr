@@ -9,7 +9,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, 1Password Events API (audit), Tailscale configuration audit and network flow logs, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries/logs) with Link-header or cursor pagination
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset
-- **Resilience:** Retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
+- **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
 - **Session replay:** Record API responses to disk, replay without hitting the live API
@@ -88,7 +88,7 @@ Configuration is merged in this order (later overrides earlier):
 - **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
+- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `max_pages`, and others - see `hel.yaml` comments and the manuals below.
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
 
@@ -185,7 +185,13 @@ Secrets can be read from env var or file; file takes precedence when set.
 
 | Option | Description | Possible values | Default |
 |--------|-------------|-----------------|---------|
-| `timeout_secs` | HTTP request timeout (seconds) | number | `30` |
+| `timeout_secs` | HTTP request timeout (seconds). Fallback when `timeouts` is omitted. | number | `30` |
+| `timeouts` | Split timeouts (optional). When set, overrides/supplements `timeout_secs` for the client. | object | — |
+| `timeouts.connect_secs` | TCP connection establishment (seconds) | number | — (else min(10, timeout_secs)) |
+| `timeouts.request_secs` | Entire request/response per request (seconds) | number | — (else timeout_secs) |
+| `timeouts.read_secs` | Reading response body (seconds); should be ≤ request when both set | number | — |
+| `timeouts.idle_secs` | Idle connection in pool (seconds) | number | — |
+| `timeouts.poll_tick_secs` | Entire poll cycle (all pages) per source (seconds). Poll aborts with error when exceeded. | number | — |
 | `retries.max_attempts` | Max attempts per request (0 = no retries) | number | `3` |
 | `retries.initial_backoff_secs` | Initial backoff (seconds) | number | `1` |
 | `retries.max_backoff_secs` | Cap on backoff (seconds) | number | — |

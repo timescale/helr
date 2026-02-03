@@ -418,11 +418,36 @@ fn default_rel() -> String {
     "next".to_string()
 }
 
+/// Split timeouts: connect, request, read, idle (client), poll_tick (entire poll cycle).
+/// When set, these override or supplement the legacy `timeout_secs` (used for request when timeouts.request is unset).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimeoutsConfig {
+    /// TCP connection establishment (seconds).
+    #[serde(default)]
+    pub connect_secs: Option<u64>,
+    /// Entire request/response cycle per request (seconds).
+    #[serde(default)]
+    pub request_secs: Option<u64>,
+    /// Reading response body (seconds). Should be ≤ request when both set.
+    #[serde(default)]
+    pub read_secs: Option<u64>,
+    /// Idle connection in pool (seconds).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
+    /// Entire poll cycle (all pages) per source (seconds).
+    #[serde(default)]
+    pub poll_tick_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResilienceConfig {
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// Split timeouts: connect, request, read, idle, poll_tick. When set, overrides/supplements timeout_secs for client.
+    #[serde(default)]
+    pub timeouts: Option<TimeoutsConfig>,
     #[serde(default)]
     pub retries: Option<RetryConfig>,
     #[serde(default)]
@@ -945,6 +970,43 @@ sources:
             params.get("filter").map(|v| v.to_param_value()),
             Some("eventType eq \"user.session.start\"".to_string())
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_split_timeouts() {
+        let dir = std::env::temp_dir().join("hel_config_split_timeouts");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  x:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 30
+      timeouts:
+        connect_secs: 10
+        request_secs: 25
+        read_secs: 20
+        idle_secs: 90
+        poll_tick_secs: 300
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        let s = &config.sources["x"];
+        let t = s.resilience.as_ref().and_then(|r| r.timeouts.as_ref()).unwrap();
+        assert_eq!(t.connect_secs, Some(10));
+        assert_eq!(t.request_secs, Some(25));
+        assert_eq!(t.read_secs, Some(20));
+        assert_eq!(t.idle_secs, Some(90));
+        assert_eq!(t.poll_tick_secs, Some(300));
         let _ = std::fs::remove_file(&path);
     }
 
