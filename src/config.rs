@@ -458,6 +458,15 @@ pub struct CircuitBreakerConfig {
     pub success_threshold: u32,
     #[serde(default = "default_half_open_timeout_secs")]
     pub half_open_timeout_secs: u64,
+    /// Max time in open state (seconds). Open duration is min(half_open_timeout_secs, reset_timeout_secs).
+    #[serde(default)]
+    pub reset_timeout_secs: Option<u64>,
+    /// Optional: open when failure rate >= this (0.0–1.0). Requires minimum_requests.
+    #[serde(default)]
+    pub failure_rate_threshold: Option<f64>,
+    /// Minimum requests before evaluating failure_rate_threshold.
+    #[serde(default)]
+    pub minimum_requests: Option<u32>,
 }
 
 fn default_cb_enabled() -> bool {

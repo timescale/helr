@@ -194,6 +194,9 @@ Secrets can be read from env var or file; file takes precedence when set.
 | `circuit_breaker.failure_threshold` | Failures before opening | number | `5` |
 | `circuit_breaker.success_threshold` | Successes in half-open to close | number | `2` |
 | `circuit_breaker.half_open_timeout_secs` | Seconds before half-open probe | number | `60` |
+| `circuit_breaker.reset_timeout_secs` | Max time in open state (open duration = min(half_open_timeout_secs, reset_timeout_secs)) | number | — |
+| `circuit_breaker.failure_rate_threshold` | Optional: open when failure rate ≥ this (0.0–1.0); requires `minimum_requests` | number | — |
+| `circuit_breaker.minimum_requests` | Minimum requests before evaluating `failure_rate_threshold` | number | — |
 | `rate_limit.respect_headers` | Use Retry-After / X-RateLimit-Reset on 429 | boolean | `true` |
 | `rate_limit.page_delay_secs` | Delay between pagination requests (seconds) | number | — |
 

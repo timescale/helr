@@ -82,7 +82,7 @@ pub struct StartupBody {
 fn circuit_state_to_dto(s: &CircuitState) -> CircuitStateDto {
     let now = Instant::now();
     match s {
-        CircuitState::Closed { failures } => CircuitStateDto {
+        CircuitState::Closed { failures, .. } => CircuitStateDto {
             state: "closed".to_string(),
             failures: Some(*failures),
             open_until_secs: None,
