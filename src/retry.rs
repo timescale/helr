@@ -3,6 +3,7 @@
 
 use crate::client::build_request;
 use crate::config::{AuthConfig, HttpMethod, RateLimitConfig, RetryConfig, SourceConfig};
+use rand::Rng;
 use crate::dpop::{build_dpop_proof, get_or_create_dpop_key, DPoPKeyCache};
 use crate::oauth2::{get_google_sa_token, get_oauth_token, invalidate_token, OAuth2TokenCache};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,20 +13,36 @@ use reqwest::{Client, Response};
 use std::time::Duration;
 use tracing::warn;
 
-/// HTTP status codes that are retried: 408 Request Timeout, 429 Too Many Requests, 5xx.
-pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    let code = status.as_u16();
-    code == 408 || code == 429 || (500..600).contains(&code)
+fn is_5xx(code: u16) -> bool {
+    (500..600).contains(&code)
 }
 
-/// Compute backoff duration for the given attempt (0 = first retry).
+/// Returns true if status should be retried. Uses `retryable_status_codes` when set, else 408, 429, 5xx.
+pub fn is_retryable_status_with_codes(status: reqwest::StatusCode, retryable_codes: Option<&[u16]>) -> bool {
+    let code = status.as_u16();
+    match retryable_codes {
+        Some(codes) => codes.contains(&code),
+        None => code == 408 || code == 429 || is_5xx(code),
+    }
+}
+
+/// Compute backoff duration for the given attempt (0 = first retry). Applies jitter when retry.jitter is set.
 fn backoff_duration(retry: &RetryConfig, attempt: u32) -> Duration {
     let secs = (retry.initial_backoff_secs as f64) * retry.multiplier.powi(attempt as i32);
     let capped = retry
         .max_backoff_secs
         .map(|max| secs.min(max as f64))
         .unwrap_or(secs);
-    Duration::from_secs_f64(capped.min(u64::MAX as f64))
+    let base_secs = capped.min(u64::MAX as f64);
+    let delay_secs = if let Some(j) = retry.jitter {
+        let j = j.clamp(0.0, 1.0);
+        let mut rng = rand::rng();
+        let factor = 1.0 + rng.random_range(-j..=j);
+        (base_secs * factor).max(0.0)
+    } else {
+        base_secs
+    };
+    Duration::from_secs_f64(delay_secs)
 }
 
 /// Parse Retry-After (delta-seconds or HTTP-date) and optionally X-RateLimit-Reset (Unix timestamp).
@@ -179,7 +196,7 @@ pub async fn execute_with_retry(
                     warn!(source = %source_id, "401 Unauthorized, refreshed OAuth token, retrying");
                     continue;
                 }
-                if !is_retryable_status(response.status()) {
+                if !is_retryable_status_with_codes(response.status(), retry.retryable_status_codes.as_deref()) {
                     let status = response.status();
                     let dpop_nonce_header = response
                         .headers()
@@ -301,15 +318,16 @@ mod tests {
     #[test]
     fn test_is_retryable_status() {
         use reqwest::StatusCode;
-        assert!(is_retryable_status(StatusCode::REQUEST_TIMEOUT)); // 408
-        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS)); // 429
-        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
-        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
-        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
-        assert!(!is_retryable_status(StatusCode::OK));
-        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
-        assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
-        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+        // default (None) = 408, 429, 5xx
+        assert!(is_retryable_status_with_codes(StatusCode::REQUEST_TIMEOUT, None)); // 408
+        assert!(is_retryable_status_with_codes(StatusCode::TOO_MANY_REQUESTS, None)); // 429
+        assert!(is_retryable_status_with_codes(StatusCode::INTERNAL_SERVER_ERROR, None));
+        assert!(is_retryable_status_with_codes(StatusCode::BAD_GATEWAY, None));
+        assert!(is_retryable_status_with_codes(StatusCode::SERVICE_UNAVAILABLE, None));
+        assert!(!is_retryable_status_with_codes(StatusCode::OK, None));
+        assert!(!is_retryable_status_with_codes(StatusCode::BAD_REQUEST, None));
+        assert!(!is_retryable_status_with_codes(StatusCode::UNAUTHORIZED, None));
+        assert!(!is_retryable_status_with_codes(StatusCode::NOT_FOUND, None));
     }
 
     #[test]
@@ -319,6 +337,8 @@ mod tests {
             initial_backoff_secs: 1,
             max_backoff_secs: Some(30),
             multiplier: 2.0,
+            jitter: None,
+            retryable_status_codes: None,
         };
         assert_eq!(backoff_duration(&retry, 0), Duration::from_secs(1));
         assert_eq!(backoff_duration(&retry, 1), Duration::from_secs(2));
@@ -349,6 +369,42 @@ mod tests {
         );
         let d = retry_after_from_headers(&headers, None).unwrap();
         assert!(d.as_secs() >= 88 && d.as_secs() <= 92);
+    }
+
+    #[test]
+    fn test_is_retryable_status_with_codes_custom_list() {
+        use reqwest::StatusCode;
+        let codes = [502u16, 503];
+        assert!(is_retryable_status_with_codes(StatusCode::BAD_GATEWAY, Some(&codes)));
+        assert!(is_retryable_status_with_codes(StatusCode::SERVICE_UNAVAILABLE, Some(&codes)));
+        assert!(!is_retryable_status_with_codes(StatusCode::INTERNAL_SERVER_ERROR, Some(&codes)));
+        assert!(!is_retryable_status_with_codes(StatusCode::OK, Some(&codes)));
+    }
+
+    #[test]
+    fn test_backoff_duration_with_jitter_in_bounds() {
+        let retry = RetryConfig {
+            max_attempts: 3,
+            initial_backoff_secs: 2,
+            max_backoff_secs: Some(60),
+            multiplier: 2.0,
+            jitter: Some(0.1),
+            retryable_status_codes: None,
+        };
+        for attempt in 0..5 {
+            let d = backoff_duration(&retry, attempt);
+            let base = 2.0 * 2.0f64.powi(attempt as i32);
+            let min_secs = base * 0.9;
+            let max_secs = base * 1.1;
+            assert!(
+                d.as_secs_f64() >= min_secs - 0.01 && d.as_secs_f64() <= max_secs + 0.01,
+                "attempt {}: delay {} should be in [{}, {}]",
+                attempt,
+                d.as_secs_f64(),
+                min_secs,
+                max_secs
+            );
+        }
     }
 
     #[test]

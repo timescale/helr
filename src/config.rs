@@ -522,6 +522,12 @@ pub struct RetryConfig {
     pub max_backoff_secs: Option<u64>,
     #[serde(default = "default_multiplier")]
     pub multiplier: f64,
+    /// Backoff jitter: multiply delay by (1 + random(-jitter, +jitter)). e.g. 0.1 = ±10%. When unset, no jitter.
+    #[serde(default)]
+    pub jitter: Option<f64>,
+    /// HTTP status codes to retry. When unset, default: 408, 429, 5xx.
+    #[serde(default)]
+    pub retryable_status_codes: Option<Vec<u16>>,
 }
 
 fn default_max_attempts() -> u32 {
@@ -1007,6 +1013,47 @@ sources:
         assert_eq!(t.read_secs, Some(20));
         assert_eq!(t.idle_secs, Some(90));
         assert_eq!(t.poll_tick_secs, Some(300));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_retry_jitter_and_retryable_codes() {
+        let dir = std::env::temp_dir().join("hel_config_retry_jitter");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  x:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      retries:
+        max_attempts: 5
+        jitter: 0.1
+        retryable_status_codes:
+          - 408
+          - 429
+          - 500
+          - 502
+          - 503
+          - 504
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        let s = &config.sources["x"];
+        let r = s.resilience.as_ref().and_then(|res| res.retries.as_ref()).unwrap();
+        assert_eq!(r.max_attempts, 5);
+        assert_eq!(r.jitter, Some(0.1));
+        assert_eq!(
+            r.retryable_status_codes.as_deref(),
+            Some([408, 429, 500, 502, 503, 504].as_slice())
+        );
         let _ = std::fs::remove_file(&path);
     }
 

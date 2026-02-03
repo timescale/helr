@@ -88,7 +88,7 @@ Configuration is merged in this order (later overrides earlier):
 - **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `max_pages`, and others - see `hel.yaml` comments and the manuals below.
+- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
 
@@ -196,6 +196,8 @@ Secrets can be read from env var or file; file takes precedence when set.
 | `retries.initial_backoff_secs` | Initial backoff (seconds) | number | `1` |
 | `retries.max_backoff_secs` | Cap on backoff (seconds) | number | — |
 | `retries.multiplier` | Backoff multiplier per attempt | number | `2.0` |
+| `retries.jitter` | Backoff jitter: delay × (1 + random(−jitter, +jitter)). e.g. `0.1` = ±10%. When unset, no jitter. | number (0–1) | — |
+| `retries.retryable_status_codes` | HTTP status codes to retry. When unset: 408, 429, 5xx. | list of numbers | — |
 | `circuit_breaker.enabled` | Enable circuit breaker | boolean | `true` |
 | `circuit_breaker.failure_threshold` | Failures before opening | number | `5` |
 | `circuit_breaker.success_threshold` | Successes in half-open to close | number | `2` |
