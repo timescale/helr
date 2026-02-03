@@ -1033,6 +1033,8 @@ sources:
 
     let body_ready: serde_json::Value = res_ready.json().await.expect("readyz JSON");
     assert!(body_ready["ready"].as_bool().unwrap_or(false), "readyz ready true when stdout");
+    assert!(body_ready["state_store_connected"].as_bool().unwrap_or(false), "readyz state_store_connected");
+    assert!(body_ready["at_least_one_source_healthy"].as_bool().unwrap_or(false), "readyz at_least_one_source_healthy");
     assert!(body_ready["sources"].is_object(), "readyz sources");
 
     let body_startup: serde_json::Value = res_startup.json().await.expect("startupz JSON");
@@ -1196,6 +1198,8 @@ sources:
     let body: serde_json::Value = res.json().await.expect("JSON");
     assert_eq!(body["ready"], true);
     assert_eq!(body["output_writable"], true);
+    assert_eq!(body["state_store_connected"], true);
+    assert_eq!(body["at_least_one_source_healthy"], true);
 }
 
 /// SIGTERM mid-poll: send SIGTERM while hel is waiting on a slow response; process exits (graceful shutdown).

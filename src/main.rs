@@ -660,6 +660,7 @@ async fn run_collector(
                 last_errors: last_errors.clone(),
                 started_at,
                 output_path: output_path.clone(),
+                state_store: Some(store.clone()),
             });
             tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
             tokio::spawn(async move {

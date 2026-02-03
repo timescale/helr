@@ -1,8 +1,13 @@
 //! Health endpoints: detailed JSON for /healthz, /readyz, /startupz.
 //! Per-source status, circuit state, last_error, uptime, version.
+//!
+//! **Readyz semantics:** Ready when (1) output path is writable (or stdout), (2) state store is
+//! connected, and (3) at least one source is healthy (circuit not open). All three are reported
+//! in the JSON body.
 
 use crate::circuit::{CircuitState, CircuitStore};
 use crate::config::Config;
+use crate::state::StateStore;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -12,13 +17,15 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
-/// Shared state for health handlers (config, circuits, last errors, start time, output path).
+/// Shared state for health handlers (config, circuits, last errors, start time, output path, state store).
 pub struct HealthState {
     pub config: Arc<Config>,
     pub circuit_store: CircuitStore,
     pub last_errors: Arc<RwLock<HashMap<String, String>>>,
     pub started_at: Instant,
     pub output_path: Option<std::path::PathBuf>,
+    /// State store for readyz "connected" check. None in tests or when not configured.
+    pub state_store: Option<Arc<dyn StateStore>>,
 }
 
 /// Circuit state as JSON: "closed" | "open" | "half_open" plus optional detail.
@@ -50,7 +57,7 @@ pub struct HealthBody {
     pub sources: HashMap<String, SourceStatusDto>,
 }
 
-/// Ready body adds ready flag and optional output_writable.
+/// Ready body: ready flag plus per-condition flags (output_writable, state_store_connected, at_least_one_source_healthy).
 #[derive(Debug, Serialize)]
 pub struct ReadyBody {
     pub version: String,
@@ -58,6 +65,8 @@ pub struct ReadyBody {
     pub ready: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_writable: Option<bool>,
+    pub state_store_connected: bool,
+    pub at_least_one_source_healthy: bool,
     pub sources: HashMap<String, SourceStatusDto>,
 }
 
@@ -160,7 +169,8 @@ pub async fn build_health_body(state: &HealthState) -> HealthBody {
     }
 }
 
-/// Build ready JSON body: same as health plus ready flag and output_writable when output to file.
+/// Build ready JSON body: same as health plus ready flag and per-condition flags.
+/// Ready when: output writable (or stdout), state store connected, and ≥1 source healthy.
 pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
     let sources = build_sources(
@@ -173,12 +183,22 @@ pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
         .output_path
         .as_ref()
         .map(|p| std::fs::OpenOptions::new().append(true).open(p).is_ok());
-    let ready = output_writable.map_or(true, |w| w);
+    let output_ok = output_writable.map_or(true, |w| w);
+    let state_store_connected = match &state.state_store {
+        Some(store) => store.list_sources().await.is_ok(),
+        None => true,
+    };
+    let at_least_one_source_healthy = sources
+        .values()
+        .any(|s| s.status != "unhealthy");
+    let ready = output_ok && state_store_connected && at_least_one_source_healthy;
     ReadyBody {
         version: version(),
         uptime_secs,
         ready,
         output_writable,
+        state_store_connected,
+        at_least_one_source_healthy,
         sources,
     }
 }
@@ -280,6 +300,7 @@ sources:
             last_errors,
             started_at,
             output_path,
+            state_store: None,
         }
     }
 
@@ -317,6 +338,7 @@ sources:
             last_errors: Arc::new(RwLock::new(errors)),
             started_at: Instant::now(),
             output_path: None,
+            state_store: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -344,6 +366,7 @@ sources:
             last_errors: Arc::new(RwLock::new(HashMap::new())),
             started_at: Instant::now(),
             output_path: None,
+            state_store: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -369,6 +392,7 @@ sources:
             last_errors: Arc::new(RwLock::new(HashMap::new())),
             started_at: Instant::now(),
             output_path: None,
+            state_store: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -383,6 +407,8 @@ sources:
         let body = build_ready_body(&state).await;
         assert!(body.ready);
         assert!(body.output_writable.is_none());
+        assert!(body.state_store_connected); // None -> true
+        assert!(body.at_least_one_source_healthy);
         assert_eq!(body.sources.len(), 2);
     }
 
@@ -429,11 +455,64 @@ sources:
             last_errors: Arc::new(RwLock::new(errors)),
             started_at: Instant::now(),
             output_path: None,
+            state_store: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
         assert_eq!(s1.status, "unhealthy");
         assert_eq!(s1.circuit_state.state, "open");
         assert_eq!(s1.last_error.as_deref(), Some("previous failure"));
+    }
+
+    #[tokio::test]
+    async fn test_build_ready_body_all_sources_unhealthy_not_ready() {
+        let config = Arc::new(minimal_config());
+        let circuit_store = circuit::new_circuit_store();
+        {
+            let mut g = circuit_store.write().await;
+            g.insert(
+                "s1".to_string(),
+                CircuitState::Open {
+                    open_until: Instant::now() + Duration::from_secs(60),
+                },
+            );
+            g.insert(
+                "s2".to_string(),
+                CircuitState::Open {
+                    open_until: Instant::now() + Duration::from_secs(60),
+                },
+            );
+        }
+        let state = HealthState {
+            config,
+            circuit_store,
+            last_errors: Arc::new(RwLock::new(HashMap::new())),
+            started_at: Instant::now(),
+            output_path: None,
+            state_store: None,
+        };
+        let body = build_ready_body(&state).await;
+        assert!(!body.at_least_one_source_healthy);
+        assert!(!body.ready);
+        assert!(body.state_store_connected);
+    }
+
+    #[tokio::test]
+    async fn test_build_ready_body_state_store_connected() {
+        use crate::state::MemoryStateStore;
+        let config = Arc::new(minimal_config());
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let state = HealthState {
+            config,
+            circuit_store: circuit::new_circuit_store(),
+            last_errors: Arc::new(RwLock::new(HashMap::new())),
+            started_at: Instant::now(),
+            output_path: None,
+            state_store: Some(store),
+        };
+        let body = build_ready_body(&state).await;
+        assert!(body.state_store_connected);
+        assert!(body.at_least_one_source_healthy);
+        assert!(body.ready);
     }
 }

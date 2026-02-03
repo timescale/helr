@@ -110,6 +110,9 @@ Configuration is merged in this order (later overrides earlier):
 | `health.enabled` | Enable health HTTP server | boolean | `false` |
 | `health.address` | Health server bind address | string | `0.0.0.0` |
 | `health.port` | Health server port | number | `8080` |
+
+When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return detailed JSON (version, uptime, per-source status, circuit state, last_error). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed.
+
 | `metrics.enabled` | Enable Prometheus metrics server | boolean | `false` |
 | `metrics.address` | Metrics server bind address | string | `0.0.0.0` |
 | `metrics.port` | Metrics server port | number | `9090` |
