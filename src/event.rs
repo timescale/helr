@@ -23,6 +23,8 @@ pub struct EventMeta {
     pub cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 impl EmittedEvent {
@@ -35,6 +37,7 @@ impl EmittedEvent {
             meta: EventMeta {
                 cursor: None,
                 request_id: None,
+                id: None,
             },
         }
     }
@@ -46,6 +49,11 @@ impl EmittedEvent {
 
     pub fn with_request_id(mut self, request_id: String) -> Self {
         self.meta.request_id = Some(request_id);
+        self
+    }
+
+    pub fn with_id(mut self, id: String) -> Self {
+        self.meta.id = Some(id);
         self
     }
 
@@ -99,5 +107,18 @@ mod tests {
         let line = e.to_ndjson_line().unwrap();
         assert!(line.contains("\"cursor\":\"next-page-token\""));
         assert!(line.contains("\"request_id\":\"req-123\""));
+    }
+
+    #[test]
+    fn emitted_event_with_id() {
+        let e = EmittedEvent::new(
+            "2024-01-15T12:00:00Z".to_string(),
+            "s".to_string(),
+            "https://x/".to_string(),
+            serde_json::json!(null),
+        )
+        .with_id("evt-uuid-123".to_string());
+        let line = e.to_ndjson_line().unwrap();
+        assert!(line.contains("\"id\":\"evt-uuid-123\""));
     }
 }

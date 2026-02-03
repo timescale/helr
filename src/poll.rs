@@ -362,13 +362,7 @@ async fn poll_link_header(
             }
             total_events += 1;
             emitted_count += 1;
-            let ts = event_ts(event_value);
-            let emitted = EmittedEvent::new(
-                ts,
-                effective_source_label(source, source_id),
-                path.clone(),
-                event_value.clone(),
-            );
+            let emitted = build_emitted_event(source, source_id, &path, event_value);
             emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
@@ -615,13 +609,7 @@ async fn poll_cursor_pagination(
             }
             total_events += 1;
             emitted_count += 1;
-            let ts = event_ts(event_value);
-            let emitted = EmittedEvent::new(
-                ts,
-                effective_source_label(source, source_id),
-                path.clone(),
-                event_value.clone(),
-            );
+            let emitted = build_emitted_event(source, source_id, &path, event_value);
             emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
@@ -800,13 +788,7 @@ async fn poll_page_offset_pagination(
             }
             total_events += 1;
             emitted_count += 1;
-            let ts = event_ts(event_value);
-            let emitted = EmittedEvent::new(
-                ts,
-                effective_source_label(source, source_id),
-                path.clone(),
-                event_value.clone(),
-            );
+            let emitted = build_emitted_event(source, source_id, &path, event_value);
             emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
@@ -936,13 +918,7 @@ async fn poll_single_page(
             }
         }
         emitted_count += 1;
-        let ts = event_ts(event_value);
-        let emitted = EmittedEvent::new(
-            ts,
-            effective_source_label(source, source_id),
-            path.clone(),
-            event_value.clone(),
-        );
+        let emitted = build_emitted_event(source, source_id, &path, event_value);
         emit_event_line(global, source_id, source, &event_sink, &emitted)?;
     }
     metrics::record_events(source_id, emitted_count);
@@ -1140,7 +1116,8 @@ fn event_id(event: &serde_json::Value, id_path: &str) -> Option<String> {
     v.as_str().map(|s| s.to_string())
 }
 
-fn event_ts(event: &serde_json::Value) -> String {
+/// Fallback order when no timestamp_field config or path missing: published, timestamp, ts, created_at, then now.
+fn event_ts_fallback(event: &serde_json::Value) -> String {
     let s = event
         .get("published")
         .or_else(|| event.get("timestamp"))
@@ -1154,6 +1131,39 @@ fn event_ts(event: &serde_json::Value) -> String {
     } else {
         s
     }
+}
+
+/// Timestamp for envelope: from timestamp_field path when set and present, else event_ts_fallback.
+fn event_ts_with_field(event: &serde_json::Value, timestamp_field: Option<&str>) -> String {
+    if let Some(path) = timestamp_field {
+        if let Some(s) = json_path_str(event, path) {
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    event_ts_fallback(event)
+}
+
+/// Build NDJSON envelope from raw event using source transform (timestamp_field, id_field) when set.
+fn build_emitted_event(
+    source: &SourceConfig,
+    source_id: &str,
+    path: &str,
+    event_value: &serde_json::Value,
+) -> EmittedEvent {
+    let ts = event_ts_with_field(
+        event_value,
+        source.transform.as_ref().and_then(|t| t.timestamp_field.as_deref()),
+    );
+    let label = effective_source_label(source, source_id);
+    let mut emitted = EmittedEvent::new(ts, label, path.to_string(), event_value.clone());
+    if let Some(id_path) = source.transform.as_ref().and_then(|t| t.id_field.as_ref()) {
+        if let Some(id) = event_id(event_value, id_path) {
+            emitted = emitted.with_id(id);
+        }
+    }
+    emitted
 }
 
 fn status_class(status: u16) -> &'static str {

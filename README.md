@@ -88,7 +88,7 @@ Configuration is merged in this order (later overrides earlier):
 - **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
+- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
 
@@ -139,6 +139,9 @@ Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override
 | `max_bytes` | Stop pagination when total response bytes exceed this (per poll) | number | — |
 | `dedupe.id_path` | JSON path to event ID for deduplication (e.g. `uuid`, `id`, `event.id`) | string | — |
 | `dedupe.capacity` | Max event IDs to keep (LRU) | number | `100000` |
+| `transform` | Per-source field mapping for NDJSON envelope; see Transform below | object | — |
+| `transform.timestamp_field` | Dotted path to event timestamp (e.g. `published`, `event.created_at`). Used for envelope `ts`. When unset: published, timestamp, ts, created_at, then now. | string | — |
+| `transform.id_field` | Dotted path to event unique ID (e.g. `uuid`, `id`). When set, value is included in envelope `meta.id`. | string | — |
 | `on_cursor_error` | When API returns 4xx for cursor (e.g. expired) | `reset`, `fail` | — |
 | `from` | Start of range for first request (e.g. ISO timestamp) | string | — |
 | `from_param` | Query param name for `from` (e.g. `since`, `after`, `startTime`) | string | `since` (when `from` set) |

@@ -170,6 +170,10 @@ pub struct SourceConfig {
     #[serde(default)]
     pub dedupe: Option<DedupeConfig>,
 
+    /// Optional transform: which raw-event fields map to envelope ts and meta.id.
+    #[serde(default)]
+    pub transform: Option<TransformConfig>,
+
     /// When cursor pagination gets 4xx (e.g. expired/invalid cursor): "reset" (clear cursor, next poll from start) or "fail".
     #[serde(default)]
     pub on_cursor_error: Option<CursorExpiredBehavior>,
@@ -291,6 +295,18 @@ pub struct DedupeConfig {
 
 fn default_dedupe_capacity() -> u64 {
     100_000
+}
+
+/// Per-source transform: which fields in the raw event map to envelope ts and id.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransformConfig {
+    /// Dotted path to the event timestamp (e.g. "published", "event.created_at"). Used for envelope `ts`. When unset, fallback: published, timestamp, ts, created_at, then now.
+    #[serde(default)]
+    pub timestamp_field: Option<String>,
+    /// Dotted path to the event unique ID (e.g. "uuid", "id"). When set, value is included in envelope `meta.id`.
+    #[serde(default)]
+    pub id_field: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1054,6 +1070,35 @@ sources:
             r.retryable_status_codes.as_deref(),
             Some([408, 429, 500, 502, 503, 504].as_slice())
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_transform() {
+        let dir = std::env::temp_dir().join("hel_config_transform");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  x:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+    transform:
+      timestamp_field: "published"
+      id_field: "uuid"
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        let s = &config.sources["x"];
+        let t = s.transform.as_ref().unwrap();
+        assert_eq!(t.timestamp_field.as_deref(), Some("published"));
+        assert_eq!(t.id_field.as_deref(), Some("uuid"));
         let _ = std::fs::remove_file(&path);
     }
 
