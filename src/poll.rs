@@ -19,9 +19,14 @@ use crate::retry::execute_with_retry;
 use crate::state::StateStore;
 use anyhow::Context;
 use chrono::Utc;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tracing::instrument;
+
+/// Shared store of last error message per source (for health endpoints).
+pub type LastErrorStore = Arc<RwLock<HashMap<String, String>>>;
 
 /// Run one poll tick for all sources (or only those matching source_filter).
 /// Sources are polled concurrently (one task per source).
@@ -35,6 +40,7 @@ pub async fn run_one_tick(
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
+    last_errors: LastErrorStore,
 ) -> anyhow::Result<()> {
     let mut handles = Vec::new();
     for (source_id, source) in &config.sources {
@@ -75,10 +81,14 @@ pub async fn run_one_tick(
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 metrics::record_error(&source_id);
+                let msg = e.to_string();
+                last_errors.write().await.insert(source_id.clone(), msg.clone());
                 tracing::error!(source = %source_id, "poll failed: {:#}", e);
             }
             Err(e) => {
                 metrics::record_error(&source_id);
+                let msg = e.to_string();
+                last_errors.write().await.insert(source_id.clone(), msg.clone());
                 tracing::error!(source = %source_id, "task join failed: {:#}", e);
             }
         }

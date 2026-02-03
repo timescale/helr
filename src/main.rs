@@ -13,6 +13,7 @@ mod config;
 mod dedupe;
 mod dpop;
 mod event;
+mod health;
 mod metrics;
 mod oauth2;
 mod output;
@@ -22,7 +23,6 @@ mod replay;
 mod retry;
 mod state;
 
-use axum::http::StatusCode;
 use axum::routing::get;
 use circuit::new_circuit_store;
 use config::Config;
@@ -30,11 +30,13 @@ use dpop::new_dpop_key_cache;
 use oauth2::new_oauth2_token_cache;
 use output::{parse_rotation, EventSink, FileSink, RotationPolicy, StdoutSink};
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 #[derive(Parser)]
 #[command(name = "hel")]
@@ -456,6 +458,7 @@ async fn run_test(
     let token_cache = new_oauth2_token_cache();
     let dpop_key_cache = Some(new_dpop_key_cache());
     let dedupe_store = dedupe::new_dedupe_store();
+    let last_errors: poll::LastErrorStore = Arc::new(RwLock::new(HashMap::new()));
     poll::run_one_tick(
         &config,
         store,
@@ -466,6 +469,7 @@ async fn run_test(
         dedupe_store,
         event_sink,
         None,
+        last_errors,
     )
     .await
 }
@@ -591,6 +595,7 @@ async fn run_collector(
     let token_cache = new_oauth2_token_cache();
     let dpop_key_cache = Some(new_dpop_key_cache());
     let dedupe_store = dedupe::new_dedupe_store();
+    let last_errors: poll::LastErrorStore = Arc::new(RwLock::new(HashMap::new()));
     poll::run_one_tick(
         &config,
         store.clone(),
@@ -601,6 +606,7 @@ async fn run_collector(
         dedupe_store.clone(),
         event_sink.clone(),
         record_state.clone(),
+        last_errors.clone(),
     )
     .await?;
 
@@ -647,32 +653,21 @@ async fn run_collector(
                 .parse()
                 .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
             let listener = tokio::net::TcpListener::bind(addr).await?;
-            let output_path_ready = Arc::new(output_path);
+            let started_at = Instant::now();
+            let health_state = Arc::new(health::HealthState {
+                config: Arc::new(config.clone()),
+                circuit_store: circuit_store.clone(),
+                last_errors: last_errors.clone(),
+                started_at,
+                output_path: output_path.clone(),
+            });
             tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
             tokio::spawn(async move {
-                let output_path = output_path_ready;
                 let app = axum::Router::new()
-                    .route("/healthz", get(|| async { StatusCode::OK }))
-                    .route(
-                        "/readyz",
-                        get({
-                            let output_path = output_path.clone();
-                            move || {
-                                let path = output_path.clone();
-                                async move {
-                                    if let Some(p) = path.as_ref() {
-                                        match std::fs::OpenOptions::new().append(true).open(p) {
-                                            Ok(_) => StatusCode::OK,
-                                            Err(_) => StatusCode::SERVICE_UNAVAILABLE,
-                                        }
-                                    } else {
-                                        StatusCode::OK
-                                    }
-                                }
-                            }
-                        }),
-                    )
-                    .route("/startupz", get(|| async { StatusCode::OK }));
+                    .route("/healthz", get(health::healthz_handler))
+                    .route("/readyz", get(health::readyz_handler))
+                    .route("/startupz", get(health::startupz_handler))
+                    .with_state(health_state);
                 if let Err(e) = axum::serve(listener, app).await {
                     tracing::error!("health server error: {}", e);
                 }
@@ -705,6 +700,7 @@ async fn run_collector(
         let dedupe_store_ref = dedupe_store.clone();
         let event_sink_ref = event_sink.clone();
         let record_state_ref = record_state.as_ref();
+        let last_errors_ref = last_errors.clone();
         let mut tick_fut = std::pin::pin!(poll::run_one_tick(
             config_ref,
             store_ref,
@@ -715,6 +711,7 @@ async fn run_collector(
             dedupe_store_ref,
             event_sink_ref,
             record_state_ref.cloned(),
+            last_errors_ref,
         ));
 
         tokio::select! {
