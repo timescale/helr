@@ -728,6 +728,10 @@ async fn run_collector(
             result = tick_fut.as_mut() => {
                 if let Err(e) = result {
                     tracing::error!("tick failed: {}", e);
+                    // Broken pipe to stdout is fatal: exit non-zero so orchestrator can restart.
+                    if e.to_string().to_lowercase().contains("broken pipe") {
+                        std::process::exit(1);
+                    }
                 }
             }
         }

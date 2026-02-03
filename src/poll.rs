@@ -98,6 +98,10 @@ pub async fn run_one_tick(
                 let msg = e.to_string();
                 last_errors.write().await.insert(source_id.clone(), msg.clone());
                 tracing::error!(source = %source_id, "poll failed: {:#}", e);
+                // Broken pipe to stdout is fatal: exit so caller can exit non-zero.
+                if msg.to_lowercase().contains("broken pipe") {
+                    return Err(e);
+                }
             }
             Err(e) => {
                 metrics::record_error(&source_id);
