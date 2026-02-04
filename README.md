@@ -10,6 +10,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset; optional **incremental_from** (store latest event timestamp, send as query param on first request — e.g. Slack `oldest`)
 - **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, **rate limit** — header mapping (X-RateLimit-Limit/Remaining/Reset or custom names), client-side RPS/burst cap, optional adaptive rate limiting (throttle when remaining is low)
+- **TLS:** Custom CA (file or env, merge or replace system roots), client certificate and key (mutual TLS), minimum TLS version (1.2 or 1.3)
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
 - **Backpressure:** When the downstream consumer (stdout/file) can’t keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
@@ -90,7 +91,7 @@ Configuration is merged in this order (later overrides earlier):
 - **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `incremental_from` (store latest event timestamp in state, send as query param on first request — e.g. Slack `oldest`), `dedupe.id_path`, `resilience.rate_limit` (header mapping, `max_requests_per_second`, `burst_size`, `adaptive`, `page_delay_secs`), `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
+- **Options:** `from` / `from_param`, `query_params`, `incremental_from` (store latest event timestamp in state, send as query param on first request — e.g. Slack `oldest`), `dedupe.id_path`, `resilience.rate_limit` (header mapping, `max_requests_per_second`, `burst_size`, `adaptive`, `page_delay_secs`), `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.tls` (custom CA, client cert/key, min TLS version), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
 
@@ -259,6 +260,21 @@ Secrets can be read from env var or file; file takes precedence when set.
 | `rate_limit.max_requests_per_second` | Client-side RPS cap; requests are throttled before sending (token bucket) | number | — |
 | `rate_limit.burst_size` | Client-side burst size (max requests in a burst). When unset with `max_requests_per_second`, defaults to ceil(rps) | number | — |
 | `rate_limit.adaptive` | When true, use remaining/reset from response: if remaining ≤ 1, wait until reset before next request | boolean | — |
+
+**TLS** (`resilience.tls:`): Custom CA, client cert/key (mutual TLS), and minimum TLS version for the reqwest client.
+
+| Option | Description | Possible values | Default |
+|--------|-------------|-----------------|---------|
+| `tls.ca_file` | Path to PEM file (single cert or bundle) for custom CA. Merged with system roots unless `ca_only` is true. | string | — |
+| `tls.ca_env` | Env var containing PEM for custom CA. Used when `ca_file` is unset. | string | — |
+| `tls.ca_only` | When true and custom CA is set, use only the provided CA(s); otherwise merge with system roots. | boolean | `false` |
+| `tls.client_cert_file` | Path to client certificate PEM (for mutual TLS). | string | — |
+| `tls.client_cert_env` | Env var containing client certificate PEM. Used when `client_cert_file` is unset. | string | — |
+| `tls.client_key_file` | Path to client private key PEM (required when client cert is set). | string | — |
+| `tls.client_key_env` | Env var containing client private key PEM. Used when `client_key_file` is unset. | string | — |
+| `tls.min_version` | Minimum TLS version for connections. | `"1.2"`, `"1.3"` | — (TLS backend default) |
+
+Secrets can be read from file or env; file takes precedence when set. Client cert and key must both be set when using mutual TLS.
 
 </details>
 

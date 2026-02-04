@@ -1,11 +1,12 @@
-//! HTTP client wrapper: build reqwest client with timeouts and auth from config.
+//! HTTP client wrapper: build reqwest client with timeouts, TLS, and auth from config.
 //! Single GET request; pagination is handled by the caller.
 //! Auth secrets can come from env vars or files (config parity).
 
-use crate::config::{self, AuthConfig, ResilienceConfig, SourceConfig};
+use crate::config::{self, AuthConfig, ResilienceConfig, SourceConfig, TlsConfig};
 use anyhow::Context;
 use base64::Engine;
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
+use reqwest::tls::{Certificate, Identity, Version};
 use reqwest::Client;
 use std::time::Duration;
 
@@ -23,7 +24,80 @@ fn effective_timeouts(resilience: Option<&ResilienceConfig>) -> (Duration, Durat
     (connect, request, read, idle)
 }
 
-/// Build a reqwest client with timeouts from resilience config.
+/// Load CA cert(s) from PEM (single or bundle) and return certs for reqwest.
+fn load_ca_certs(tls: &TlsConfig) -> anyhow::Result<Vec<Certificate>> {
+    let pem = config::read_secret(
+        tls.ca_file.as_deref(),
+        tls.ca_env.as_deref().unwrap_or(""),
+    )?;
+    let bytes = pem.as_bytes();
+    // Bundle = multiple BEGIN CERTIFICATE blocks; otherwise single cert.
+    let is_bundle = pem.contains("-----BEGIN CERTIFICATE-----")
+        && pem.matches("-----BEGIN CERTIFICATE-----").count() > 1;
+    if is_bundle {
+        Certificate::from_pem_bundle(bytes).context("parse TLS CA PEM bundle")
+    } else {
+        let cert = Certificate::from_pem(bytes).context("parse TLS CA PEM")?;
+        Ok(vec![cert])
+    }
+}
+
+/// Load client identity (cert + key) for mutual TLS. Cert and key can be separate PEMs; we concatenate for Identity::from_pem.
+fn load_client_identity(tls: &TlsConfig) -> anyhow::Result<Identity> {
+    let cert = config::read_secret(
+        tls.client_cert_file.as_deref(),
+        tls.client_cert_env.as_deref().unwrap_or(""),
+    )?;
+    let key = config::read_secret(
+        tls.client_key_file.as_deref(),
+        tls.client_key_env.as_deref().unwrap_or(""),
+    )?;
+    // reqwest Identity::from_pem expects one PEM buffer with private key and at least one certificate.
+    let mut pem = key.trim().to_string();
+    pem.push('\n');
+    pem.push_str(cert.trim());
+    Identity::from_pem(pem.as_bytes()).context("parse TLS client cert/key PEM")
+}
+
+/// Apply TLS config to the client builder: custom CA, client identity, min TLS version.
+fn apply_tls(
+    builder: reqwest::ClientBuilder,
+    tls: &TlsConfig,
+) -> anyhow::Result<reqwest::ClientBuilder> {
+    let has_ca = tls.ca_file.as_deref().map_or(false, |p| !p.is_empty())
+        || tls.ca_env.as_deref().map_or(false, |e| !e.is_empty());
+    let has_identity = tls.client_cert_file.as_deref().map_or(false, |p| !p.is_empty())
+        || tls.client_cert_env.as_deref().map_or(false, |e| !e.is_empty());
+
+    let mut builder = builder;
+
+    if has_ca {
+        let certs = load_ca_certs(tls)?;
+        builder = if tls.ca_only {
+            builder.tls_certs_only(certs)
+        } else {
+            builder.tls_certs_merge(certs)
+        };
+    }
+
+    if has_identity {
+        let identity = load_client_identity(tls)?;
+        builder = builder.identity(identity);
+    }
+
+    if let Some(v) = tls.min_version.as_deref() {
+        let version = match v {
+            "1.2" => Version::TLS_1_2,
+            "1.3" => Version::TLS_1_3,
+            _ => anyhow::bail!("tls min_version must be \"1.2\" or \"1.3\", got {:?}", v),
+        };
+        builder = builder.tls_version_min(version);
+    }
+
+    Ok(builder)
+}
+
+/// Build a reqwest client with timeouts and optional TLS from resilience config.
 /// Uses split timeouts (connect, request, read, idle) when set; otherwise timeout_secs for request and min(10, timeout_secs) for connect.
 pub fn build_client(resilience: Option<&ResilienceConfig>) -> anyhow::Result<Client> {
     let (connect, request, read, idle) = effective_timeouts(resilience);
@@ -35,6 +109,9 @@ pub fn build_client(resilience: Option<&ResilienceConfig>) -> anyhow::Result<Cli
     }
     if let Some(d) = idle {
         builder = builder.pool_idle_timeout(d);
+    }
+    if let Some(tls) = resilience.and_then(|r| r.tls.as_ref()) {
+        builder = apply_tls(builder, tls)?;
     }
     let client = builder.build().context("build reqwest client")?;
     Ok(client)
@@ -137,4 +214,33 @@ fn add_auth(
         }
     };
     Ok(req)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ResilienceConfig, TlsConfig};
+
+    #[test]
+    fn build_client_with_tls_min_version_only() {
+        let resilience = ResilienceConfig {
+            timeout_secs: 30,
+            timeouts: None,
+            retries: None,
+            circuit_breaker: None,
+            rate_limit: None,
+            tls: Some(TlsConfig {
+                ca_file: None,
+                ca_env: None,
+                ca_only: false,
+                client_cert_file: None,
+                client_cert_env: None,
+                client_key_file: None,
+                client_key_env: None,
+                min_version: Some("1.3".to_string()),
+            }),
+        };
+        let client = build_client(Some(&resilience)).unwrap();
+        drop(client);
+    }
 }

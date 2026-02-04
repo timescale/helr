@@ -166,6 +166,79 @@ sources:
     assert_eq!(obj["event"]["id"], "r1");
 }
 
+/// TLS config (min_version only): hel builds client and emits NDJSON (mock is HTTP; TLS applies to HTTPS sources).
+#[tokio::test]
+async fn integration_tls_min_version_emits_ndjson() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "t1", "msg": "tls-config", "published": "2024-01-15T12:00:00Z"}
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_tls");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  tls-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+      tls:
+        min_version: "1.2"
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let hel_bin = hel_bin();
+    let output = std::process::Command::new(&hel_bin)
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "hel run --once with tls min_version failed: stdout={} stderr={}",
+        stdout,
+        stderr
+    );
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(
+        lines.len() >= 1,
+        "expected at least 1 NDJSON line with tls config, got {}: {:?}",
+        lines.len(),
+        stdout
+    );
+    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap_or_else(|e| {
+        panic!("invalid NDJSON line {:?}: {}", lines[0], e);
+    });
+    assert_eq!(obj.get("source").and_then(|v| v.as_str()), Some("tls-source"));
+    assert_eq!(obj["event"]["id"], "t1");
+}
+
 /// Backpressure enabled (strategy block): hel still emits NDJSON to stdout.
 #[tokio::test]
 async fn integration_backpressure_block_emits_ndjson() {

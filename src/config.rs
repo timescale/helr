@@ -602,6 +602,36 @@ pub struct TimeoutsConfig {
     pub poll_tick_secs: Option<u64>,
 }
 
+/// TLS options: custom CA, client cert/key, min TLS version. Applied to the reqwest client for this source.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Path to PEM file (single cert or bundle) for custom CA. Merged with system roots unless `ca_only` is true.
+    #[serde(default)]
+    pub ca_file: Option<String>,
+    /// Env var containing PEM (single cert or bundle) for custom CA. Used when `ca_file` is unset.
+    #[serde(default)]
+    pub ca_env: Option<String>,
+    /// When true and custom CA is set, use only the provided CA(s); otherwise merge with system roots.
+    #[serde(default)]
+    pub ca_only: bool,
+    /// Path to client certificate PEM (for mutual TLS).
+    #[serde(default)]
+    pub client_cert_file: Option<String>,
+    /// Env var containing client certificate PEM. Used when `client_cert_file` is unset.
+    #[serde(default)]
+    pub client_cert_env: Option<String>,
+    /// Path to client private key PEM (required when client cert is set).
+    #[serde(default)]
+    pub client_key_file: Option<String>,
+    /// Env var containing client private key PEM. Used when `client_key_file` is unset.
+    #[serde(default)]
+    pub client_key_env: Option<String>,
+    /// Minimum TLS version: "1.2" or "1.3".
+    #[serde(default)]
+    pub min_version: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResilienceConfig {
@@ -616,6 +646,8 @@ pub struct ResilienceConfig {
     pub circuit_breaker: Option<CircuitBreakerConfig>,
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 /// Header names for rate limit info (limit, remaining, reset). When unset, defaults are used.
@@ -745,8 +777,56 @@ impl Config {
             anyhow::bail!("config must have at least one source");
         }
         validate_auth_secrets(&config)?;
+        validate_tls(&config)?;
         Ok(config)
     }
+}
+
+/// Validate TLS config: client cert and key both set when either is set; resolve CA/cert/key so startup fails if missing.
+pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
+    for (source_id, source) in &config.sources {
+        let Some(tls) = source.resilience.as_ref().and_then(|r| r.tls.as_ref()) else {
+            continue;
+        };
+        let has_cert = tls.client_cert_file.as_deref().map_or(false, |p| !p.is_empty())
+            || tls.client_cert_env.as_deref().map_or(false, |e| !e.is_empty());
+        let has_key = tls.client_key_file.as_deref().map_or(false, |p| !p.is_empty())
+            || tls.client_key_env.as_deref().map_or(false, |e| !e.is_empty());
+        if has_cert != has_key {
+            anyhow::bail!(
+                "source {}: tls client_cert and client_key must both be set (cert_file/cert_env and key_file/key_env)",
+                source_id
+            );
+        }
+        if has_cert {
+            read_secret(
+                tls.client_cert_file.as_deref(),
+                tls.client_cert_env.as_deref().unwrap_or(""),
+            )
+            .with_context(|| format!("source {}: tls client_cert", source_id))?;
+            read_secret(
+                tls.client_key_file.as_deref(),
+                tls.client_key_env.as_deref().unwrap_or(""),
+            )
+            .with_context(|| format!("source {}: tls client_key", source_id))?;
+        }
+        let has_ca = tls.ca_file.as_deref().map_or(false, |p| !p.is_empty())
+            || tls.ca_env.as_deref().map_or(false, |e| !e.is_empty());
+        if has_ca {
+            read_secret(tls.ca_file.as_deref(), tls.ca_env.as_deref().unwrap_or(""))
+                .with_context(|| format!("source {}: tls ca", source_id))?;
+        }
+        if let Some(v) = tls.min_version.as_deref() {
+            if v != "1.2" && v != "1.3" {
+                anyhow::bail!(
+                    "source {}: tls min_version must be \"1.2\" or \"1.3\", got {:?}",
+                    source_id,
+                    v
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate that all auth secrets (env or file) can be resolved. Fail at startup so health reflects "not ready".
@@ -1380,6 +1460,112 @@ sources:
         let t = s.transform.as_ref().unwrap();
         assert_eq!(t.timestamp_field.as_deref(), Some("published"));
         assert_eq!(t.id_field.as_deref(), Some("uuid"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_tls() {
+        let dir = std::env::temp_dir().join("hel_config_tls");
+        let _ = std::fs::create_dir_all(&dir);
+        let ca_path = dir.join("ca.pem");
+        let cert_path = dir.join("client.pem");
+        let key_path = dir.join("client-key.pem");
+        std::fs::write(&ca_path, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n").unwrap();
+        std::fs::write(&cert_path, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n").unwrap();
+        std::fs::write(&key_path, "-----BEGIN PRIVATE KEY-----\nMOCK\n-----END PRIVATE KEY-----\n").unwrap();
+        let path = dir.join("hel.yaml");
+        let yaml = format!(
+            r#"
+global: {{}}
+sources:
+  tls-source:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 30
+      tls:
+        ca_file: "{}"
+        ca_only: true
+        client_cert_file: "{}"
+        client_key_file: "{}"
+        min_version: "1.2"
+"#,
+            ca_path.to_str().unwrap(),
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap()
+        );
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let s = &config.sources["tls-source"];
+        let t = s.resilience.as_ref().and_then(|r| r.tls.as_ref()).unwrap();
+        assert_eq!(t.ca_file.as_deref(), Some(ca_path.to_str().unwrap()));
+        assert!(t.ca_only);
+        assert_eq!(t.client_cert_file.as_deref(), Some(cert_path.to_str().unwrap()));
+        assert_eq!(t.client_key_file.as_deref(), Some(key_path.to_str().unwrap()));
+        assert_eq!(t.min_version.as_deref(), Some("1.2"));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&ca_path);
+        let _ = std::fs::remove_file(&cert_path);
+        let _ = std::fs::remove_file(&key_path);
+    }
+
+    #[test]
+    fn config_load_tls_client_cert_without_key_fails() {
+        let dir = std::env::temp_dir().join("hel_config_tls_validate");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  x:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+    resilience:
+      tls:
+        client_cert_file: "/tmp/cert.pem"
+"#,
+        )
+        .unwrap();
+        let err = Config::load(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("client_cert") && err.to_string().contains("client_key"),
+            "expected client_cert/client_key validation error, got: {}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_tls_min_version_invalid_fails() {
+        let dir = std::env::temp_dir().join("hel_config_tls_minver");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  x:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+    resilience:
+      tls:
+        min_version: "1.1"
+"#,
+        )
+        .unwrap();
+        let err = Config::load(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("min_version") || err.to_string().contains("1.2"),
+            "expected min_version validation error, got: {}",
+            err
+        );
         let _ = std::fs::remove_file(&path);
     }
 
