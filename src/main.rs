@@ -435,19 +435,44 @@ fn run_validate(config_path: &std::path::Path) -> anyhow::Result<()> {
     }
 }
 
-/// Open state store from config (same logic as run_collector).
-fn open_store(config: &Config) -> anyhow::Result<Arc<dyn StateStore>> {
-    let store: Arc<dyn StateStore> = match &config.global.state {
+/// Open state store from config. On primary failure, falls back to memory when `degradation.state_store_fallback: memory`.
+/// Returns (store, state_store_fallback_active).
+fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn StateStore>, bool)> {
+    match &config.global.state {
         Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
             let path = state
                 .path
                 .as_deref()
                 .unwrap_or("./hel-state.db");
-            Arc::new(SqliteStateStore::open(Path::new(path))?)
+            match SqliteStateStore::open(Path::new(path)) {
+                Ok(s) => Ok((Arc::new(s), false)),
+                Err(e) => {
+                    let fallback = config
+                        .global
+                        .degradation
+                        .as_ref()
+                        .and_then(|d| d.state_store_fallback.as_deref())
+                        .map(|s| s.eq_ignore_ascii_case("memory"))
+                        .unwrap_or(false);
+                    if fallback {
+                        tracing::warn!(
+                            error = %e,
+                            "state store (sqlite) failed, falling back to memory (state not durable)"
+                        );
+                        Ok((Arc::new(MemoryStateStore::new()), true))
+                    } else {
+                        Err(e.into())
+                    }
+                }
+            }
         }
-        _ => Arc::new(MemoryStateStore::new()),
-    };
-    Ok(store)
+        _ => Ok((Arc::new(MemoryStateStore::new()), false)),
+    }
+}
+
+/// Open state store from config (same logic as run_collector). Uses fallback when configured.
+fn open_store(config: &Config) -> anyhow::Result<Arc<dyn StateStore>> {
+    open_store_with_fallback(config).map(|(s, _)| s)
 }
 
 /// Run one poll tick for the given source (test).
@@ -587,16 +612,7 @@ async fn run_collector(
 ) -> anyhow::Result<()> {
     tracing::info!("loaded config");
 
-    let store: Arc<dyn StateStore> = match &config.global.state {
-        Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
-            let path = state
-                .path
-                .as_deref()
-                .unwrap_or("./hel-state.db");
-            Arc::new(SqliteStateStore::open(Path::new(path))?)
-        }
-        _ => Arc::new(MemoryStateStore::new()),
-    };
+    let (store, state_store_fallback_active) = open_store_with_fallback(config)?;
 
     let circuit_store = new_circuit_store();
     let token_cache = new_oauth2_token_cache();
@@ -668,6 +684,7 @@ async fn run_collector(
                 started_at,
                 output_path: output_path.clone(),
                 state_store: Some(store.clone()),
+                state_store_fallback_active,
             });
             tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
             tokio::spawn(async move {
@@ -687,7 +704,7 @@ async fn run_collector(
 
     let mut tick = 0u64;
     'run: loop {
-        let delay = next_delay(&config);
+        let delay = next_delay(&config, state_store_fallback_active);
         tick += 1;
         tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
 
@@ -775,7 +792,8 @@ async fn shutdown_signal() {
 }
 
 /// Interval + jitter: min interval across sources, max jitter; delay = interval ± jitter, at least 1s.
-fn next_delay(config: &Config) -> Duration {
+/// When state_store_fallback_active and degradation.reduced_frequency_multiplier is set, multiplies delay by that factor.
+fn next_delay(config: &Config, state_store_fallback_active: bool) -> Duration {
     let interval_secs = config
         .sources
         .values()
@@ -793,7 +811,15 @@ fn next_delay(config: &Config) -> Duration {
     } else {
         0
     };
-    let secs = (interval_secs as i64 + delta).max(1) as u64;
+    let mut secs = (interval_secs as i64 + delta).max(1) as u64;
+    if state_store_fallback_active {
+        if let Some(d) = config.global.degradation.as_ref() {
+            let mult = d.reduced_frequency_multiplier;
+            if mult > 0.0 && mult.is_finite() {
+                secs = (secs as f64 * mult).ceil().max(1.0) as u64;
+            }
+        }
+    }
     Duration::from_secs(secs)
 }
 
@@ -817,5 +843,37 @@ mod tests {
         let line = "not json\n";
         let out = add_source_to_json_log_line(line);
         assert_eq!(out, "not json\n");
+    }
+
+    #[test]
+    fn test_next_delay_reduced_frequency_when_fallback_active() {
+        let dir = std::env::temp_dir().join("hel_next_delay_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global:
+  degradation:
+    state_store_fallback: memory
+    reduced_frequency_multiplier: 2.0
+sources:
+  s1:
+    url: "https://example.com/"
+    schedule:
+      interval_secs: 60
+      jitter_secs: 0
+    pagination:
+      strategy: link_header
+      rel: next
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let delay_fallback = next_delay(&config, true);
+        let delay_normal = next_delay(&config, false);
+        assert_eq!(delay_normal.as_secs(), 60, "normal delay = interval when jitter 0");
+        assert_eq!(delay_fallback.as_secs(), 120, "when fallback active, delay = interval * reduced_frequency_multiplier");
     }
 }

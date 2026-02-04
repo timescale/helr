@@ -401,7 +401,7 @@ async fn poll_link_header(
         } else {
             pending_next_url = Some(String::new());
             if checkpoint_per_page {
-                store_set_or_skip(&store, source_id, source, "next_url", "").await?;
+                store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
             }
             tracing::info!(
                 source = %source_id,
@@ -415,7 +415,7 @@ async fn poll_link_header(
     }
     if source.checkpoint == Some(CheckpointTiming::EndOfTick) {
         if let Some(ref v) = pending_next_url {
-            store_set_or_skip(&store, source_id, source, "next_url", v).await?;
+            store_set_or_skip(&store, source_id, source, global, "next_url", v).await?;
         }
     }
     Ok(())
@@ -551,7 +551,7 @@ async fn poll_cursor_pagination(
                     || lower.contains("invalid cursor")
                     || lower.contains("cursor invalid");
                 if is_expired && source.on_cursor_error == Some(CursorExpiredBehavior::Reset) {
-                    store_set_or_skip(&store, source_id, source, "cursor", "").await?;
+                    store_set_or_skip(&store, source_id, source, global, "cursor", "").await?;
                     tracing::warn!(
                         source = %source_id,
                         "cursor expired (4xx), reset; next poll from start"
@@ -621,7 +621,7 @@ async fn poll_cursor_pagination(
         match next_cursor {
             Some(c) => {
                 if checkpoint_per_page {
-                    store_set_or_skip(&store, source_id, source, "cursor", &c).await?;
+                    store_set_or_skip(&store, source_id, source, global, "cursor", &c).await?;
                 }
                 pending_cursor = Some(c.clone());
                 cursor = Some(c);
@@ -634,7 +634,7 @@ async fn poll_cursor_pagination(
             }
             None => {
                 if checkpoint_per_page {
-                    store_set_or_skip(&store, source_id, source, "cursor", "").await?;
+                    store_set_or_skip(&store, source_id, source, global, "cursor", "").await?;
                 }
                 pending_cursor = Some(String::new());
                 tracing::info!(
@@ -650,7 +650,7 @@ async fn poll_cursor_pagination(
     }
     if source.checkpoint == Some(CheckpointTiming::EndOfTick) {
         if let Some(ref v) = pending_cursor {
-            store_set_or_skip(&store, source_id, source, "cursor", v).await?;
+            store_set_or_skip(&store, source_id, source, global, "cursor", v).await?;
         }
     }
     Ok(())
@@ -810,7 +810,7 @@ async fn poll_page_offset_pagination(
             tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
         }
     }
-    store_set_or_skip(&store, source_id, source, "next_url", "").await?;
+    store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
     Ok(())
 }
 
@@ -906,7 +906,7 @@ async fn poll_single_page(
         Err(e) => {
             if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
                 tracing::warn!(source = %source_id, error = %e, "parse error, skipping");
-                let _ = store_set_or_skip(&store, source_id, source, "next_url", "").await;
+                let _ = store_set_or_skip(&store, source_id, source, global, "next_url", "").await;
                 return Ok(());
             }
             return Err(e).context("parse response");
@@ -927,7 +927,7 @@ async fn poll_single_page(
     }
     metrics::record_events(source_id, emitted_count);
 
-    store_set_or_skip(&store, source_id, source, "next_url", "").await?;
+    store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
     tracing::info!(
         source = %source_id,
         events = emitted_count,
@@ -1020,16 +1020,23 @@ fn emit_event_line(
     })
 }
 
-/// Set state key; on error, fail or skip checkpoint per source config (e.g. state store disk full).
+/// Set state key; on error, fail or skip checkpoint per source config or global degradation.emit_without_checkpoint.
 async fn store_set_or_skip(
     store: &Arc<dyn StateStore>,
     source_id: &str,
     source: &SourceConfig,
+    global: &GlobalConfig,
     key: &str,
     value: &str,
 ) -> anyhow::Result<()> {
     if let Err(e) = store.set(source_id, key, value).await {
-        if source.on_state_write_error == Some(OnStateWriteErrorBehavior::SkipCheckpoint) {
+        let skip = source.on_state_write_error == Some(OnStateWriteErrorBehavior::SkipCheckpoint)
+            || global
+                .degradation
+                .as_ref()
+                .and_then(|d| d.emit_without_checkpoint)
+                .unwrap_or(false);
+        if skip {
             tracing::warn!(
                 source = %source_id,
                 key,

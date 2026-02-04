@@ -1377,6 +1377,90 @@ sources:
     assert_eq!(body["at_least_one_source_healthy"], true);
 }
 
+/// Graceful degradation: when SQLite state store fails to open and state_store_fallback is memory, health reports state_store_fallback_active.
+#[tokio::test]
+async fn integration_state_store_fallback_health_reports_fallback_active() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": "1"}])))
+        .mount(&server)
+        .await;
+
+    let health_port = 19286u16;
+    let config_dir = std::env::temp_dir().join("hel_integration_fallback");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    // SQLite path that will fail to open (parent dir does not exist), so we fall back to memory.
+    let state_path = config_dir.join("nonexistent_subdir").join("hel-state.db");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: sqlite
+    path: "{}"
+  degradation:
+    state_store_fallback: memory
+  health:
+    enabled: true
+    address: "127.0.0.1"
+    port: {}
+sources:
+  fallback-source:
+    url: "{}/"
+    schedule:
+      interval_secs: 60
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        state_path.to_str().unwrap().replace('\\', "/"),
+        health_port,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let mut child = std::process::Command::new(hel_bin())
+        .args(["run", "--config", config_path.to_str().unwrap()])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn hel");
+
+    let base = format!("http://127.0.0.1:{}", health_port);
+    let client = reqwest::Client::new();
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(100));
+        if client.get(format!("{}/healthz", base)).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+            break;
+        }
+    }
+
+    let res_health = client.get(format!("{}/healthz", base)).send().await.expect("get healthz");
+    assert!(res_health.status().is_success(), "GET /healthz: {}", res_health.status());
+    let body: serde_json::Value = res_health.json().await.expect("healthz JSON");
+    assert_eq!(
+        body["state_store_fallback_active"].as_bool(),
+        Some(true),
+        "healthz should report state_store_fallback_active true when SQLite failed and fallback to memory is used: {}",
+        body
+    );
+
+    let res_ready = client.get(format!("{}/readyz", base)).send().await.expect("get readyz");
+    assert!(res_ready.status().is_success());
+    let body_ready: serde_json::Value = res_ready.json().await.expect("readyz JSON");
+    assert_eq!(body_ready["state_store_fallback_active"].as_bool(), Some(true), "readyz should report state_store_fallback_active true");
+
+    let _ = child.kill();
+}
+
 /// SIGTERM mid-poll: send SIGTERM while hel is waiting on a slow response; process exits (graceful shutdown).
 #[cfg(unix)]
 #[tokio::test]

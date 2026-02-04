@@ -13,6 +13,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
 - **Backpressure:** When the downstream consumer (stdout/file) can’t keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
+- **Graceful degradation:** When the state store fails or is unavailable: optional **state_store_fallback** to memory (state not durable), **emit_without_checkpoint** to continue emitting events when state writes fail, and **reduced_frequency_multiplier** to poll less often when degraded; health JSON reports **state_store_fallback_active**
 - **Session replay:** Record API responses to disk, replay without hitting the live API
 
 ## Install
@@ -97,6 +98,8 @@ Configuration is merged in this order (later overrides earlier):
 
 **Backpressure:** When the downstream consumer (stdout or file) can’t keep up, enable `global.backpressure.enabled` so Hel uses a bounded queue and a writer thread. You can **block** (pause poll until the queue drains; no data loss), **disk_buffer** (spill to a file when the queue is full; requires `disk_buffer.path`), or **drop** (drop events with a policy: oldest_first, newest_first, random; tracked in `hel_events_dropped_total`). Optionally set `memory_threshold_mb` to apply the same strategy when process RSS exceeds the limit, and `max_queue_age_secs` to drop events that sit in the queue too long.
 
+**Graceful degradation** (`global.degradation:`): When the primary state store (e.g. SQLite) fails to open or becomes unwritable, you can set `state_store_fallback: memory` so Hel falls back to an in-memory store (state is not durable across restarts). When degraded, set `reduced_frequency_multiplier` (e.g. `2.0`) to poll less often and reduce load. Set `emit_without_checkpoint: true` to continue emitting events when state writes fail (e.g. disk full); otherwise state write errors fail the tick. Health and readyz JSON include `state_store_fallback_active: true` when the fallback is in use.
+
 **State:** One writer per state store (e.g. one SQLite file). For multiple instances, use a shared backend (e.g. Redis/Postgres) when supported.
 
 <details>
@@ -116,7 +119,7 @@ Configuration is merged in this order (later overrides earlier):
 | `health.address` | Health server bind address | string | `0.0.0.0` |
 | `health.port` | Health server port | number | `8080` |
 
-When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return detailed JSON (version, uptime, per-source status, circuit state, last_error). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed.
+When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return detailed JSON (version, uptime, per-source status, circuit state, last_error). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.
 
 | `metrics.enabled` | Enable Prometheus metrics server | boolean | `false` |
 | `metrics.address` | Metrics server bind address | string | `0.0.0.0` |
@@ -139,6 +142,16 @@ When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return
 | `backpressure.disk_buffer.segment_size_mb` | Reserved for future segmenting | number | `64` |
 
 Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"}`, `hel_pending_events{source}`.
+
+**Graceful degradation** (`global.degradation:`): State store fallback, emit without checkpoint on state write failure, and reduced poll frequency when degraded.
+
+| Option | Description | Possible values | Default |
+|--------|-------------|-----------------|---------|
+| `degradation.state_store_fallback` | When primary state store (SQLite) fails to open, fall back to this backend | `memory` | — (none; fail on error) |
+| `degradation.emit_without_checkpoint` | When state store write fails, skip checkpoint and continue (log warning); same effect as per-source `on_state_write_error: skip_checkpoint` but global | boolean | — (none) |
+| `degradation.reduced_frequency_multiplier` | When degraded (e.g. using state_store_fallback), multiply poll interval by this factor (e.g. `2.0` = double the delay) | number | `2.0` |
+
+When `state_store_fallback: memory` is set and SQLite fails, Hel logs a warning and uses an in-memory store; health and readyz JSON include `state_store_fallback_active: true`.
 
 Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override global log settings when set.
 

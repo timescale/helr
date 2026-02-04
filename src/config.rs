@@ -51,6 +51,31 @@ pub struct GlobalConfig {
     /// Backpressure: detection (queue depth, memory) and strategy when downstream can't keep up (block, disk_buffer, drop).
     #[serde(default)]
     pub backpressure: Option<BackpressureConfig>,
+
+    /// Graceful degradation: state store fallback, emit without checkpoint, reduced poll frequency when degraded.
+    #[serde(default)]
+    pub degradation: Option<DegradationConfig>,
+}
+
+/// Graceful degradation when state store fails or is unavailable.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DegradationConfig {
+    /// When primary state store (e.g. SQLite) fails to open or becomes unavailable, fall back to this backend (e.g. "memory").
+    #[serde(default)]
+    pub state_store_fallback: Option<String>,
+
+    /// When true, on state store write failure skip checkpoint and continue emitting (prefer data over consistency). Can be overridden per-source by on_state_write_error.
+    #[serde(default)]
+    pub emit_without_checkpoint: Option<bool>,
+
+    /// When degraded (e.g. using state_store_fallback), multiply poll interval by this factor (e.g. 2.0 = double the delay).
+    #[serde(default = "default_reduced_frequency_multiplier")]
+    pub reduced_frequency_multiplier: f64,
+}
+
+fn default_reduced_frequency_multiplier() -> f64 {
+    2.0
 }
 
 /// Backpressure detection and strategy when the output queue is full or memory is high.
@@ -949,6 +974,33 @@ sources:
         assert_eq!(bp.detection.memory_threshold_mb, Some(256));
         assert_eq!(bp.strategy, BackpressureStrategyConfig::Drop);
         assert_eq!(bp.drop_policy, DropPolicyConfig::OldestFirst);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_degradation() {
+        let dir = std::env::temp_dir().join("hel_config_degradation");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  degradation:
+    state_store_fallback: memory
+    emit_without_checkpoint: true
+    reduced_frequency_multiplier: 2.5
+sources:
+  x:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let d = config.global.degradation.as_ref().unwrap();
+        assert_eq!(d.state_store_fallback.as_deref(), Some("memory"));
+        assert_eq!(d.emit_without_checkpoint, Some(true));
+        assert_eq!(d.reduced_frequency_multiplier, 2.5);
         let _ = std::fs::remove_file(&path);
     }
 

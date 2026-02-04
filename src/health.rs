@@ -26,6 +26,8 @@ pub struct HealthState {
     pub output_path: Option<std::path::PathBuf>,
     /// State store for readyz "connected" check. None in tests or when not configured.
     pub state_store: Option<Arc<dyn StateStore>>,
+    /// True when primary state store failed and we fell back to memory (graceful degradation).
+    pub state_store_fallback_active: bool,
 }
 
 /// Circuit state as JSON: "closed" | "open" | "half_open" plus optional detail.
@@ -49,12 +51,14 @@ pub struct SourceStatusDto {
     pub last_error: Option<String>,
 }
 
-/// Common health body: version, uptime, sources.
+/// Common health body: version, uptime, sources, optional degradation info.
 #[derive(Debug, Serialize)]
 pub struct HealthBody {
     pub version: String,
     pub uptime_secs: f64,
     pub sources: HashMap<String, SourceStatusDto>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub state_store_fallback_active: bool,
 }
 
 /// Ready body: ready flag plus per-condition flags (output_writable, state_store_connected, at_least_one_source_healthy).
@@ -67,6 +71,8 @@ pub struct ReadyBody {
     pub output_writable: Option<bool>,
     pub state_store_connected: bool,
     pub at_least_one_source_healthy: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub state_store_fallback_active: bool,
     pub sources: HashMap<String, SourceStatusDto>,
 }
 
@@ -166,6 +172,7 @@ pub async fn build_health_body(state: &HealthState) -> HealthBody {
         version: version(),
         uptime_secs,
         sources,
+        state_store_fallback_active: state.state_store_fallback_active,
     }
 }
 
@@ -200,6 +207,7 @@ pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
         state_store_connected,
         at_least_one_source_healthy,
         sources,
+        state_store_fallback_active: state.state_store_fallback_active,
     }
 }
 
@@ -301,6 +309,7 @@ sources:
             started_at,
             output_path,
             state_store: None,
+            state_store_fallback_active: false,
         }
     }
 
@@ -339,6 +348,7 @@ sources:
             started_at: Instant::now(),
             output_path: None,
             state_store: None,
+            state_store_fallback_active: false,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -367,6 +377,7 @@ sources:
             started_at: Instant::now(),
             output_path: None,
             state_store: None,
+            state_store_fallback_active: false,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -393,6 +404,7 @@ sources:
             started_at: Instant::now(),
             output_path: None,
             state_store: None,
+            state_store_fallback_active: false,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -456,6 +468,7 @@ sources:
             started_at: Instant::now(),
             output_path: None,
             state_store: None,
+            state_store_fallback_active: false,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -490,6 +503,7 @@ sources:
             started_at: Instant::now(),
             output_path: None,
             state_store: None,
+            state_store_fallback_active: false,
         };
         let body = build_ready_body(&state).await;
         assert!(!body.at_least_one_source_healthy);
@@ -509,10 +523,29 @@ sources:
             started_at: Instant::now(),
             output_path: None,
             state_store: Some(store),
+            state_store_fallback_active: false,
         };
         let body = build_ready_body(&state).await;
         assert!(body.state_store_connected);
         assert!(body.at_least_one_source_healthy);
         assert!(body.ready);
+    }
+
+    #[tokio::test]
+    async fn test_build_health_body_state_store_fallback_active_true() {
+        let state = health_state_with(None, Instant::now());
+        let mut state_with_fallback = state;
+        state_with_fallback.state_store_fallback_active = true;
+        let body = build_health_body(&state_with_fallback).await;
+        assert!(body.state_store_fallback_active, "health body should report state_store_fallback_active when true");
+    }
+
+    #[tokio::test]
+    async fn test_build_ready_body_state_store_fallback_active_true() {
+        let state = health_state_with(None, Instant::now());
+        let mut state_with_fallback = state;
+        state_with_fallback.state_store_fallback_active = true;
+        let body = build_ready_body(&state_with_fallback).await;
+        assert!(body.state_store_fallback_active, "readyz body should report state_store_fallback_active when true");
     }
 }
