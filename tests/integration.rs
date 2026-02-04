@@ -92,6 +92,181 @@ sources:
     assert_eq!(first["event"]["msg"], "first");
 }
 
+/// Backpressure enabled (strategy block): hel still emits NDJSON to stdout.
+#[tokio::test]
+async fn integration_backpressure_block_emits_ndjson() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "bp1", "msg": "backpressure-one", "published": "2024-01-15T12:00:00Z"},
+                {"id": "bp2", "msg": "backpressure-two", "published": "2024-01-15T12:00:01Z"}
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_backpressure_test");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+  backpressure:
+    enabled: true
+    detection:
+      event_queue_size: 100
+    strategy: block
+sources:
+  bp-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+        format!(
+            "{}/target/debug/hel",
+            std::env::var("CARGO_MANIFEST_DIR").unwrap()
+        )
+    });
+
+    let output = std::process::Command::new(&hel_bin)
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "hel run --once with backpressure failed: stdout={} stderr={}",
+        stdout,
+        stderr
+    );
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(
+        lines.len() >= 2,
+        "expected at least 2 NDJSON lines with backpressure, got {}: {:?}",
+        lines.len(),
+        stdout
+    );
+
+    for line in &lines {
+        let obj: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("invalid NDJSON line {:?}: {}", line, e));
+        assert_eq!(
+            obj.get("source").and_then(|v| v.as_str()),
+            Some("bp-source")
+        );
+        assert!(obj.get("event").is_some());
+    }
+
+    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(first["event"]["id"], "bp1");
+    assert_eq!(first["event"]["msg"], "backpressure-one");
+}
+
+/// Backpressure enabled (strategy drop): hel emits NDJSON; under load some events may be dropped (metrics).
+#[tokio::test]
+async fn integration_backpressure_drop_emits_ndjson() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "d1", "msg": "drop-one", "published": "2024-01-15T12:00:00Z"},
+                {"id": "d2", "msg": "drop-two", "published": "2024-01-15T12:00:01Z"}
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_backpressure_drop_test");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+  backpressure:
+    enabled: true
+    detection:
+      event_queue_size: 2
+    strategy: drop
+    drop_policy: newest_first
+sources:
+  drop-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+        format!(
+            "{}/target/debug/hel",
+            std::env::var("CARGO_MANIFEST_DIR").unwrap()
+        )
+    });
+
+    let output = std::process::Command::new(&hel_bin)
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "hel run --once with backpressure drop failed: stdout={} stderr={}",
+        stdout,
+        stderr
+    );
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(
+        lines.len() >= 1,
+        "expected at least 1 NDJSON line with backpressure drop, got {}: {:?}",
+        lines.len(),
+        stdout
+    );
+
+    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(first["source"], "drop-source");
+    assert!(first.get("event").is_some());
+}
+
 /// 429 then 200: retry layer eventually succeeds and we get NDJSON.
 #[tokio::test]
 async fn integration_429_then_200_retries_and_emits() {

@@ -989,7 +989,7 @@ fn emit_event_line(
                     } else {
                         line.chars().take(max_usize).collect()
                     };
-                    event_sink.write_line(&truncated).map_err(|e| {
+                    event_sink.write_line_from_source(Some(source_id), &truncated).map_err(|e| {
                         metrics::record_output_error(source_id);
                         e
                     })?;
@@ -1014,7 +1014,7 @@ fn emit_event_line(
             }
         }
     }
-    event_sink.write_line(&line).map_err(|e| {
+    event_sink.write_line_from_source(Some(source_id), &line).map_err(|e| {
         metrics::record_output_error(source_id);
         e
     })

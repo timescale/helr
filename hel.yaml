@@ -3,6 +3,14 @@
 global:
   log_level: info
   log_format: json
+  # Optional backpressure when downstream (stdout/file consumer) can't keep up.
+  # backpressure:
+  #   enabled: true
+  #   detection:
+  #     event_queue_size: 10000
+  #     memory_threshold_mb: 512
+  #   strategy: block   # block | disk_buffer | drop
+  #   drop_policy: oldest_first   # when strategy is drop
   state:
     backend: sqlite
     path: "./hel-state.db"

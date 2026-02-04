@@ -47,6 +47,111 @@ pub struct GlobalConfig {
 
     #[serde(default)]
     pub metrics: Option<MetricsConfig>,
+
+    /// Backpressure: detection (queue depth, memory) and strategy when downstream can't keep up (block, disk_buffer, drop).
+    #[serde(default)]
+    pub backpressure: Option<BackpressureConfig>,
+}
+
+/// Backpressure detection and strategy when the output queue is full or memory is high.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackpressureConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub detection: BackpressureDetectionConfig,
+
+    /// Strategy when queue is full: block (pause poll until drain), disk_buffer (spill to disk), drop (drop with policy).
+    #[serde(default = "default_backpressure_strategy")]
+    pub strategy: BackpressureStrategyConfig,
+
+    /// For disk_buffer: path and size limits.
+    #[serde(default)]
+    pub disk_buffer: Option<BackpressureDiskBufferConfig>,
+
+    /// For drop strategy: which event to drop when full.
+    #[serde(default = "default_drop_policy")]
+    pub drop_policy: DropPolicyConfig,
+
+    /// For drop strategy: max age (secs) a queued event may sit before we drop it (optional).
+    #[serde(default)]
+    pub max_queue_age_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackpressureStrategyConfig {
+    /// Pause poll ticks until stdout/queue drains (no data loss).
+    #[default]
+    Block,
+    /// Spill to disk when queue full; drain from disk when consumer catches up.
+    DiskBuffer,
+    /// Drop events when full (policy: oldest_first, newest_first, random); track in metrics.
+    Drop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DropPolicyConfig {
+    /// When full, drop the oldest queued event and enqueue the new one.
+    #[default]
+    OldestFirst,
+    /// When full, drop the incoming event (keep queue as-is).
+    NewestFirst,
+    /// When full, drop a random queued event and enqueue the new one.
+    Random,
+}
+
+fn default_backpressure_strategy() -> BackpressureStrategyConfig {
+    BackpressureStrategyConfig::Block
+}
+
+fn default_drop_policy() -> DropPolicyConfig {
+    DropPolicyConfig::OldestFirst
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackpressureDetectionConfig {
+    /// Stdout (or output) buffer size in bytes before we consider backpressure; used as optional byte cap for queue.
+    #[serde(default = "default_stdout_buffer_size")]
+    pub stdout_buffer_size: u64,
+
+    /// Max number of events in the internal queue before applying strategy.
+    #[serde(default = "default_event_queue_size")]
+    pub event_queue_size: usize,
+
+    /// RSS memory limit in MB; when exceeded we apply backpressure (optional; not implemented on all platforms).
+    #[serde(default)]
+    pub memory_threshold_mb: Option<u64>,
+}
+
+fn default_stdout_buffer_size() -> u64 {
+    65536
+}
+
+fn default_event_queue_size() -> usize {
+    10_000
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackpressureDiskBufferConfig {
+    pub path: String,
+    #[serde(default = "default_disk_buffer_max_size_mb")]
+    pub max_size_mb: u64,
+    #[serde(default = "default_disk_buffer_segment_size_mb")]
+    pub segment_size_mb: u64,
+}
+
+fn default_disk_buffer_max_size_mb() -> u64 {
+    1024
+}
+
+fn default_disk_buffer_segment_size_mb() -> u64 {
+    64
 }
 
 fn default_log_level() -> String {
@@ -811,6 +916,39 @@ sources:
         assert_eq!(config.global.log_level, "info");
         assert!(config.sources.contains_key("test-source"));
         assert_eq!(config.sources["test-source"].url, "https://example.com/logs");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_backpressure() {
+        let dir = std::env::temp_dir().join("hel_config_load_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  log_level: info
+  backpressure:
+    enabled: true
+    detection:
+      event_queue_size: 5000
+      memory_threshold_mb: 256
+    strategy: drop
+    drop_policy: oldest_first
+sources:
+  test-source:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let bp = config.global.backpressure.as_ref().unwrap();
+        assert!(bp.enabled);
+        assert_eq!(bp.detection.event_queue_size, 5000);
+        assert_eq!(bp.detection.memory_threshold_mb, Some(256));
+        assert_eq!(bp.strategy, BackpressureStrategyConfig::Drop);
+        assert_eq!(bp.drop_policy, DropPolicyConfig::OldestFirst);
         let _ = std::fs::remove_file(&path);
     }
 

@@ -12,6 +12,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
+- **Backpressure:** When the downstream consumer (stdout/file) can’t keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
 - **Session replay:** Record API responses to disk, replay without hitting the live API
 
 ## Install
@@ -94,6 +95,8 @@ Configuration is merged in this order (later overrides earlier):
 
 **Broken pipe (SIGPIPE):** When stdout is a pipe and the consumer (e.g. Alloy, `hel run | alloy ...`) exits, writes return EPIPE. Hel treats this as **fatal**: the error is logged, `hel_output_errors_total` is incremented, and the process exits with a non-zero code so an orchestrator can restart. Keep the downstream process running, or use file output (`--output /path`) and have the collector tail the file instead.
 
+**Backpressure:** When the downstream consumer (stdout or file) can’t keep up, enable `global.backpressure.enabled` so Hel uses a bounded queue and a writer thread. You can **block** (pause poll until the queue drains; no data loss), **disk_buffer** (spill to a file when the queue is full; requires `disk_buffer.path`), or **drop** (drop events with a policy: oldest_first, newest_first, random; tracked in `hel_events_dropped_total`). Optionally set `memory_threshold_mb` to apply the same strategy when process RSS exceeds the limit, and `max_queue_age_secs` to drop events that sit in the queue too long.
+
 **State:** One writer per state store (e.g. one SQLite file). For multiple instances, use a shared backend (e.g. Redis/Postgres) when supported.
 
 <details>
@@ -118,6 +121,24 @@ When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return
 | `metrics.enabled` | Enable Prometheus metrics server | boolean | `false` |
 | `metrics.address` | Metrics server bind address | string | `0.0.0.0` |
 | `metrics.port` | Metrics server port | number | `9090` |
+
+**Backpressure** (`global.backpressure:`): When the output queue is full or process RSS exceeds a threshold, apply a strategy so the poll loop doesn’t block indefinitely or OOM.
+
+| Option | Description | Possible values | Default |
+|--------|-------------|-----------------|---------|
+| `backpressure.enabled` | Enable backpressure (bounded queue + writer thread) | boolean | `false` |
+| `backpressure.detection.event_queue_size` | Max events in the internal queue before applying strategy | number | `10000` |
+| `backpressure.detection.memory_threshold_mb` | Process RSS limit (MB); when exceeded, apply strategy (uses `sysinfo`; best-effort on supported platforms) | number | — (none) |
+| `backpressure.detection.stdout_buffer_size` | Reserved for future use (optional byte cap) | number | `65536` |
+| `backpressure.strategy` | When queue is full (or over memory): **block** (pause until drain), **disk_buffer** (spill to file; requires `disk_buffer.path`), **drop** (drop with `drop_policy`) | `block`, `disk_buffer`, `drop` | `block` |
+| `backpressure.drop_policy` | When strategy is **drop**: which event to drop | `oldest_first`, `newest_first`, `random` | `oldest_first` |
+| `backpressure.max_queue_age_secs` | Max age (seconds) a queued event may sit; older events are dropped first (reason `max_queue_age` in metrics) | number | — (none) |
+| `backpressure.disk_buffer` | Required when strategy is **disk_buffer** | object | — |
+| `backpressure.disk_buffer.path` | Path to spill file (NDJSON lines appended when queue full; writer drains to inner sink) | string | — |
+| `backpressure.disk_buffer.max_size_mb` | Max spill file size (MB); reserved for future enforcement | number | `1024` |
+| `backpressure.disk_buffer.segment_size_mb` | Reserved for future segmenting | number | `64` |
+
+Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"}`, `hel_pending_events{source}`.
 
 Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override global log settings when set.
 

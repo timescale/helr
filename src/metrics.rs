@@ -11,6 +11,8 @@ struct MetricsInner {
     events_emitted_total: IntCounterVec,
     errors_total: IntCounterVec,
     output_errors_total: IntCounterVec,
+    events_dropped_total: IntCounterVec,
+    pending_events: IntGaugeVec,
     request_duration_seconds: prometheus::HistogramVec,
     circuit_breaker_state: IntGaugeVec,
 }
@@ -48,11 +50,24 @@ pub fn init() -> Result<(), prometheus::Error> {
         ),
         &["source"],
     )?;
+    let events_dropped_total = IntCounterVec::new(
+        Opts::new(
+            "hel_events_dropped_total",
+            "Events dropped (e.g. due to backpressure) by source and reason",
+        ),
+        &["source", "reason"],
+    )?;
+    let pending_events = IntGaugeVec::new(
+        Opts::new("hel_pending_events", "Events currently queued for output by source"),
+        &["source"],
+    )?;
 
     prometheus::register(Box::new(requests_total.clone()))?;
     prometheus::register(Box::new(events_emitted_total.clone()))?;
     prometheus::register(Box::new(errors_total.clone()))?;
     prometheus::register(Box::new(output_errors_total.clone()))?;
+    prometheus::register(Box::new(events_dropped_total.clone()))?;
+    prometheus::register(Box::new(pending_events.clone()))?;
     prometheus::register(Box::new(request_duration_seconds.clone()))?;
     prometheus::register(Box::new(circuit_breaker_state.clone()))?;
 
@@ -61,6 +76,8 @@ pub fn init() -> Result<(), prometheus::Error> {
         events_emitted_total,
         errors_total,
         output_errors_total,
+        events_dropped_total,
+        pending_events,
         request_duration_seconds,
         circuit_breaker_state,
     });
@@ -95,6 +112,25 @@ pub fn record_error(source: &str) {
 pub fn record_output_error(source: &str) {
     if let Some(m) = METRICS.get() {
         let _ = m.output_errors_total.with_label_values(&[source]).inc();
+    }
+}
+
+/// Record one event dropped (e.g. backpressure).
+pub fn record_event_dropped(source: &str, reason: &str) {
+    if let Some(m) = METRICS.get() {
+        let _ = m
+            .events_dropped_total
+            .with_label_values(&[source, reason])
+            .inc();
+    }
+}
+
+/// Set pending (queued) event count for a source. Used by backpressure sink.
+pub fn set_pending_events(source: &str, count: i64) {
+    if let Some(m) = METRICS.get() {
+        m.pending_events
+            .with_label_values(&[source])
+            .set(std::cmp::max(0, count));
     }
 }
 

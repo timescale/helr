@@ -28,7 +28,7 @@ use circuit::new_circuit_store;
 use config::Config;
 use dpop::new_dpop_key_cache;
 use oauth2::new_oauth2_token_cache;
-use output::{parse_rotation, EventSink, FileSink, RotationPolicy, StdoutSink};
+use output::{parse_rotation, BackpressureSink, EventSink, FileSink, RotationPolicy, StdoutSink};
 use state::{MemoryStateStore, SqliteStateStore, StateStore};
 use std::collections::HashMap;
 use std::io::Write;
@@ -223,6 +223,13 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         (config.clone(), record_state)
                     };
+                    let event_sink: Arc<dyn EventSink> =
+                        if config_to_use.global.backpressure.as_ref().is_some_and(|b| b.enabled) {
+                            let cfg = config_to_use.global.backpressure.as_ref().unwrap();
+                            Arc::new(BackpressureSink::new(event_sink, cfg)?)
+                        } else {
+                            event_sink
+                        };
                     run_collector(&config_to_use, *once, source.as_deref(), event_sink, output_path, record_state).await
                 }
                 Some(Commands::Test { source, .. }) => run_test(&config, source, Arc::new(StdoutSink)).await,
