@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::instrument;
 
 /// Type for client-side rate limiter (governor direct limiter).
@@ -51,6 +51,7 @@ pub async fn run_one_tick(
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
     last_errors: LastErrorStore,
+    global_sources_semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     let mut handles = Vec::new();
     for (source_id, source) in &config.sources {
@@ -59,6 +60,22 @@ pub async fn run_one_tick(
         {
             continue;
         }
+        let effective_request_cap = source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.bulkhead.as_ref())
+            .and_then(|b| b.max_concurrent_requests)
+            .or_else(|| {
+                config
+                    .global
+                    .bulkhead
+                    .as_ref()
+                    .and_then(|b| b.max_concurrent_requests)
+            });
+        let request_semaphore = effective_request_cap
+            .filter(|&n| n > 0)
+            .map(|n| Arc::new(Semaphore::new(n as usize)));
+
         let store = store.clone();
         let source_id_key = source_id.clone();
         let source = source.clone();
@@ -69,6 +86,7 @@ pub async fn run_one_tick(
         let dedupe_store = dedupe_store.clone();
         let event_sink = event_sink.clone();
         let record_state = record_state.clone();
+        let global_sources_semaphore_clone = global_sources_semaphore.clone();
         let rate_limiter: Option<Arc<ClientRateLimiter>> = source
             .resilience
             .as_ref()
@@ -90,6 +108,14 @@ pub async fn run_one_tick(
             .and_then(|r| r.timeouts.as_ref())
             .and_then(|t| t.poll_tick_secs);
         let h = tokio::spawn(async move {
+            let _source_permit = match &global_sources_semaphore_clone {
+                Some(s) => Some(
+                    s.acquire()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("bulkhead source acquire: {}", e))?,
+                ),
+                None => None,
+            };
             let poll_fut = poll_one_source(
                 store,
                 &source_id_key,
@@ -102,6 +128,7 @@ pub async fn run_one_tick(
                 event_sink,
                 record_state,
                 rate_limiter,
+                request_semaphore,
             );
             match poll_tick_secs {
                 Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), poll_fut).await
@@ -154,7 +181,8 @@ pub async fn run_one_tick(
     dpop_key_cache,
     dedupe_store,
     event_sink,
-    record_state
+    record_state,
+    request_semaphore
 ))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
@@ -168,6 +196,7 @@ async fn poll_one_source(
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
     rate_limiter: Option<Arc<ClientRateLimiter>>,
+    request_semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     let client = build_client(source.resilience.as_ref())?;
 
@@ -188,6 +217,7 @@ async fn poll_one_source(
                 event_sink,
                 record_state,
                 rate_limiter.as_ref(),
+                request_semaphore.clone(),
             )
             .await
         }
@@ -212,6 +242,7 @@ async fn poll_one_source(
                 event_sink,
                 record_state,
                 rate_limiter.as_ref(),
+                request_semaphore.clone(),
             )
             .await
         }
@@ -238,6 +269,7 @@ async fn poll_one_source(
                 event_sink,
                 record_state,
                 rate_limiter.as_ref(),
+                request_semaphore.clone(),
             )
             .await
         }
@@ -256,6 +288,7 @@ async fn poll_one_source(
                 event_sink,
                 record_state.clone(),
                 rate_limiter.as_ref(),
+                request_semaphore,
             )
             .await;
         }
@@ -311,6 +344,7 @@ async fn poll_link_header(
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
     rate_limiter: Option<&Arc<ClientRateLimiter>>,
+    request_semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let from_store = store
@@ -359,6 +393,14 @@ async fn poll_link_header(
         if let Some(limiter) = rate_limiter {
             limiter.until_ready().await;
         }
+        let _request_permit = match &request_semaphore {
+            Some(s) => Some(
+                s.acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("bulkhead request acquire: {}", e))?,
+            ),
+            None => None,
+        };
         let req_start = std::time::Instant::now();
         let response = match execute_with_retry(
             client,
@@ -553,6 +595,7 @@ async fn poll_cursor_pagination(
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
     rate_limiter: Option<&Arc<ClientRateLimiter>>,
+    request_semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -617,6 +660,14 @@ async fn poll_cursor_pagination(
         if let Some(limiter) = rate_limiter {
             limiter.until_ready().await;
         }
+        let _request_permit = match &request_semaphore {
+            Some(s) => Some(
+                s.acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("bulkhead request acquire: {}", e))?,
+            ),
+            None => None,
+        };
         let req_start = std::time::Instant::now();
         let response = match execute_with_retry(
             client,
@@ -830,6 +881,7 @@ async fn poll_page_offset_pagination(
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
     rate_limiter: Option<&Arc<ClientRateLimiter>>,
+    request_semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -874,6 +926,14 @@ async fn poll_page_offset_pagination(
         if let Some(limiter) = rate_limiter {
             limiter.until_ready().await;
         }
+        let _request_permit = match &request_semaphore {
+            Some(s) => Some(
+                s.acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("bulkhead request acquire: {}", e))?,
+            ),
+            None => None,
+        };
         let req_start = std::time::Instant::now();
         let response = match execute_with_retry(
             client,
@@ -1025,6 +1085,7 @@ async fn poll_single_page(
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
     rate_limiter: Option<&Arc<ClientRateLimiter>>,
+    request_semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     if let Some(cb) = source
@@ -1039,6 +1100,14 @@ async fn poll_single_page(
     if let Some(limiter) = rate_limiter {
         limiter.until_ready().await;
     }
+    let _request_permit = match &request_semaphore {
+        Some(s) => Some(
+            s.acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("bulkhead request acquire: {}", e))?,
+        ),
+        None => None,
+    };
     let req_start = std::time::Instant::now();
     let response = match execute_with_retry(
         client,

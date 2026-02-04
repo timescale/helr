@@ -63,6 +63,23 @@ pub struct GlobalConfig {
     /// SIGUSR1 behaviour: dump state and metrics to log or file.
     #[serde(default)]
     pub dump_on_sigusr1: Option<DumpOnSigusr1Config>,
+
+    /// Bulkhead: global and per-source concurrency caps (semaphores).
+    #[serde(default)]
+    pub bulkhead: Option<BulkheadConfig>,
+}
+
+/// Bulkhead (concurrency) limits.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BulkheadConfig {
+    /// Max number of sources that may poll concurrently. When set, sources beyond this wait for a permit.
+    #[serde(default)]
+    pub max_concurrent_sources: Option<u32>,
+
+    /// Max concurrent HTTP requests per source (default no limit). Overridable per source in resilience.bulkhead.
+    #[serde(default)]
+    pub max_concurrent_requests: Option<u32>,
 }
 
 /// Config reload on SIGHUP.
@@ -705,6 +722,18 @@ pub struct ResilienceConfig {
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+    /// Per-source bulkhead: max concurrent requests for this source. Overrides global bulkhead.max_concurrent_requests when set.
+    #[serde(default)]
+    pub bulkhead: Option<SourceBulkheadConfig>,
+}
+
+/// Per-source bulkhead (overrides global when set).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceBulkheadConfig {
+    /// Max concurrent HTTP requests for this source.
+    #[serde(default)]
+    pub max_concurrent_requests: Option<u32>,
 }
 
 /// Header names for rate limit info (limit, remaining, reset). When unset, defaults are used.
@@ -1275,6 +1304,37 @@ sources:
         let d = config.global.dump_on_sigusr1.as_ref().unwrap();
         assert_eq!(d.destination, "file");
         assert_eq!(d.path.as_deref(), Some("/tmp/hel-dump.txt"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_bulkhead() {
+        let dir = std::env::temp_dir().join("hel_config_bulkhead");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  bulkhead:
+    max_concurrent_sources: 4
+    max_concurrent_requests: 2
+sources:
+  s1:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      bulkhead:
+        max_concurrent_requests: 1
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let b = config.global.bulkhead.as_ref().unwrap();
+        assert_eq!(b.max_concurrent_sources, Some(4));
+        assert_eq!(b.max_concurrent_requests, Some(2));
+        let s1 = config.sources.get("s1").unwrap();
+        let sb = s1.resilience.as_ref().unwrap().bulkhead.as_ref().unwrap();
+        assert_eq!(sb.max_concurrent_requests, Some(1));
         let _ = std::fs::remove_file(&path);
     }
 

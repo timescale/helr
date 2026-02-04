@@ -238,6 +238,7 @@ mod tests {
             retries: None,
             circuit_breaker: None,
             rate_limit: None,
+            bulkhead: None,
             tls: Some(TlsConfig {
                 ca_file: None,
                 ca_env: None,

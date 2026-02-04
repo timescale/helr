@@ -36,7 +36,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 #[derive(Parser)]
 #[command(name = "hel")]
@@ -579,6 +579,13 @@ async fn run_test(
     let dpop_key_cache = Some(new_dpop_key_cache());
     let dedupe_store = dedupe::new_dedupe_store();
     let last_errors: poll::LastErrorStore = Arc::new(RwLock::new(HashMap::new()));
+    let global_sources_semaphore = config
+        .global
+        .bulkhead
+        .as_ref()
+        .and_then(|b| b.max_concurrent_sources)
+        .filter(|&n| n > 0)
+        .map(|n| Arc::new(Semaphore::new(n as usize)));
     poll::run_one_tick(
         config,
         store,
@@ -590,6 +597,7 @@ async fn run_test(
         event_sink,
         None,
         last_errors,
+        global_sources_semaphore,
     )
     .await
 }
@@ -756,6 +764,13 @@ async fn run_collector(
     let dpop_key_cache = Some(new_dpop_key_cache());
     let dedupe_store = dedupe::new_dedupe_store();
     let last_errors: poll::LastErrorStore = Arc::new(RwLock::new(HashMap::new()));
+    let global_sources_semaphore = config
+        .global
+        .bulkhead
+        .as_ref()
+        .and_then(|b| b.max_concurrent_sources)
+        .filter(|&n| n > 0)
+        .map(|n| Arc::new(Semaphore::new(n as usize)));
     poll::run_one_tick(
         config,
         store.clone(),
@@ -767,6 +782,7 @@ async fn run_collector(
         event_sink.clone(),
         record_state.clone(),
         last_errors.clone(),
+        global_sources_semaphore.clone(),
     )
     .await?;
 
@@ -924,6 +940,7 @@ async fn run_collector(
             event_sink_ref,
             record_state_ref.cloned(),
             last_errors_ref,
+            global_sources_semaphore.clone(),
         ));
 
         tokio::select! {
