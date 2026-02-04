@@ -1113,6 +1113,92 @@ sources:
     );
 }
 
+/// State backend Redis: run one tick with redis state, then state show. Skips when REDIS_URL is not set.
+#[tokio::test]
+async fn integration_state_backend_redis() {
+    let redis_url = match std::env::var("REDIS_URL") {
+        Ok(u) if !u.is_empty() => u,
+        _ => return, // skip when REDIS_URL not set (e.g. in CI without Redis)
+    };
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "r1", "published": "2024-01-15T12:00:00Z"}
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_redis");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: redis
+    url: "{}"
+sources:
+  redis-source:
+    url: "{}/"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        redis_url,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let out_run = std::process::Command::new(hel_bin())
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
+        .env("RUST_LOG", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    assert!(
+        out_run.status.success(),
+        "hel run --once failed: stderr={}",
+        String::from_utf8_lossy(&out_run.stderr)
+    );
+
+    let out_show = std::process::Command::new(hel_bin())
+        .args([
+            "state",
+            "--config",
+            config_path.to_str().unwrap(),
+            "show",
+            "redis-source",
+        ])
+        .env("RUST_LOG", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel state show");
+
+    assert!(
+        out_show.status.success(),
+        "hel state show failed: stderr={}",
+        String::from_utf8_lossy(&out_show.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out_show.stdout);
+    assert!(
+        stdout.contains("redis-source"),
+        "expected source id in state show output, got: {}",
+        stdout
+    );
+}
+
 /// hel validate rejects invalid config.
 #[tokio::test]
 async fn integration_validate_rejects_invalid_config() {

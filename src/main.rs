@@ -29,7 +29,7 @@ use config::Config;
 use dpop::new_dpop_key_cache;
 use oauth2::new_oauth2_token_cache;
 use output::{parse_rotation, BackpressureSink, EventSink, FileSink, RotationPolicy, StdoutSink};
-use state::{MemoryStateStore, SqliteStateStore, StateStore};
+use state::{MemoryStateStore, PostgresStateStore, RedisStateStore, SqliteStateStore, StateStore};
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
@@ -437,7 +437,9 @@ fn run_validate(config_path: &std::path::Path) -> anyhow::Result<()> {
 
 /// Open state store from config. On primary failure, falls back to memory when `degradation.state_store_fallback: memory`.
 /// Returns (store, state_store_fallback_active).
-fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn StateStore>, bool)> {
+async fn open_store_with_fallback(
+    config: &Config,
+) -> anyhow::Result<(Arc<dyn StateStore>, bool)> {
     match &config.global.state {
         Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
             let path = state
@@ -466,13 +468,66 @@ fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn StateSto
                 }
             }
         }
+        Some(state) if state.backend.eq_ignore_ascii_case("redis") => {
+            let url = state
+                .url
+                .as_deref()
+                .unwrap_or("redis://127.0.0.1/");
+            match RedisStateStore::connect(url).await {
+                Ok(s) => Ok((Arc::new(s), false)),
+                Err(e) => {
+                    let fallback = config
+                        .global
+                        .degradation
+                        .as_ref()
+                        .and_then(|d| d.state_store_fallback.as_deref())
+                        .map(|s| s.eq_ignore_ascii_case("memory"))
+                        .unwrap_or(false);
+                    if fallback {
+                        tracing::warn!(
+                            error = %e,
+                            "state store (redis) failed, falling back to memory (state not durable)"
+                        );
+                        Ok((Arc::new(MemoryStateStore::new()), true))
+                    } else {
+                        Err(e.into())
+                    }
+                }
+            }
+        }
+        Some(state) if state.backend.eq_ignore_ascii_case("postgres") => {
+            let url = state.url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("global.state.url is required when backend is postgres")
+            })?;
+            match PostgresStateStore::connect(url).await {
+                Ok(s) => Ok((Arc::new(s), false)),
+                Err(e) => {
+                    let fallback = config
+                        .global
+                        .degradation
+                        .as_ref()
+                        .and_then(|d| d.state_store_fallback.as_deref())
+                        .map(|s| s.eq_ignore_ascii_case("memory"))
+                        .unwrap_or(false);
+                    if fallback {
+                        tracing::warn!(
+                            error = %e,
+                            "state store (postgres) failed, falling back to memory (state not durable)"
+                        );
+                        Ok((Arc::new(MemoryStateStore::new()), true))
+                    } else {
+                        Err(e.into())
+                    }
+                }
+            }
+        }
         _ => Ok((Arc::new(MemoryStateStore::new()), false)),
     }
 }
 
 /// Open state store from config (same logic as run_collector). Uses fallback when configured.
-fn open_store(config: &Config) -> anyhow::Result<Arc<dyn StateStore>> {
-    open_store_with_fallback(config).map(|(s, _)| s)
+async fn open_store(config: &Config) -> anyhow::Result<Arc<dyn StateStore>> {
+    open_store_with_fallback(config).await.map(|(s, _)| s)
 }
 
 /// Run one poll tick for the given source (test).
@@ -485,7 +540,7 @@ async fn run_test(
         anyhow::bail!("source {:?} not found in config", source_name);
     }
     tracing::info!("testing source {:?} (one poll tick)", source_name);
-    let store = open_store(&config)?;
+    let store = open_store(&config).await?;
     let circuit_store = new_circuit_store();
     let token_cache = new_oauth2_token_cache();
     let dpop_key_cache = Some(new_dpop_key_cache());
@@ -511,7 +566,7 @@ async fn run_state(
     config: &Config,
     subcommand: Option<&StateSubcommand>,
 ) -> anyhow::Result<()> {
-    let store = open_store(config)?;
+    let store = open_store(config).await?;
     match subcommand {
         Some(StateSubcommand::Show { source }) => state_show(store.as_ref(), source).await,
         Some(StateSubcommand::Reset { source }) => state_reset(store.as_ref(), source).await,
@@ -612,7 +667,7 @@ async fn run_collector(
 ) -> anyhow::Result<()> {
     tracing::info!("loaded config");
 
-    let (store, state_store_fallback_active) = open_store_with_fallback(config)?;
+    let (store, state_store_fallback_active) = open_store_with_fallback(config).await?;
 
     let circuit_store = new_circuit_store();
     let token_cache = new_oauth2_token_cache();

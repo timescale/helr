@@ -11,7 +11,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset; optional **incremental_from** (store latest event timestamp, send as query param on first request — e.g. Slack `oldest`); optional per-source **state.watermark_field** / **watermark_param** for APIs that derive "start from" from last event (e.g. GWS `startTime`)
 - **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, **rate limit** — header mapping (X-RateLimit-Limit/Remaining/Reset or custom names), client-side RPS/burst cap, optional adaptive rate limiting (throttle when remaining is low)
 - **TLS:** Custom CA (file or env, merge or replace system roots), client certificate and key (mutual TLS), minimum TLS version (1.2 or 1.3)
-- **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
+- **State:** SQLite, Redis, or Postgres (or in-memory) for cursor/next_url; single-writer per SQLite file; Redis/Postgres for multi-instance
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
 - **Backpressure:** When the downstream consumer (stdout/file) can’t keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
 - **Graceful degradation:** When the state store fails or is unavailable: optional **state_store_fallback** to memory (state not durable), **emit_without_checkpoint** to continue emitting events when state writes fail, and **reduced_frequency_multiplier** to poll less often when degraded; health JSON reports **state_store_fallback_active**
@@ -103,7 +103,7 @@ Configuration is merged in this order (later overrides earlier):
 
 **Rate limit** (`resilience.rate_limit:`): Rate limit headers are not standardized — APIs use different names (e.g. GitHub/Okta use `X-RateLimit-*`; others use `RateLimit-*` or custom names). You can map limit/remaining/reset via `headers` (defaults: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`). Set `max_requests_per_second` and optional `burst_size` to cap client-side request rate (token bucket) so you don’t exceed the API’s limit. Set `adaptive: true` to throttle proactively: when the response reports remaining ≤ 1, Hel waits until the reset window before the next request. On 429, Hel uses Retry-After or the configured reset header when `respect_headers` is true.
 
-**State:** One writer per state store (e.g. one SQLite file). For multiple instances, use a shared backend (e.g. Redis/Postgres) when supported.
+**State:** One writer per state store (e.g. one SQLite file). For multiple instances, use Redis or Postgres (`global.state.backend: redis` or `postgres` with `global.state.url`).
 
 <details>
 <summary><strong>Config reference (all options)</strong></summary>
@@ -116,8 +116,9 @@ Configuration is merged in this order (later overrides earlier):
 | `log_format` | Hel log format (stderr) | `json`, `pretty` | — (none) |
 | `source_label_key` | Key for producer label in NDJSON and Hel logs | string | — (effective: `source`) |
 | `source_label_value` | Value for producer label in Hel’s own logs | string | — (effective: `hel`) |
-| `state.backend` | State store backend | `sqlite`, `memory` | — |
-| `state.path` | Path to state file (SQLite) or directory | string | — (e.g. `./hel-state.db`) |
+| `state.backend` | State store backend | `sqlite`, `memory`, `redis`, `postgres` | — |
+| `state.path` | Path to state file (SQLite) | string | `./hel-state.db` (when backend is sqlite) |
+| `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`) | string | — (required when backend is redis or postgres) |
 | `health.enabled` | Enable health HTTP server | boolean | `false` |
 | `health.address` | Health server bind address | string | `0.0.0.0` |
 | `health.port` | Health server port | number | `8080` |
@@ -150,7 +151,7 @@ Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"
 
 | Option | Description | Possible values | Default |
 |--------|-------------|-----------------|---------|
-| `degradation.state_store_fallback` | When primary state store (SQLite) fails to open, fall back to this backend | `memory` | — (none; fail on error) |
+| `degradation.state_store_fallback` | When primary state store (SQLite, Redis, or Postgres) fails to open, fall back to this backend | `memory` | — (none; fail on error) |
 | `degradation.emit_without_checkpoint` | When state store write fails, skip checkpoint and continue (log warning); same effect as per-source `on_state_write_error: skip_checkpoint` but global | boolean | — (none) |
 | `degradation.reduced_frequency_multiplier` | When degraded (e.g. using state_store_fallback), multiply poll interval by this factor (e.g. `2.0` = double the delay) | number | `2.0` |
 
@@ -337,6 +338,11 @@ Full steps and troubleshooting: **[docs/tailscale.md](docs/tailscale.md)**.
 ## Session replay
 
 Record API responses once, then replay from disk to test the pipeline without hitting the live API: `hel run --once --record-dir ./recordings` to save; `hel run --once --replay-dir ./recordings` to replay.
+
+## Development / tests
+
+- **Unit and integration tests:** `cargo test` (excludes testcontainers tests).
+- **Testcontainers (Redis/Postgres state backends):** requires Docker. Run with: `cargo test --features testcontainers --test integration_testcontainers`.
 
 ## License
 

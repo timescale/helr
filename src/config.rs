@@ -190,8 +190,14 @@ fn default_bearer_prefix() -> String {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalStateConfig {
-    pub backend: String, // "sqlite" | "memory"
+    /// Backend: "memory", "sqlite", "redis", or "postgres".
+    pub backend: String,
+    /// Path to state file (SQLite) or directory. Required when backend is "sqlite".
+    #[serde(default)]
     pub path: Option<String>,
+    /// Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`). Required when backend is "redis" or "postgres".
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1643,5 +1649,40 @@ state:
         let source2: SourceConfig = serde_yaml::from_str(yaml_with_key).unwrap();
         let st2 = source2.state.as_ref().unwrap();
         assert_eq!(st2.state_key.as_deref(), Some("gws_watermark"));
+    }
+
+    #[test]
+    fn config_load_global_state_redis_and_postgres() {
+        let yaml_redis = r#"
+global:
+  state:
+    backend: redis
+    url: "redis://127.0.0.1:6379/"
+sources:
+  x:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+"#;
+        let config: Config = serde_yaml::from_str(yaml_redis).unwrap();
+        let st = config.global.state.as_ref().unwrap();
+        assert_eq!(st.backend, "redis");
+        assert_eq!(st.url.as_deref(), Some("redis://127.0.0.1:6379/"));
+
+        let yaml_pg = r#"
+global:
+  state:
+    backend: postgres
+    url: "postgres://user:pass@localhost/hel"
+sources:
+  x:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+"#;
+        let config_pg: Config = serde_yaml::from_str(yaml_pg).unwrap();
+        let st_pg = config_pg.global.state.as_ref().unwrap();
+        assert_eq!(st_pg.backend, "postgres");
+        assert_eq!(st_pg.url.as_deref(), Some("postgres://user:pass@localhost/hel"));
     }
 }
