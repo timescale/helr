@@ -23,6 +23,7 @@ use governor::{Quota, RateLimiter};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 use tracing::instrument;
@@ -52,6 +53,8 @@ pub async fn run_one_tick(
     record_state: Option<Arc<RecordState>>,
     last_errors: LastErrorStore,
     global_sources_semaphore: Option<Arc<Semaphore>>,
+    under_load_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    skip_priority_below: Option<u32>,
 ) -> anyhow::Result<()> {
     let mut handles = Vec::new();
     for (source_id, source) in &config.sources {
@@ -59,6 +62,20 @@ pub async fn run_one_tick(
             && filter != source_id
         {
             continue;
+        }
+        if let (Some(flag), Some(threshold)) = (&under_load_flag, skip_priority_below)
+            && flag.load(Ordering::Relaxed)
+        {
+            let priority = source.priority.unwrap_or(10);
+            if priority < threshold {
+                tracing::debug!(
+                    source = %source_id,
+                    priority,
+                    threshold,
+                    "load shedding: skipping low-priority source"
+                );
+                continue;
+            }
         }
         let effective_request_cap = source
             .resilience

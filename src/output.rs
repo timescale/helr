@@ -245,6 +245,8 @@ struct BackpressureInner {
     closed: AtomicBool,
     /// Lock for disk buffer file (append vs read+truncate).
     disk_buffer_mutex: Option<Arc<Mutex<()>>>,
+    /// When set, set to true when queue full or memory over; cleared when queue drains below threshold. Used for load shedding (skip low-priority sources).
+    under_load: Option<Arc<AtomicBool>>,
 }
 
 /// Path for the "previous full segment" when segmenting is used (e.g. spill.ndjson -> spill.ndjson.old).
@@ -329,6 +331,10 @@ fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureI
             if guard.queue.is_empty() && path_for_drain.is_none() {
                 shared.empty_for_flush.notify_one();
             }
+            let queue_below_threshold = guard.queue.len() < guard.cap.saturating_mul(3) / 4;
+            if queue_below_threshold && let Some(ref flag) = shared.under_load {
+                flag.store(false, Ordering::Relaxed);
+            }
             shared.not_full.notify_one();
             drop(guard);
             (source_opt, line, pending_after_pop, path_for_drain)
@@ -362,7 +368,12 @@ pub struct BackpressureSink {
 
 impl BackpressureSink {
     /// Build a backpressure sink wrapping `inner`. Uses config detection, strategy, disk_buffer, and age/memory limits.
-    pub fn new(inner: Arc<dyn EventSink>, config: &BackpressureConfig) -> anyhow::Result<Self> {
+    /// When `under_load` is provided, it is set to true when queue is full or memory over threshold, and cleared when queue drains below 75% of cap (for load shedding).
+    pub fn new(
+        inner: Arc<dyn EventSink>,
+        config: &BackpressureConfig,
+        under_load: Option<Arc<AtomicBool>>,
+    ) -> anyhow::Result<Self> {
         let cap = config.detection.event_queue_size;
         if cap == 0 {
             anyhow::bail!("backpressure.detection.event_queue_size must be > 0");
@@ -402,6 +413,7 @@ impl BackpressureSink {
             empty_for_flush: Condvar::new(),
             closed: AtomicBool::new(false),
             disk_buffer_mutex,
+            under_load,
         });
         let inner_clone = inner.clone();
         let shared_clone = shared.clone();
@@ -456,6 +468,11 @@ impl BackpressureSink {
                 .total_queued_bytes
                 .saturating_add(line_owned.len() as u64)
                 > guard.stdout_buffer_size;
+
+        let is_under_load = guard.queue.len() >= guard.cap || over_memory || over_stdout_bytes;
+        if is_under_load && let Some(ref flag) = shared.under_load {
+            flag.store(true, Ordering::Relaxed);
+        }
 
         loop {
             if guard.queue.len() < guard.cap && !over_memory && !over_stdout_bytes {
@@ -643,7 +660,7 @@ mod tests {
             BackpressureStrategyConfig::Block,
             DropPolicyConfig::OldestFirst,
         );
-        let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
+        let sink = BackpressureSink::new(inner.clone(), &cfg, None).unwrap();
         sink.write_line_from_source(Some("src1"), "a").unwrap();
         sink.write_line_from_source(Some("src1"), "b").unwrap();
         sink.write_line_from_source(Some("src1"), "c").unwrap();
@@ -660,7 +677,7 @@ mod tests {
             BackpressureStrategyConfig::Drop,
             DropPolicyConfig::OldestFirst,
         );
-        let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
+        let sink = BackpressureSink::new(inner.clone(), &cfg, None).unwrap();
         sink.write_line_from_source(Some("s"), "first").unwrap();
         sink.write_line_from_source(Some("s"), "second").unwrap();
         sink.write_line_from_source(Some("s"), "third").unwrap(); // drops "first"
@@ -677,7 +694,7 @@ mod tests {
             BackpressureStrategyConfig::Drop,
             DropPolicyConfig::NewestFirst,
         );
-        let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
+        let sink = BackpressureSink::new(inner.clone(), &cfg, None).unwrap();
         sink.write_line_from_source(Some("s"), "first").unwrap();
         sink.write_line_from_source(Some("s"), "second").unwrap();
         sink.write_line_from_source(Some("s"), "third").unwrap(); // drops "third"
@@ -694,7 +711,7 @@ mod tests {
             BackpressureStrategyConfig::Drop,
             DropPolicyConfig::Random,
         );
-        let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
+        let sink = BackpressureSink::new(inner.clone(), &cfg, None).unwrap();
         // Push more than capacity so we trigger drops regardless of writer speed.
         for label in ["a", "b", "c", "d", "e"] {
             sink.write_line_from_source(Some("s"), label).unwrap();
@@ -725,7 +742,7 @@ mod tests {
             BackpressureStrategyConfig::Block,
             DropPolicyConfig::OldestFirst,
         );
-        let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
+        let sink = BackpressureSink::new(inner.clone(), &cfg, None).unwrap();
         for i in 0..5 {
             sink.write_line_from_source(Some("s"), &format!("line{}", i))
                 .unwrap();
@@ -747,7 +764,7 @@ mod tests {
             DropPolicyConfig::OldestFirst,
         );
         cfg.detection.event_queue_size = 0;
-        match BackpressureSink::new(inner, &cfg) {
+        match BackpressureSink::new(inner, &cfg, None) {
             Err(e) => assert!(e.to_string().contains("event_queue_size")),
             Ok(_) => panic!("expected error for event_queue_size 0"),
         }

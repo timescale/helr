@@ -227,22 +227,38 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         (config.clone(), record_state)
                     };
-                    let event_sink: Arc<dyn EventSink> = if config_to_use
+                    let (event_sink, under_load_flag): (
+                        Arc<dyn EventSink>,
+                        Option<Arc<std::sync::atomic::AtomicBool>>,
+                    ) = if config_to_use
                         .global
                         .backpressure
                         .as_ref()
                         .is_some_and(|b| b.enabled)
                     {
                         let cfg = config_to_use.global.backpressure.as_ref().unwrap();
-                        Arc::new(BackpressureSink::new(event_sink, cfg)?)
+                        let under_load = config_to_use
+                            .global
+                            .load_shedding
+                            .as_ref()
+                            .and_then(|l| l.skip_priority_below)
+                            .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+                        let sink =
+                            Arc::new(BackpressureSink::new(event_sink, cfg, under_load.clone())?);
+                        (sink as Arc<dyn EventSink>, under_load)
                     } else {
-                        event_sink
+                        (event_sink, None)
                     };
                     let reload_path = if *once || replay_dir.is_some() {
                         None
                     } else {
                         Some(run_config_path.as_path())
                     };
+                    let skip_priority_below = config_to_use
+                        .global
+                        .load_shedding
+                        .as_ref()
+                        .and_then(|l| l.skip_priority_below);
                     run_collector(
                         reload_path,
                         &config_to_use,
@@ -251,6 +267,8 @@ async fn main() -> anyhow::Result<()> {
                         event_sink,
                         output_path,
                         record_state,
+                        under_load_flag,
+                        skip_priority_below,
                     )
                     .await
                 }
@@ -262,6 +280,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => {
                     let path = hel_config_path(&cli);
+                    let skip_priority_below = config
+                        .global
+                        .load_shedding
+                        .as_ref()
+                        .and_then(|l| l.skip_priority_below);
                     run_collector(
                         Some(path.as_path()),
                         &config,
@@ -270,6 +293,8 @@ async fn main() -> anyhow::Result<()> {
                         Arc::new(StdoutSink),
                         None,
                         None,
+                        None,
+                        skip_priority_below,
                     )
                     .await
                 }
@@ -483,7 +508,7 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
         Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
             let path = state.path.as_deref().unwrap_or("./hel-state.db");
             match SqliteStateStore::open(Path::new(path)) {
-                Ok(s) => Ok((Arc::new(s), false)),
+                Ok(s) => Ok((Arc::new(s) as Arc<dyn StateStore>, false)),
                 Err(e) => {
                     let fallback = config
                         .global
@@ -497,7 +522,10 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
                             error = %e,
                             "state store (sqlite) failed, falling back to memory (state not durable)"
                         );
-                        Ok((Arc::new(MemoryStateStore::new()), true))
+                        Ok((
+                            Arc::new(MemoryStateStore::new()) as Arc<dyn StateStore>,
+                            true,
+                        ))
                     } else {
                         Err(e)
                     }
@@ -507,7 +535,7 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
         Some(state) if state.backend.eq_ignore_ascii_case("redis") => {
             let url = state.url.as_deref().unwrap_or("redis://127.0.0.1/");
             match RedisStateStore::connect(url).await {
-                Ok(s) => Ok((Arc::new(s), false)),
+                Ok(s) => Ok((Arc::new(s) as Arc<dyn StateStore>, false)),
                 Err(e) => {
                     let fallback = config
                         .global
@@ -521,7 +549,10 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
                             error = %e,
                             "state store (redis) failed, falling back to memory (state not durable)"
                         );
-                        Ok((Arc::new(MemoryStateStore::new()), true))
+                        Ok((
+                            Arc::new(MemoryStateStore::new()) as Arc<dyn StateStore>,
+                            true,
+                        ))
                     } else {
                         Err(e)
                     }
@@ -533,7 +564,7 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
                 anyhow::anyhow!("global.state.url is required when backend is postgres")
             })?;
             match PostgresStateStore::connect(url).await {
-                Ok(s) => Ok((Arc::new(s), false)),
+                Ok(s) => Ok((Arc::new(s) as Arc<dyn StateStore>, false)),
                 Err(e) => {
                     let fallback = config
                         .global
@@ -547,14 +578,20 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
                             error = %e,
                             "state store (postgres) failed, falling back to memory (state not durable)"
                         );
-                        Ok((Arc::new(MemoryStateStore::new()), true))
+                        Ok((
+                            Arc::new(MemoryStateStore::new()) as Arc<dyn StateStore>,
+                            true,
+                        ))
                     } else {
                         Err(e)
                     }
                 }
             }
         }
-        _ => Ok((Arc::new(MemoryStateStore::new()), false)),
+        _ => Ok((
+            Arc::new(MemoryStateStore::new()) as Arc<dyn StateStore>,
+            false,
+        )),
     }
 }
 
@@ -598,6 +635,8 @@ async fn run_test(
         None,
         last_errors,
         global_sources_semaphore,
+        None,
+        None,
     )
     .await
 }
@@ -746,6 +785,7 @@ async fn state_import(store: &dyn StateStore) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_collector(
     config_path: Option<&Path>,
     config: &Config,
@@ -754,6 +794,8 @@ async fn run_collector(
     event_sink: Arc<dyn EventSink>,
     output_path: Option<PathBuf>,
     record_state: Option<Arc<replay::RecordState>>,
+    under_load_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    skip_priority_below: Option<u32>,
 ) -> anyhow::Result<()> {
     tracing::info!("loaded config");
 
@@ -783,6 +825,8 @@ async fn run_collector(
         record_state.clone(),
         last_errors.clone(),
         global_sources_semaphore.clone(),
+        under_load_flag.clone(),
+        skip_priority_below,
     )
     .await?;
 
@@ -929,6 +973,11 @@ async fn run_collector(
         let event_sink_ref = event_sink.clone();
         let record_state_ref = record_state.as_ref();
         let last_errors_ref = last_errors.clone();
+        let skip_priority_below_tick = config_ref
+            .global
+            .load_shedding
+            .as_ref()
+            .and_then(|l| l.skip_priority_below);
         let mut tick_fut = std::pin::pin!(poll::run_one_tick(
             config_ref,
             store_ref,
@@ -941,6 +990,8 @@ async fn run_collector(
             record_state_ref.cloned(),
             last_errors_ref,
             global_sources_semaphore.clone(),
+            under_load_flag.clone(),
+            skip_priority_below_tick,
         ));
 
         tokio::select! {

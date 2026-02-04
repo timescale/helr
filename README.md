@@ -127,6 +127,7 @@ Configuration is merged in this order (later overrides earlier):
 | `dump_on_sigusr1.path` | Path when destination is `file`; required when destination is `file` | string | — |
 | `bulkhead.max_concurrent_sources` | Max number of sources that may poll concurrently (semaphore) | number | — (no limit) |
 | `bulkhead.max_concurrent_requests` | Max concurrent HTTP requests per source (semaphore); overridable per source in `resilience.bulkhead` | number | — (no limit) |
+| `load_shedding.skip_priority_below` | When set and backpressure is active, sources with priority below this (0–10) are not polled. Requires backpressure and per-source `priority`. | number | — (none) |
 
 When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return detailed JSON (version, uptime, per-source status, circuit state, last_error). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.
 
@@ -158,6 +159,8 @@ Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"
 
 **Bulkhead** (`global.bulkhead:`): Per-source and global concurrency caps using semaphores. Set `max_concurrent_sources` to limit how many sources poll at once (e.g. avoid overloading a shared API). Set `max_concurrent_requests` to limit concurrent HTTP requests per source (default no limit). Override per source with `resilience.bulkhead.max_concurrent_requests`.
 
+**Load shedding** (`global.load_shedding:`): When backpressure is active (queue full or memory over `backpressure.detection` threshold), optionally skip polling low-priority sources. Set `skip_priority_below` (0–10); sources with `priority` below that value are not polled until the queue drains below 75% of cap. Per-source `priority` (0–10, default 10) tags sources for load shedding. Strategies: **drop oldest** and **pause polling** are already in backpressure (strategy **drop** with `drop_policy: oldest_first`, or **block**); **skip low-priority sources** is enabled when `load_shedding.skip_priority_below` is set.
+
 **Graceful degradation** (`global.degradation:`): State store fallback, emit without checkpoint on state write failure, and reduced poll frequency when degraded.
 
 | Option | Description | Possible values | Default |
@@ -186,6 +189,7 @@ Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override
 | `auth` | Auth config; see Auth types below | object | — |
 | `pagination` | Pagination config; see Pagination types below | object | — |
 | `resilience` | Timeouts, retries, circuit breaker, rate limit; see Resilience below | object | — |
+| `priority` | Load-shedding priority (0–10, higher = higher priority). When under load and `load_shedding.skip_priority_below` is set, sources with priority below that threshold are not polled. | number | `10` (effective when unset) |
 | `headers` | Extra HTTP headers (key: value) | map | — |
 | `max_bytes` | Stop pagination when total response bytes exceed this (per poll) | number | — |
 | `dedupe.id_path` | JSON path to event ID for deduplication (e.g. `uuid`, `id`, `event.id`) | string | — |

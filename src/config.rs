@@ -67,6 +67,19 @@ pub struct GlobalConfig {
     /// Bulkhead: global and per-source concurrency caps (semaphores).
     #[serde(default)]
     pub bulkhead: Option<BulkheadConfig>,
+
+    /// Load shedding: when backpressure is active (queue full or memory over threshold), optionally skip polling low-priority sources. Uses backpressure.detection (max pending events, memory threshold).
+    #[serde(default)]
+    pub load_shedding: Option<LoadSheddingConfig>,
+}
+
+/// Load shedding: skip low-priority sources when under load (backpressure active).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoadSheddingConfig {
+    /// When set, sources with priority below this (0–10) are not polled while under load. Requires per-source priority (default 10).
+    #[serde(default)]
+    pub skip_priority_below: Option<u32>,
 }
 
 /// Bulkhead (concurrency) limits.
@@ -388,6 +401,10 @@ pub struct SourceConfig {
     /// On response parse/event extraction error: "skip" (log and stop this poll) or "fail" (default).
     #[serde(default)]
     pub on_parse_error: Option<OnParseErrorBehavior>,
+
+    /// Load-shedding priority (0–10, higher = higher priority). When load_shedding.skip_priority_below is set and under load, sources with priority below that threshold are not polled. Default 10 when unset.
+    #[serde(default)]
+    pub priority: Option<u32>,
 
     /// Optional max size in bytes for a single response body; if exceeded, poll fails.
     #[serde(default)]
@@ -1335,6 +1352,38 @@ sources:
         let s1 = config.sources.get("s1").unwrap();
         let sb = s1.resilience.as_ref().unwrap().bulkhead.as_ref().unwrap();
         assert_eq!(sb.max_concurrent_requests, Some(1));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_load_shedding() {
+        let dir = std::env::temp_dir().join("hel_config_load_shedding");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  load_shedding:
+    skip_priority_below: 5
+sources:
+  high:
+    url: "https://example.com/high"
+    priority: 8
+    pagination:
+      strategy: link_header
+      rel: next
+  low:
+    url: "https://example.com/low"
+    priority: 2
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let ls = config.global.load_shedding.as_ref().unwrap();
+        assert_eq!(ls.skip_priority_below, Some(5));
+        assert_eq!(config.sources.get("high").unwrap().priority, Some(8));
+        assert_eq!(config.sources.get("low").unwrap().priority, Some(2));
         let _ = std::fs::remove_file(&path);
     }
 
