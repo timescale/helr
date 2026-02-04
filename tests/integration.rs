@@ -1010,6 +1010,109 @@ sources:
     );
 }
 
+/// Per-source state.watermark_field / watermark_param: after one poll tick, watermark is stored and state show displays it.
+#[tokio::test]
+async fn integration_watermark_state_stored_after_poll() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [
+                    {"id": {"time": "1000"}, "msg": "a"},
+                    {"id": {"time": "2000"}, "msg": "b"}
+                ],
+                "nextPageToken": "p1"
+            })),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"id": {"time": "3000"}, "msg": "c"}]
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_watermark");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    let state_path = config_dir.join("hel-watermark-state.db");
+    let _ = std::fs::remove_file(&state_path);
+
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: sqlite
+    path: "{}"
+sources:
+  watermark-source:
+    url: "{}/"
+    pagination:
+      strategy: cursor
+      cursor_param: pageToken
+      cursor_path: nextPageToken
+    state:
+      watermark_field: "id.time"
+      watermark_param: "startTime"
+    resilience:
+      timeout_secs: 5
+"#,
+        state_path.to_str().unwrap().replace('\\', "/"),
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let out_run = std::process::Command::new(hel_bin())
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
+        .env("RUST_LOG", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel");
+
+    assert!(
+        out_run.status.success(),
+        "hel run --once failed: stderr={}",
+        String::from_utf8_lossy(&out_run.stderr)
+    );
+
+    let out_show = std::process::Command::new(hel_bin())
+        .args([
+            "state",
+            "--config",
+            config_path.to_str().unwrap(),
+            "show",
+            "watermark-source",
+        ])
+        .env("RUST_LOG", "error")
+        .current_dir(
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
+        )
+        .output()
+        .expect("run hel state show");
+
+    assert!(
+        out_show.status.success(),
+        "hel state show failed: stderr={}",
+        String::from_utf8_lossy(&out_show.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out_show.stdout);
+    assert!(
+        stdout.contains("watermark") && stdout.contains("3000"),
+        "expected watermark=3000 (max of id.time) in state show output, got: {}",
+        stdout
+    );
+}
+
 /// hel validate rejects invalid config.
 #[tokio::test]
 async fn integration_validate_rejects_invalid_config() {

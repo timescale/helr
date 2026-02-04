@@ -52,13 +52,16 @@ In `hel.yaml`, add a GWS source with `auth.type: oauth2`:
       refresh_token_env: GWS_REFRESH_TOKEN
       scopes:
         - "https://www.googleapis.com/auth/admin.reports.audit.readonly"
-    pagination:
-      strategy: cursor
-      cursor_param: pageToken
-      cursor_path: nextPageToken
-      max_pages: 50
-    query_params:
-      maxResults: "500"
+  pagination:
+    strategy: cursor
+    cursor_param: pageToken
+    cursor_path: nextPageToken
+  max_pages: 50
+  state:
+    watermark_field: "id.time"
+    watermark_param: "startTime"
+  query_params:
+    maxResults: "500"
     resilience:
       timeout_secs: 30
       retries:
@@ -155,6 +158,8 @@ Duplicate the `gws-login` source; change the source key and URL path:
 | **B:** `401 Unauthorized` | `GWS_DELEGATED_USER` is a **Workspace admin** email (same domain). |
 | No events | No activity in that app recently; try another app or check Admin SDK quota. |
 | Config placeholder unset | Any `${VAR}` in `hel.yaml` must have that env var set. |
+
+**Per-source state (watermark):** To derive "start from" from the last event (e.g. GWS `startTime`), set `state.watermark_field` (dotted path in each event, e.g. `id.time`) and `state.watermark_param` (e.g. `startTime`). Hel stores the max value per source and sends it as that query param on the first request of each poll.
 
 ## Quick reference
 

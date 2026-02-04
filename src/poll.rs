@@ -308,6 +308,7 @@ async fn poll_link_header(
     let max_bytes = source.max_bytes;
     let mut pending_next_url: Option<String> = None;
     let mut incremental_max_ts: Option<String> = None;
+    let mut watermark_max_ts: Option<String> = None;
     let page_delay = source
         .resilience
         .as_ref()
@@ -430,6 +431,9 @@ async fn poll_link_header(
         if let Some(ref inc) = source.incremental_from {
             update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
         }
+        if let Some(ref st) = source.state {
+            update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
+        }
 
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
@@ -494,6 +498,7 @@ async fn poll_link_header(
         }
     }
     store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
     Ok(())
 }
 
@@ -528,6 +533,7 @@ async fn poll_cursor_pagination(
     let max_bytes = source.max_bytes;
     let mut pending_cursor: Option<String> = None;
     let mut incremental_max_ts: Option<String> = None;
+    let mut watermark_max_ts: Option<String> = None;
     let page_delay = source
         .resilience
         .as_ref()
@@ -562,7 +568,10 @@ async fn poll_cursor_pagination(
                 let body = merge_cursor_into_body(source.body.as_ref(), cursor_param, c);
                 (base_url.to_string(), Some(body))
             }
-            (HttpMethod::Post, None) => (base_url.to_string(), None),
+            (HttpMethod::Post, None) => (
+                url_with_first_request_params(&store, source_id, source, base_url).await?,
+                None,
+            ),
         };
         if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
             circuit::allow_request(&circuit_store, source_id, cb)
@@ -699,6 +708,9 @@ async fn poll_cursor_pagination(
         if let Some(ref inc) = source.incremental_from {
             update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
         }
+        if let Some(ref st) = source.state {
+            update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
+        }
         let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
@@ -751,6 +763,7 @@ async fn poll_cursor_pagination(
         }
     }
     store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
     Ok(())
 }
 
@@ -778,6 +791,7 @@ async fn poll_page_offset_pagination(
     let base_url = source.url.as_str();
     let mut total_events = 0u64;
     let mut incremental_max_ts: Option<String> = None;
+    let mut watermark_max_ts: Option<String> = None;
     let page_delay = source
         .resilience
         .as_ref()
@@ -896,6 +910,9 @@ async fn poll_page_offset_pagination(
         if let Some(ref inc) = source.incremental_from {
             update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
         }
+        if let Some(ref st) = source.state {
+            update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
+        }
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
             if let Some(d) = &source.dedupe {
@@ -926,6 +943,7 @@ async fn poll_page_offset_pagination(
     }
     store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
     store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
     Ok(())
 }
 
@@ -1040,8 +1058,12 @@ async fn poll_single_page(
     };
 
     let mut incremental_max_ts: Option<String> = None;
+    let mut watermark_max_ts: Option<String> = None;
     if let Some(ref inc) = source.incremental_from {
         update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+    }
+    if let Some(ref st) = source.state {
+        update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
     }
 
     let mut emitted_count = 0u64;
@@ -1060,6 +1082,7 @@ async fn poll_single_page(
 
     store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
     store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
     tracing::info!(
         source = %source_id,
         events = emitted_count,
@@ -1201,7 +1224,12 @@ fn merge_cursor_into_body(
     serde_json::Value::Object(obj)
 }
 
-/// Build first-request URL: add from (or incremental_from state), and query_params.
+/// State key for per-source watermark (default "watermark").
+fn watermark_state_key(source: &SourceConfig) -> Option<&str> {
+    source.state.as_ref().map(|s| s.state_key.as_deref().unwrap_or("watermark"))
+}
+
+/// Build first-request URL: add watermark state, incremental_from state, or from; and query_params.
 /// Used when there is no saved cursor/next_url (link_header, cursor, and page_offset first page).
 async fn url_with_first_request_params(
     store: &Arc<dyn StateStore>,
@@ -1210,7 +1238,13 @@ async fn url_with_first_request_params(
     url: &str,
 ) -> anyhow::Result<String> {
     let mut u = reqwest::Url::parse(url).context("parse url for first-request params")?;
-    if let Some(ref inc) = source.incremental_from {
+    if let Some(ref st) = source.state {
+        if let Some(key) = watermark_state_key(source) {
+            if let Some(val) = store.get(source_id, key).await?.filter(|s| !s.is_empty()) {
+                u.query_pairs_mut().append_pair(&st.watermark_param, &val);
+            }
+        }
+    } else if let Some(ref inc) = source.incremental_from {
         if let Some(val) = store.get(source_id, &inc.state_key).await?.filter(|s| !s.is_empty()) {
             u.query_pairs_mut().append_pair(&inc.param_name, &val);
         }
@@ -1226,11 +1260,11 @@ async fn url_with_first_request_params(
     Ok(u.to_string())
 }
 
-/// Sync version for tests (no store; uses source.from only).
+/// Sync version for tests (no store; uses source.from only; state/incremental_from require store).
 #[cfg(test)]
 fn url_with_first_request_params_sync(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
     let mut u = reqwest::Url::parse(url).context("parse url for first-request params")?;
-    if source.incremental_from.is_none() {
+    if source.state.is_none() && source.incremental_from.is_none() {
         if let Some(ref from_val) = source.from {
             let param = source.from_param.as_deref().unwrap_or("since");
             u.query_pairs_mut().append_pair(param, from_val);
@@ -1284,6 +1318,22 @@ async fn store_incremental_from_after_poll(
         let val = max_ts.unwrap_or_default();
         if !val.is_empty() {
             let _ = store_set_or_skip(store, source_id, source, global, &inc.state_key, &val).await;
+        }
+    }
+}
+
+/// Store per-source watermark state after poll when state.watermark_field is configured.
+async fn store_watermark_after_poll(
+    store: &Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    global: &GlobalConfig,
+    max_ts: Option<String>,
+) {
+    if let Some(key) = watermark_state_key(source) {
+        let val = max_ts.unwrap_or_default();
+        if !val.is_empty() {
+            let _ = store_set_or_skip(store, source_id, source, global, key, &val).await;
         }
     }
 }
@@ -1506,6 +1556,34 @@ query_params:
         let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
         assert!(url.contains("limit=20"));
         assert!(url.contains("filter="));
+    }
+
+    #[test]
+    fn test_url_with_first_request_params_sync_state_takes_precedence_over_from() {
+        // When source has state.watermark_*, sync helper (no store) does not add from param.
+        let yaml = r#"
+url: "https://example.com/logs"
+from: "2024-01-01T00:00:00Z"
+from_param: "since"
+state:
+  watermark_field: "id.time"
+  watermark_param: "startTime"
+"#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
+        assert!(!url.contains("since="), "state takes precedence over from; sync has no store so no param added");
+    }
+
+    #[test]
+    fn test_update_max_timestamp_dotted_path() {
+        let events = vec![
+            serde_json::json!({"id": {"time": "1000"}}),
+            serde_json::json!({"id": {"time": "3000"}}),
+            serde_json::json!({"id": {"time": "2000"}}),
+        ];
+        let mut max_ts: Option<String> = None;
+        update_max_timestamp(&mut max_ts, &events, "id.time");
+        assert_eq!(max_ts.as_deref(), Some("3000"));
     }
 
     #[test]

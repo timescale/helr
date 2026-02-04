@@ -324,6 +324,10 @@ pub struct SourceConfig {
     #[serde(default)]
     pub incremental_from: Option<IncrementalFromConfig>,
 
+    /// Per-source state: watermark field/param for APIs that derive "start from" from last event (e.g. GWS startTime). Stored per source in the state store.
+    #[serde(default)]
+    pub state: Option<SourceStateConfig>,
+
     /// On response parse/event extraction error: "skip" (log and stop this poll) or "fail" (default).
     #[serde(default)]
     pub on_parse_error: Option<OnParseErrorBehavior>,
@@ -363,6 +367,19 @@ pub struct IncrementalFromConfig {
     pub event_timestamp_path: String,
     /// Query param name for the state value on first request (e.g. "oldest").
     pub param_name: String,
+}
+
+/// Per-source state: which event field to use as watermark and which API param receives it (e.g. GWS startTime).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceStateConfig {
+    /// Dotted JSON path in each event for the watermark value (e.g. "id.time"). Max value (string) is stored after each poll.
+    pub watermark_field: String,
+    /// Query param name for the stored watermark on first request (e.g. "startTime").
+    pub watermark_param: String,
+    /// State key to read/write the watermark. Default "watermark" when omitted.
+    #[serde(default)]
+    pub state_key: Option<String>,
 }
 
 /// Behavior when state store write fails (e.g. disk full).
@@ -1594,5 +1611,37 @@ unknown_field: 1
             err
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_source_state_watermark() {
+        let yaml = r#"
+url: "https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/login"
+pagination:
+  strategy: cursor
+  cursor_param: pageToken
+  cursor_path: nextPageToken
+state:
+  watermark_field: "id.time"
+  watermark_param: "startTime"
+query_params:
+  maxResults: "500"
+"#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let st = source.state.as_ref().expect("state block");
+        assert_eq!(st.watermark_field, "id.time");
+        assert_eq!(st.watermark_param, "startTime");
+        assert_eq!(st.state_key.as_deref(), None); // default when omitted
+
+        let yaml_with_key = r#"
+url: "https://example.com/logs"
+state:
+  watermark_field: "timestamp"
+  watermark_param: "startTime"
+  state_key: "gws_watermark"
+"#;
+        let source2: SourceConfig = serde_yaml::from_str(yaml_with_key).unwrap();
+        let st2 = source2.state.as_ref().unwrap();
+        assert_eq!(st2.state_key.as_deref(), Some("gws_watermark"));
     }
 }

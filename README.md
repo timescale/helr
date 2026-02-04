@@ -8,7 +8,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 
 - **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, 1Password Events API (audit), Tailscale configuration audit and network flow logs, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries/logs) with Link-header or cursor pagination
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
-- **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset; optional **incremental_from** (store latest event timestamp, send as query param on first request — e.g. Slack `oldest`)
+- **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset; optional **incremental_from** (store latest event timestamp, send as query param on first request — e.g. Slack `oldest`); optional per-source **state.watermark_field** / **watermark_param** for APIs that derive "start from" from last event (e.g. GWS `startTime`)
 - **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, **rate limit** — header mapping (X-RateLimit-Limit/Remaining/Reset or custom names), client-side RPS/burst cap, optional adaptive rate limiting (throttle when remaining is low)
 - **TLS:** Custom CA (file or env, merge or replace system roots), client certificate and key (mutual TLS), minimum TLS version (1.2 or 1.3)
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
@@ -196,6 +196,10 @@ Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override
 | `incremental_from.state_key` | State key to read/write the timestamp value | string | — |
 | `incremental_from.event_timestamp_path` | Dotted JSON path in each event for the timestamp (e.g. `date_create`); max value is stored after each poll | string | — |
 | `incremental_from.param_name` | Query param name for the state value on first request (e.g. `oldest`) | string | — |
+| `state` | Per-source state: watermark field/param for APIs that derive "start from" from last event (e.g. GWS `startTime`); see below | object | — |
+| `state.watermark_field` | Dotted JSON path in each event for the watermark value (e.g. `id.time`); max value is stored after each poll | string | — |
+| `state.watermark_param` | Query param name for the stored watermark on first request (e.g. `startTime`) | string | — |
+| `state.state_key` | State key to read/write the watermark | string | `watermark` |
 
 ---
 
