@@ -299,7 +299,7 @@ async fn poll_link_header(
         .clone()
         .unwrap_or_else(|| source.url.clone());
     if from_store.is_none() {
-        url = url_with_first_request_params(&url, source)?;
+        url = url_with_first_request_params(&store, source_id, source, &url).await?;
     }
 
     let mut page = 0u32;
@@ -307,6 +307,7 @@ async fn poll_link_header(
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
     let mut pending_next_url: Option<String> = None;
+    let mut incremental_max_ts: Option<String> = None;
     let page_delay = source
         .resilience
         .as_ref()
@@ -426,6 +427,9 @@ async fn poll_link_header(
                 return Err(e).context("parse response");
             }
         };
+        if let Some(ref inc) = source.incremental_from {
+            update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+        }
 
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
@@ -489,6 +493,7 @@ async fn poll_link_header(
             store_set_or_skip(&store, source_id, source, global, "next_url", v).await?;
         }
     }
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
     Ok(())
 }
 
@@ -522,6 +527,7 @@ async fn poll_cursor_pagination(
     let mut total_bytes: u64 = 0;
     let max_bytes = source.max_bytes;
     let mut pending_cursor: Option<String> = None;
+    let mut incremental_max_ts: Option<String> = None;
     let page_delay = source
         .resilience
         .as_ref()
@@ -546,7 +552,12 @@ async fn poll_cursor_pagination(
                 u.query_pairs_mut().append_pair(cursor_param, c);
                 (u.to_string(), None)
             }
-            (HttpMethod::Get, None) => (url_with_first_request_params(base_url, source)?, None),
+            (HttpMethod::Get, None) => {
+                (
+                    url_with_first_request_params(&store, source_id, source, base_url).await?,
+                    None,
+                )
+            }
             (HttpMethod::Post, Some(c)) => {
                 let body = merge_cursor_into_body(source.body.as_ref(), cursor_param, c);
                 (base_url.to_string(), Some(body))
@@ -685,6 +696,9 @@ async fn poll_cursor_pagination(
                 return Err(e).context("extract events");
             }
         };
+        if let Some(ref inc) = source.incremental_from {
+            update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+        }
         let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
@@ -736,6 +750,7 @@ async fn poll_cursor_pagination(
             store_set_or_skip(&store, source_id, source, global, "cursor", v).await?;
         }
     }
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
     Ok(())
 }
 
@@ -762,6 +777,7 @@ async fn poll_page_offset_pagination(
     let start = Instant::now();
     let base_url = source.url.as_str();
     let mut total_events = 0u64;
+    let mut incremental_max_ts: Option<String> = None;
     let page_delay = source
         .resilience
         .as_ref()
@@ -877,6 +893,9 @@ async fn poll_page_offset_pagination(
                 return Err(e).context("parse response");
             }
         };
+        if let Some(ref inc) = source.incremental_from {
+            update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+        }
         let mut emitted_count = 0u64;
         for event_value in events.iter() {
             if let Some(d) = &source.dedupe {
@@ -906,6 +925,7 @@ async fn poll_page_offset_pagination(
         }
     }
     store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
     Ok(())
 }
 
@@ -1019,6 +1039,11 @@ async fn poll_single_page(
         }
     };
 
+    let mut incremental_max_ts: Option<String> = None;
+    if let Some(ref inc) = source.incremental_from {
+        update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+    }
+
     let mut emitted_count = 0u64;
     for event_value in &events {
         if let Some(d) = &source.dedupe {
@@ -1034,6 +1059,7 @@ async fn poll_single_page(
     metrics::record_events(source_id, emitted_count);
 
     store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
     tracing::info!(
         source = %source_id,
         events = emitted_count,
@@ -1175,11 +1201,20 @@ fn merge_cursor_into_body(
     serde_json::Value::Object(obj)
 }
 
-/// Build first-request URL: add from (if set) and query_params (if set).
+/// Build first-request URL: add from (or incremental_from state), and query_params.
 /// Used when there is no saved cursor/next_url (link_header, cursor, and page_offset first page).
-fn url_with_first_request_params(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
+async fn url_with_first_request_params(
+    store: &Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    url: &str,
+) -> anyhow::Result<String> {
     let mut u = reqwest::Url::parse(url).context("parse url for first-request params")?;
-    if let Some(ref from_val) = source.from {
+    if let Some(ref inc) = source.incremental_from {
+        if let Some(val) = store.get(source_id, &inc.state_key).await?.filter(|s| !s.is_empty()) {
+            u.query_pairs_mut().append_pair(&inc.param_name, &val);
+        }
+    } else if let Some(ref from_val) = source.from {
         let param = source.from_param.as_deref().unwrap_or("since");
         u.query_pairs_mut().append_pair(param, from_val);
     }
@@ -1189,6 +1224,68 @@ fn url_with_first_request_params(url: &str, source: &SourceConfig) -> anyhow::Re
         }
     }
     Ok(u.to_string())
+}
+
+/// Sync version for tests (no store; uses source.from only).
+#[cfg(test)]
+fn url_with_first_request_params_sync(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
+    let mut u = reqwest::Url::parse(url).context("parse url for first-request params")?;
+    if source.incremental_from.is_none() {
+        if let Some(ref from_val) = source.from {
+            let param = source.from_param.as_deref().unwrap_or("since");
+            u.query_pairs_mut().append_pair(param, from_val);
+        }
+    }
+    if let Some(ref params) = source.query_params {
+        for (k, v) in params {
+            u.query_pairs_mut().append_pair(k, &v.to_param_value());
+        }
+    }
+    Ok(u.to_string())
+}
+
+/// Get value at dotted path as string (supports string and number for timestamps like date_create).
+fn value_at_path_as_string(value: &serde_json::Value, path: &str) -> Option<String> {
+    let mut v = value;
+    for segment in path.split('.') {
+        v = v.get(segment)?;
+    }
+    Some(match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    })
+}
+
+/// Update max_ts with the max value at path across events (lexicographic comparison).
+fn update_max_timestamp(
+    max_ts: &mut Option<String>,
+    events: &[serde_json::Value],
+    path: &str,
+) {
+    for event in events {
+        if let Some(v) = value_at_path_as_string(event, path) {
+            if max_ts.as_ref().map_or(true, |m| v.as_str() > m.as_str()) {
+                *max_ts = Some(v);
+            }
+        }
+    }
+}
+
+/// Store incremental_from state after poll when configured.
+async fn store_incremental_from_after_poll(
+    store: &Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    global: &GlobalConfig,
+    max_ts: Option<String>,
+) {
+    if let Some(ref inc) = source.incremental_from {
+        let val = max_ts.unwrap_or_default();
+        if !val.is_empty() {
+            let _ = store_set_or_skip(store, source_id, source, global, &inc.state_key, &val).await;
+        }
+    }
 }
 
 /// Parse response body: top-level array, or object with "items"/"data"/"events" array.
@@ -1381,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_with_first_request_params() {
+    fn test_url_with_first_request_params_sync() {
         let yaml = r#"
 url: "https://example.com/logs"
 from: "2024-01-01T00:00:00Z"
@@ -1391,7 +1488,7 @@ query_params:
   sortOrder: "ASCENDING"
 "#;
         let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
-        let url = url_with_first_request_params("https://example.com/logs", &source).unwrap();
+        let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
         assert!(url.contains("since=2024-01-01T00%3A00%3A00Z"));
         assert!(url.contains("limit=20"));
         assert!(url.contains("sortOrder=ASCENDING"));
@@ -1406,7 +1503,7 @@ query_params:
   filter: "eventType eq \"user.session.start\""
 "#;
         let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
-        let url = url_with_first_request_params("https://example.com/logs", &source).unwrap();
+        let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
         assert!(url.contains("limit=20"));
         assert!(url.contains("filter="));
     }

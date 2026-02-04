@@ -8,7 +8,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 
 - **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, 1Password Events API (audit), Tailscale configuration audit and network flow logs, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries/logs) with Link-header or cursor pagination
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
-- **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset
+- **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset; optional **incremental_from** (store latest event timestamp, send as query param on first request — e.g. Slack `oldest`)
 - **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, **rate limit** — header mapping (X-RateLimit-Limit/Remaining/Reset or custom names), client-side RPS/burst cap, optional adaptive rate limiting (throttle when remaining is low)
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
@@ -90,7 +90,7 @@ Configuration is merged in this order (later overrides earlier):
 - **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `resilience.rate_limit` (header mapping, `max_requests_per_second`, `burst_size`, `adaptive`, `page_delay_secs`), `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
+- **Options:** `from` / `from_param`, `query_params`, `incremental_from` (store latest event timestamp in state, send as query param on first request — e.g. Slack `oldest`), `dedupe.id_path`, `resilience.rate_limit` (header mapping, `max_requests_per_second`, `burst_size`, `adaptive`, `page_delay_secs`), `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
 
@@ -134,14 +134,14 @@ When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return
 | `backpressure.enabled` | Enable backpressure (bounded queue + writer thread) | boolean | `false` |
 | `backpressure.detection.event_queue_size` | Max events in the internal queue before applying strategy | number | `10000` |
 | `backpressure.detection.memory_threshold_mb` | Process RSS limit (MB); when exceeded, apply strategy (uses `sysinfo`; best-effort on supported platforms) | number | — (none) |
-| `backpressure.detection.stdout_buffer_size` | Reserved for future use (optional byte cap) | number | `65536` |
+| `backpressure.detection.stdout_buffer_size` | Max total bytes of queued events; when queue byte size + next event would exceed this, apply strategy. 0 = disabled. | number | `65536` |
 | `backpressure.strategy` | When queue is full (or over memory): **block** (pause until drain), **disk_buffer** (spill to file; requires `disk_buffer.path`), **drop** (drop with `drop_policy`) | `block`, `disk_buffer`, `drop` | `block` |
 | `backpressure.drop_policy` | When strategy is **drop**: which event to drop | `oldest_first`, `newest_first`, `random` | `oldest_first` |
 | `backpressure.max_queue_age_secs` | Max age (seconds) a queued event may sit; older events are dropped first (reason `max_queue_age` in metrics) | number | — (none) |
 | `backpressure.disk_buffer` | Required when strategy is **disk_buffer** | object | — |
 | `backpressure.disk_buffer.path` | Path to spill file (NDJSON lines appended when queue full; writer drains to inner sink) | string | — |
-| `backpressure.disk_buffer.max_size_mb` | Max spill file size (MB); reserved for future enforcement | number | `1024` |
-| `backpressure.disk_buffer.segment_size_mb` | Reserved for future segmenting | number | `64` |
+| `backpressure.disk_buffer.max_size_mb` | Max total spill size (MB); when current file + `.old` exceed this, producer blocks until writer drains | number | `1024` |
+| `backpressure.disk_buffer.segment_size_mb` | When current spill file reaches this size (MB), it is rotated to `path.old` and a new file is created; writer drains `.old` then current | number | `64` |
 
 Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"}`, `hel_pending_events{source}`.
 
@@ -191,6 +191,10 @@ Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override
 | `max_line_bytes_behavior` | When a line exceeds `max_line_bytes` | `truncate`, `skip`, `fail` | — |
 | `checkpoint` | When to write state | `end_of_tick`, `per_page` | — |
 | `on_state_write_error` | When state store write fails (e.g. disk full) | `fail`, `skip_checkpoint` | `fail` |
+| `incremental_from` | Store latest event timestamp in state and send as query param on first request (e.g. Slack `oldest`); see below | object | — |
+| `incremental_from.state_key` | State key to read/write the timestamp value | string | — |
+| `incremental_from.event_timestamp_path` | Dotted JSON path in each event for the timestamp (e.g. `date_create`); max value is stored after each poll | string | — |
+| `incremental_from.param_name` | Query param name for the state value on first request (e.g. `oldest`) | string | — |
 
 ---
 

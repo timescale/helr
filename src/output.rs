@@ -215,6 +215,14 @@ struct BackpressureState {
     memory_threshold_mb: Option<u64>,
     max_queue_age_secs: Option<u64>,
     disk_buffer_path: Option<PathBuf>,
+    /// Max total disk buffer size in bytes (path + path.old). When exceeded, block until writer drains.
+    disk_buffer_max_bytes: Option<u64>,
+    /// When current segment file reaches this size, rotate to path.old and start new segment.
+    disk_buffer_segment_bytes: Option<u64>,
+    /// Total byte size of lines in queue (for stdout_buffer_size cap).
+    total_queued_bytes: u64,
+    /// When > 0, treat as backpressure when total_queued_bytes + line.len() > this.
+    stdout_buffer_size: u64,
 }
 
 /// Shared state between producer and writer thread.
@@ -229,23 +237,48 @@ struct BackpressureInner {
     disk_buffer_mutex: Option<Arc<Mutex<()>>>,
 }
 
+/// Path for the "previous full segment" when segmenting is used (e.g. spill.ndjson -> spill.ndjson.old).
+fn disk_buffer_old_path(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().to_string() + ".old")
+}
+
 fn drain_disk_buffer(path: &Path, file_lock: &Mutex<()>) -> Vec<String> {
     let _guard = file_lock.lock().unwrap();
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    let reader = BufReader::new(file);
-    let lines: Vec<String> = reader
-        .lines()
-        .filter_map(|r| r.ok())
-        .filter(|s| !s.trim().is_empty())
-        .collect();
-    if !lines.is_empty() {
+    let old_path = disk_buffer_old_path(path);
+    let mut lines = Vec::new();
+    if old_path.exists() {
+        if let Ok(file) = std::fs::File::open(&old_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().filter_map(|r| r.ok()) {
+                if !line.trim().is_empty() {
+                    lines.push(line);
+                }
+            }
+            let _ = std::fs::remove_file(&old_path);
+        }
+    }
+    if path.exists() {
+        if let Ok(file) = std::fs::File::open(path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().filter_map(|r| r.ok()) {
+                if !line.trim().is_empty() {
+                    lines.push(line);
+                }
+            }
+        }
         if let Ok(f) = std::fs::File::create(path) {
             let _ = f.set_len(0);
         }
     }
     lines
+}
+
+/// Total size in bytes of disk buffer (path + path.old).
+fn disk_buffer_total_size(path: &Path) -> u64 {
+    let old_path = disk_buffer_old_path(path);
+    let a = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let b = std::fs::metadata(&old_path).map(|m| m.len()).unwrap_or(0);
+    a.saturating_add(b)
 }
 
 fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureInner>) {
@@ -270,6 +303,7 @@ fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureI
                 return;
             }
             let (source_opt, line, _enqueue_at) = guard.queue.pop_front().unwrap();
+            guard.total_queued_bytes = guard.total_queued_bytes.saturating_sub(line.len() as u64);
             let pending_after_pop = if let Some(ref s) = source_opt {
                 let entry = guard.pending_per_source.get_mut(s).unwrap();
                 *entry -= 1;
@@ -323,13 +357,21 @@ impl BackpressureSink {
         if cap == 0 {
             anyhow::bail!("backpressure.detection.event_queue_size must be > 0");
         }
-        let (disk_buffer_path, disk_buffer_mutex) = match (&config.strategy, &config.disk_buffer) {
-            (BackpressureStrategyConfig::DiskBuffer, Some(d)) => {
-                let path = PathBuf::from(&d.path);
-                (Some(path), Some(Arc::new(Mutex::new(()))))
-            }
-            _ => (None, None),
-        };
+        let (disk_buffer_path, disk_buffer_mutex, disk_max_bytes, disk_segment_bytes) =
+            match (&config.strategy, &config.disk_buffer) {
+                (BackpressureStrategyConfig::DiskBuffer, Some(d)) => {
+                    let path = PathBuf::from(&d.path);
+                    let max_bytes = d.max_size_mb.saturating_mul(1024).saturating_mul(1024);
+                    let segment_bytes = d.segment_size_mb.saturating_mul(1024).saturating_mul(1024);
+                    (
+                        Some(path),
+                        Some(Arc::new(Mutex::new(()))),
+                        Some(max_bytes),
+                        Some(segment_bytes),
+                    )
+                }
+                _ => (None, None, None, None),
+            };
         let shared = Arc::new(BackpressureInner {
             state: Mutex::new(BackpressureState {
                 queue: VecDeque::new(),
@@ -340,6 +382,10 @@ impl BackpressureSink {
                 memory_threshold_mb: config.detection.memory_threshold_mb,
                 max_queue_age_secs: config.max_queue_age_secs,
                 disk_buffer_path: disk_buffer_path.clone(),
+                disk_buffer_max_bytes: disk_max_bytes,
+                disk_buffer_segment_bytes: disk_segment_bytes,
+                total_queued_bytes: 0,
+                stdout_buffer_size: config.detection.stdout_buffer_size,
             }),
             not_empty: Condvar::new(),
             not_full: Condvar::new(),
@@ -371,7 +417,8 @@ impl BackpressureSink {
             let now = Instant::now();
             while let Some(front) = guard.queue.front() {
                 if now.saturating_duration_since(front.2).as_secs() >= max_age_secs {
-                    let (s_opt, _, _) = guard.queue.pop_front().unwrap();
+                    let (s_opt, line, _) = guard.queue.pop_front().unwrap();
+                    guard.total_queued_bytes = guard.total_queued_bytes.saturating_sub(line.len() as u64);
                     if let Some(ref s) = s_opt {
                         metrics::record_event_dropped(s, "max_queue_age");
                         if let Some(entry) = guard.pending_per_source.get_mut(s) {
@@ -395,8 +442,14 @@ impl BackpressureSink {
             })
             .unwrap_or(false);
 
+        let over_stdout_bytes = guard.stdout_buffer_size > 0
+            && guard
+                .total_queued_bytes
+                .saturating_add(line_owned.len() as u64)
+                > guard.stdout_buffer_size;
+
         loop {
-            if guard.queue.len() < guard.cap && !over_memory {
+            if guard.queue.len() < guard.cap && !over_memory && !over_stdout_bytes {
                 break;
             }
             match guard.strategy {
@@ -404,12 +457,11 @@ impl BackpressureSink {
                     guard = shared.not_full.wait(guard).unwrap();
                 }
                 BackpressureStrategyConfig::Drop => {
-                    let dropped_source = match guard.drop_policy {
+                    let dropped = match guard.drop_policy {
                         DropPolicyConfig::OldestFirst => {
-                            guard.queue.pop_front().map(|(s, _, _)| s)
+                            guard.queue.pop_front().map(|(s, line, _)| (s, line.len() as u64))
                         }
                         DropPolicyConfig::NewestFirst => {
-                            // Drop the incoming event (don't push).
                             drop(guard);
                             metrics::record_event_dropped(
                                 source.unwrap_or("unknown"),
@@ -419,14 +471,20 @@ impl BackpressureSink {
                         }
                         DropPolicyConfig::Random => {
                             let i = rand::random_range(0..guard.queue.len());
-                            guard.queue.remove(i).map(|(s, _, _)| s)
+                            guard
+                                .queue
+                                .remove(i)
+                                .map(|(s, line, _)| (s, line.len() as u64))
                         }
                     };
-                    if let Some(Some(ref s)) = dropped_source {
-                        metrics::record_event_dropped(s.as_str(), "backpressure");
-                        if let Some(entry) = guard.pending_per_source.get_mut(s) {
-                            *entry -= 1;
-                            metrics::set_pending_events(s, *entry);
+                        if let Some((ref s_opt, len)) = dropped {
+                        guard.total_queued_bytes = guard.total_queued_bytes.saturating_sub(len);
+                        if let Some(s) = s_opt {
+                            metrics::record_event_dropped(s.as_str(), "backpressure");
+                            if let Some(entry) = guard.pending_per_source.get_mut(s) {
+                                *entry -= 1;
+                                metrics::set_pending_events(s, *entry);
+                            }
                         }
                     }
                     break;
@@ -434,9 +492,31 @@ impl BackpressureSink {
                 BackpressureStrategyConfig::DiskBuffer => {
                     let path = guard.disk_buffer_path.clone();
                     let file_lock = shared.disk_buffer_mutex.clone();
+                    let max_bytes = guard.disk_buffer_max_bytes;
+                    let segment_bytes = guard.disk_buffer_segment_bytes;
                     if let (Some(p), Some(lock)) = (path, file_lock) {
                         drop(guard);
-                        let _g = lock.lock().unwrap();
+                        let mut file_guard = lock.lock().unwrap();
+                        if let Some(max) = max_bytes {
+                            loop {
+                                if disk_buffer_total_size(&p) < max {
+                                    break;
+                                }
+                                drop(file_guard);
+                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                file_guard = lock.lock().unwrap();
+                            }
+                        }
+                        let mut need_rotate = false;
+                        if let Some(seg) = segment_bytes {
+                            if std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) >= seg {
+                                need_rotate = true;
+                            }
+                        }
+                        if need_rotate {
+                            let old_path = disk_buffer_old_path(&p);
+                            let _ = std::fs::rename(&p, &old_path);
+                        }
                         let mut f = std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
@@ -449,6 +529,7 @@ impl BackpressureSink {
                 }
             }
         }
+        guard.total_queued_bytes = guard.total_queued_bytes.saturating_add(line_owned.len() as u64);
         guard.queue.push_back((source_owned.clone(), line_owned, Instant::now()));
         if let Some(ref s) = source_owned {
             let entry = guard.pending_per_source.entry(s.clone()).or_insert(0);

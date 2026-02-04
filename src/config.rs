@@ -320,6 +320,10 @@ pub struct SourceConfig {
     #[serde(default)]
     pub query_params: Option<HashMap<String, QueryParamValue>>,
 
+    /// Time-based incremental: read param from state on first request, store max event timestamp after each poll (e.g. Slack oldest from date_create).
+    #[serde(default)]
+    pub incremental_from: Option<IncrementalFromConfig>,
+
     /// On response parse/event extraction error: "skip" (log and stop this poll) or "fail" (default).
     #[serde(default)]
     pub on_parse_error: Option<OnParseErrorBehavior>,
@@ -347,6 +351,18 @@ pub struct SourceConfig {
     /// When state store write fails (e.g. disk full): "fail" (default) or "skip_checkpoint" (log and continue).
     #[serde(default)]
     pub on_state_write_error: Option<OnStateWriteErrorBehavior>,
+}
+
+/// Config for time-based incremental ingestion: use state for "from" param and store latest event timestamp after each poll.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IncrementalFromConfig {
+    /// State key to read for first-request param value and to write max timestamp after each poll.
+    pub state_key: String,
+    /// Dotted JSON path in each event for the timestamp (e.g. "date_create"). Max value (string) is stored after poll.
+    pub event_timestamp_path: String,
+    /// Query param name for the state value on first request (e.g. "oldest").
+    pub param_name: String,
 }
 
 /// Behavior when state store write fails (e.g. disk full).

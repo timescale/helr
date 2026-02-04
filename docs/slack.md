@@ -100,7 +100,19 @@ Example: only logins for a specific user since a given time:
       actor: "W123AB456"
 ```
 
-For time-based incremental ingestion you can use Hel state (e.g. store the latest `date_create` and set `oldest` from it in a future enhancement) or set `oldest` / `latest` explicitly for a fixed window.
+**Incremental from last event:** To resume from the latest event timestamp on each first request (no saved cursor), use `incremental_from`. Hel stores the max value of the given event field after each poll and sends it as the specified query param on the first request. Slack events use `date_create` (Unix timestamp); the API accepts `oldest` as that param:
+
+```yaml
+  slack-audit:
+    url: "https://api.slack.com/audit/v1/logs"
+    # ... auth, pagination, etc.
+    incremental_from:
+      state_key: "oldest_ts"
+      event_timestamp_path: "date_create"
+      param_name: "oldest"
+```
+
+On the first request (or after cursor reset), Hel will add `oldest=<last_stored_ts>` from state so you only fetch events newer than the last run. You can still set `oldest` / `latest` explicitly in `query_params` for a fixed window.
 
 ## Optional: dedupe
 
