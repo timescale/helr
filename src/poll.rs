@@ -270,7 +270,7 @@ async fn maybe_adaptive_sleep_after_response(
         _ => return,
     };
     let info = rate_limit_info_from_headers(headers, rl.headers.as_ref());
-    if !info.remaining.is_some_and(|n| n <= 1) {
+    if info.remaining.is_none_or(|n| n > 1) {
         return;
     }
     let reset_ts = match info.reset_ts {
@@ -1217,7 +1217,7 @@ fn emit_event_line(
                     };
                     event_sink
                         .write_line_from_source(Some(source_id), &truncated)
-                        .inspect_err(|e| {
+                        .inspect_err(|_e| {
                             metrics::record_output_error(source_id);
                         })?;
                     return Ok(());
@@ -1242,7 +1242,7 @@ fn emit_event_line(
         }
     event_sink
         .write_line_from_source(Some(source_id), &line)
-        .inspect_err(|e| {
+        .inspect_err(|_e| {
             metrics::record_output_error(source_id);
         })
 }
