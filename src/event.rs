@@ -10,7 +10,7 @@ use serde::Serialize;
 /// One log event emitted to stdout (NDJSON line).
 #[derive(Debug, Clone, Serialize)]
 pub struct EmittedEvent {
-    pub ts: String,   // ISO8601
+    pub ts: String, // ISO8601
     pub source: String,
     pub endpoint: String,
     pub event: serde_json::Value,
@@ -64,7 +64,9 @@ impl EmittedEvent {
         let obj = val
             .as_object_mut()
             .ok_or_else(|| anyhow!("expected object"))?;
-        let source_val = obj.remove("source").unwrap_or(serde_json::Value::String(String::new()));
+        let source_val = obj
+            .remove("source")
+            .unwrap_or(serde_json::Value::String(String::new()));
         obj.insert(label_key.to_string(), source_val);
         serde_json::to_string(&val).map_err(anyhow::Error::from)
     }

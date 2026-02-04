@@ -8,15 +8,15 @@ use serde_json::json;
 #[cfg(feature = "testcontainers")]
 use std::process::Command;
 #[cfg(feature = "testcontainers")]
+use testcontainers::GenericImage;
+#[cfg(feature = "testcontainers")]
+use testcontainers::ImageExt;
+#[cfg(feature = "testcontainers")]
 use testcontainers::core::IntoContainerPort;
 #[cfg(feature = "testcontainers")]
 use testcontainers::core::WaitFor;
 #[cfg(feature = "testcontainers")]
 use testcontainers::runners::AsyncRunner;
-#[cfg(feature = "testcontainers")]
-use testcontainers::ImageExt;
-#[cfg(feature = "testcontainers")]
-use testcontainers::GenericImage;
 #[cfg(feature = "testcontainers")]
 use wiremock::matchers::method;
 #[cfg(feature = "testcontainers")]
@@ -49,11 +49,9 @@ async fn testcontainers_redis_state_run_and_show() {
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "tc1", "published": "2024-01-15T12:00:00Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "tc1", "published": "2024-01-15T12:00:00Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -84,9 +82,7 @@ sources:
     let out_run = Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -105,9 +101,7 @@ sources:
             "tc-redis-source",
         ])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel state show");
 
@@ -145,11 +139,9 @@ async fn testcontainers_postgres_state_run_and_show() {
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "tc2", "published": "2024-01-15T12:00:00Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "tc2", "published": "2024-01-15T12:00:00Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -180,9 +172,7 @@ sources:
     let out_run = Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -201,9 +191,7 @@ sources:
             "tc-pg-source",
         ])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel state show");
 

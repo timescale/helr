@@ -112,7 +112,11 @@ fn circuit_state_to_dto(s: &CircuitState) -> CircuitStateDto {
     }
 }
 
-fn source_status(status: &str, circuit: CircuitStateDto, last_error: Option<String>) -> SourceStatusDto {
+fn source_status(
+    status: &str,
+    circuit: CircuitStateDto,
+    last_error: Option<String>,
+) -> SourceStatusDto {
     SourceStatusDto {
         status: status.to_string(),
         circuit_state: circuit,
@@ -195,9 +199,7 @@ pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
         Some(store) => store.list_sources().await.is_ok(),
         None => true,
     };
-    let at_least_one_source_healthy = sources
-        .values()
-        .any(|s| s.status != "unhealthy");
+    let at_least_one_source_healthy = sources.values().any(|s| s.status != "unhealthy");
     let ready = output_ok && state_store_connected && at_least_one_source_healthy;
     ReadyBody {
         version: version(),
@@ -319,7 +321,10 @@ sources:
         let state = health_state_with(None, started_at);
         let body = build_health_body(&state).await;
         assert!(!body.version.is_empty(), "version should be non-empty");
-        assert!(body.uptime_secs >= 5.0 && body.uptime_secs <= 10.0, "uptime_secs ~5");
+        assert!(
+            body.uptime_secs >= 5.0 && body.uptime_secs <= 10.0,
+            "uptime_secs ~5"
+        );
         assert_eq!(body.sources.len(), 2);
         assert!(body.sources.contains_key("s1"));
         assert!(body.sources.contains_key("s2"));
@@ -392,10 +397,7 @@ sources:
         let circuit_store = circuit::new_circuit_store();
         {
             let mut g = circuit_store.write().await;
-            g.insert(
-                "s1".to_string(),
-                CircuitState::HalfOpen { successes: 1 },
-            );
+            g.insert("s1".to_string(), CircuitState::HalfOpen { successes: 1 });
         }
         let state = HealthState {
             config,
@@ -537,7 +539,10 @@ sources:
         let mut state_with_fallback = state;
         state_with_fallback.state_store_fallback_active = true;
         let body = build_health_body(&state_with_fallback).await;
-        assert!(body.state_store_fallback_active, "health body should report state_store_fallback_active when true");
+        assert!(
+            body.state_store_fallback_active,
+            "health body should report state_store_fallback_active when true"
+        );
     }
 
     #[tokio::test]
@@ -546,6 +551,9 @@ sources:
         let mut state_with_fallback = state;
         state_with_fallback.state_store_fallback_active = true;
         let body = build_ready_body(&state_with_fallback).await;
-        assert!(body.state_store_fallback_active, "readyz body should report state_store_fallback_active when true");
+        assert!(
+            body.state_store_fallback_active,
+            "readyz body should report state_store_fallback_active when true"
+        );
     }
 }

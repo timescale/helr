@@ -1,15 +1,15 @@
 //! OAuth2 token acquisition and caching: refresh_token or client_credentials; optional private_key_jwt and DPoP.
 
 use crate::config::{self, AuthConfig};
-use crate::dpop::{build_dpop_proof, get_or_create_dpop_key, DPoPKeyCache};
+use crate::dpop::{DPoPKeyCache, build_dpop_proof, get_or_create_dpop_key};
 use anyhow::Context;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::Client;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::debug;
 
@@ -133,12 +133,8 @@ pub async fn get_oauth_token(
             client_private_key_file,
             client_private_key_env.unwrap_or(""),
         )?;
-        let client_assertion = build_client_assertion(
-            &client_id,
-            token_url.as_str(),
-            &private_key_pem,
-            source_id,
-        )?;
+        let client_assertion =
+            build_client_assertion(&client_id, token_url.as_str(), &private_key_pem, source_id)?;
         form.insert(
             "client_assertion_type".into(),
             "urn:ietf:params:oauth:client-assertion-type:jwt-bearer".into(),
@@ -148,8 +144,7 @@ pub async fn get_oauth_token(
 
     let mut token_req = client.post(token_url.as_str()).form(&form);
     if dpop {
-        let key_cache = dpop_key_cache
-            .context("oauth2 dpop: true requires dpop_key_cache")?;
+        let key_cache = dpop_key_cache.context("oauth2 dpop: true requires dpop_key_cache")?;
         let key = get_or_create_dpop_key(key_cache, source_id).await?;
         let iat = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -159,10 +154,7 @@ pub async fn get_oauth_token(
         let proof = build_dpop_proof("POST", token_url.as_str(), &key, &jti, iat, None, None)?;
         token_req = token_req.header("DPoP", proof);
     }
-    let response: reqwest::Response = token_req
-        .send()
-        .await
-        .context("oauth2 token request")?;
+    let response: reqwest::Response = token_req.send().await.context("oauth2 token request")?;
 
     let status = response.status();
     let dpop_nonce_header = response
@@ -170,7 +162,10 @@ pub async fn get_oauth_token(
         .get("DPoP-Nonce")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim().to_string());
-    let body = response.text().await.context("oauth2 token response body")?;
+    let body = response
+        .text()
+        .await
+        .context("oauth2 token response body")?;
 
     if dpop && status.as_u16() == 400 && body.contains("use_dpop_nonce") {
         let nonce = dpop_nonce_header.or_else(|| {
@@ -184,8 +179,7 @@ pub async fn get_oauth_token(
                 })
         });
         if let Some(nonce) = nonce {
-            let key_cache = dpop_key_cache
-                .context("oauth2 dpop: true requires dpop_key_cache")?;
+            let key_cache = dpop_key_cache.context("oauth2 dpop: true requires dpop_key_cache")?;
             let key = get_or_create_dpop_key(key_cache, source_id).await?;
             tracing::debug!(source = %source_id, "oauth2 retrying token request with DPoP nonce");
             let iat = SystemTime::now()
@@ -193,7 +187,15 @@ pub async fn get_oauth_token(
                 .context("system time")?
                 .as_secs();
             let jti = format!("{}-{}", source_id, iat);
-            let proof = build_dpop_proof("POST", token_url.as_str(), &key, &jti, iat, Some(&nonce), None)?;
+            let proof = build_dpop_proof(
+                "POST",
+                token_url.as_str(),
+                &key,
+                &jti,
+                iat,
+                Some(&nonce),
+                None,
+            )?;
             if use_private_key_jwt {
                 let private_key_pem = config::read_secret(
                     client_private_key_file,
@@ -211,9 +213,15 @@ pub async fn get_oauth_token(
                 .post(token_url.as_str())
                 .form(&form)
                 .header("DPoP", proof);
-            let retry_response = retry_req.send().await.context("oauth2 token retry request")?;
+            let retry_response = retry_req
+                .send()
+                .await
+                .context("oauth2 token retry request")?;
             let retry_status = retry_response.status();
-            let retry_body = retry_response.text().await.context("oauth2 token retry response body")?;
+            let retry_body = retry_response
+                .text()
+                .await
+                .context("oauth2 token retry response body")?;
             if !retry_status.is_success() {
                 anyhow::bail!("oauth2 token error {}: {}", retry_status, retry_body);
             }
@@ -300,7 +308,8 @@ fn build_client_assertion(
     };
     let pem = private_key_pem.replace("\\n", "\n");
     let key = EncodingKey::from_rsa_pem(pem.as_bytes()).context("parse client private_key PEM")?;
-    let token = encode(&Header::new(Algorithm::RS256), &claims, &key).context("sign client_assertion JWT")?;
+    let token = encode(&Header::new(Algorithm::RS256), &claims, &key)
+        .context("sign client_assertion JWT")?;
     Ok(token)
 }
 
@@ -320,7 +329,13 @@ pub async fn get_google_sa_token(
             subject_env,
             subject_file,
             scopes,
-        } => (credentials_file.as_deref(), credentials_env.as_deref(), subject_env.as_deref(), subject_file.as_deref(), scopes),
+        } => (
+            credentials_file.as_deref(),
+            credentials_env.as_deref(),
+            subject_env.as_deref(),
+            subject_file.as_deref(),
+            scopes,
+        ),
         _ => anyhow::bail!("get_google_sa_token requires GoogleServiceAccount auth"),
     };
     let (creds_path, creds_env, subject_env, subject_file, scopes) = sa;
@@ -344,7 +359,9 @@ pub async fn get_google_sa_token(
         None
     };
     let json_str = json_str.or_else(|| creds_env.and_then(|e| std::env::var(e).ok()));
-    let json_str = json_str.context("google_service_account credentials not set (credentials_file or credentials_env)")?;
+    let json_str = json_str.context(
+        "google_service_account credentials not set (credentials_file or credentials_env)",
+    )?;
     let creds: serde_json::Value = serde_json::from_str(&json_str).context("credentials JSON")?;
     let client_email = creds
         .get("client_email")
@@ -355,19 +372,22 @@ pub async fn get_google_sa_token(
         .and_then(|v| v.as_str())
         .context("credentials missing private_key")?;
     let private_key = private_key_str.replace("\\n", "\n");
-    let subject = subject_env
-        .and_then(|e| std::env::var(e).ok())
-        .or_else(|| {
-            subject_file.and_then(|p| {
-                if p.is_empty() {
-                    None
-                } else {
-                    std::fs::read_to_string(Path::new(p)).ok().map(|s| s.trim().to_string())
-                }
-            })
-        });
+    let subject = subject_env.and_then(|e| std::env::var(e).ok()).or_else(|| {
+        subject_file.and_then(|p| {
+            if p.is_empty() {
+                None
+            } else {
+                std::fs::read_to_string(Path::new(p))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            }
+        })
+    });
     let scope = scopes.join(" ");
-    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     #[derive(serde::Serialize)]
     struct GoogleJwtClaims {
         iss: String,
@@ -398,17 +418,24 @@ pub async fn get_google_sa_token(
         .await
         .context("google token request")?;
     let status = response.status();
-    let body = response.text().await.context("google token response body")?;
+    let body = response
+        .text()
+        .await
+        .context("google token response body")?;
     if !status.is_success() {
         anyhow::bail!("google token error {}: {}", status, body);
     }
-    let json: serde_json::Value = serde_json::from_str(&body).context("google token response json")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).context("google token response json")?;
     let access_token = json
         .get("access_token")
         .and_then(|v| v.as_str())
         .context("response missing access_token")?
         .to_string();
-    let expires_in = json.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(3600);
+    let expires_in = json
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600);
     let expires_at = now + Duration::from_secs(expires_in);
     {
         let mut g = cache.write().await;

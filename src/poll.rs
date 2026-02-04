@@ -8,9 +8,9 @@ use crate::config::{
     RateLimitConfig, SourceConfig,
 };
 use crate::dedupe::{self, DedupeStore};
+use crate::dpop::DPoPKeyCache;
 use crate::event::EmittedEvent;
 use crate::metrics;
-use crate::dpop::DPoPKeyCache;
 use crate::oauth2::OAuth2TokenCache;
 use crate::output::EventSink;
 use crate::pagination::next_link_from_headers;
@@ -73,7 +73,9 @@ pub async fn run_one_tick(
             .as_ref()
             .and_then(|r| r.rate_limit.as_ref())
             .and_then(|r| {
-                let rps = r.max_requests_per_second.filter(|&x| x > 0.0 && x.is_finite())?;
+                let rps = r
+                    .max_requests_per_second
+                    .filter(|&x| x > 0.0 && x.is_finite())?;
                 let rps_u = (rps.ceil() as u32).max(1);
                 let rps_nz = NonZeroU32::new(rps_u)?;
                 let burst = r.burst_size.unwrap_or(rps_u).max(1);
@@ -101,12 +103,10 @@ pub async fn run_one_tick(
                 rate_limiter,
             );
             match poll_tick_secs {
-                Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), poll_fut).await {
+                Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), poll_fut).await
+                {
                     Ok(inner) => inner,
-                    Err(_) => Err(anyhow::anyhow!(
-                        "poll tick timed out after {}s",
-                        secs
-                    )),
+                    Err(_) => Err(anyhow::anyhow!("poll tick timed out after {}s", secs)),
                 },
                 None => poll_fut.await,
             }
@@ -119,7 +119,10 @@ pub async fn run_one_tick(
             Ok(Err(e)) => {
                 metrics::record_error(&source_id);
                 let msg = e.to_string();
-                last_errors.write().await.insert(source_id.clone(), msg.clone());
+                last_errors
+                    .write()
+                    .await
+                    .insert(source_id.clone(), msg.clone());
                 tracing::error!(source = %source_id, "poll failed: {:#}", e);
                 // Broken pipe to stdout is fatal: exit so caller can exit non-zero.
                 if msg.to_lowercase().contains("broken pipe") {
@@ -129,7 +132,10 @@ pub async fn run_one_tick(
             Err(e) => {
                 metrics::record_error(&source_id);
                 let msg = e.to_string();
-                last_errors.write().await.insert(source_id.clone(), msg.clone());
+                last_errors
+                    .write()
+                    .await
+                    .insert(source_id.clone(), msg.clone());
                 tracing::error!(source = %source_id, "task join failed: {:#}", e);
             }
         }
@@ -137,7 +143,17 @@ pub async fn run_one_tick(
     Ok(())
 }
 
-#[instrument(skip(store, source, global, circuit_store, token_cache, dpop_key_cache, dedupe_store, event_sink, record_state))]
+#[instrument(skip(
+    store,
+    source,
+    global,
+    circuit_store,
+    token_cache,
+    dpop_key_cache,
+    dedupe_store,
+    event_sink,
+    record_state
+))]
 async fn poll_one_source(
     store: Arc<dyn StateStore>,
     source_id: &str,
@@ -294,10 +310,11 @@ async fn poll_link_header(
     rate_limiter: Option<&Arc<ClientRateLimiter>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
-    let from_store = store.get(source_id, "next_url").await?.filter(|s| !s.is_empty());
-    let mut url: String = from_store
-        .clone()
-        .unwrap_or_else(|| source.url.clone());
+    let from_store = store
+        .get(source_id, "next_url")
+        .await?
+        .filter(|s| !s.is_empty());
+    let mut url: String = from_store.clone().unwrap_or_else(|| source.url.clone());
     if from_store.is_none() {
         url = url_with_first_request_params(&store, source_id, source, &url).await?;
     }
@@ -327,7 +344,11 @@ async fn poll_link_header(
             }
         }
 
-        if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+        if let Some(cb) = source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.circuit_breaker.as_ref())
+        {
             circuit::allow_request(&circuit_store, source_id, cb)
                 .await
                 .context("circuit open")?;
@@ -343,7 +364,10 @@ async fn poll_link_header(
             &url,
             None, // link_header: same URL per page; body from source when POST
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
-            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
             dpop_key_cache.as_ref(),
         )
@@ -351,7 +375,10 @@ async fn poll_link_header(
         {
             Ok(r) => {
                 let success = r.status().as_u16() < 500;
-                if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
                 {
                     circuit::record_result(&circuit_store, source_id, cb, success).await;
                 }
@@ -364,16 +391,14 @@ async fn poll_link_header(
                 r
             }
             Err(e) => {
-                if let Some(cb) =
-                    source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
                 {
                     circuit::record_result(&circuit_store, source_id, cb, false).await;
                 }
-                metrics::record_request(
-                    source_id,
-                    "error",
-                    req_start.elapsed().as_secs_f64(),
-                );
+                metrics::record_request(source_id, "error", req_start.elapsed().as_secs_f64());
                 metrics::record_error(source_id);
                 return Err(e).context("http request");
             }
@@ -382,13 +407,20 @@ async fn poll_link_header(
         maybe_adaptive_sleep_after_response(
             response.headers(),
             source_id,
-            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
         )
         .await;
 
         let status = response.status();
         if !status.is_success() {
-            anyhow::bail!("http {} {}", status, response.text().await.unwrap_or_default());
+            anyhow::bail!(
+                "http {} {}",
+                status,
+                response.text().await.unwrap_or_default()
+            );
         }
 
         let next_url = next_link_from_headers(response.headers(), rel);
@@ -455,9 +487,7 @@ async fn poll_link_header(
         if let Some(next) = next_url {
             let absolute = base_url.join(&next).context("resolve next URL")?;
             if checkpoint_per_page {
-                store
-                    .set(source_id, "next_url", absolute.as_str())
-                    .await?;
+                store.set(source_id, "next_url", absolute.as_str()).await?;
             }
             pending_next_url = Some(absolute.to_string());
             if hit_max_bytes {
@@ -558,12 +588,10 @@ async fn poll_cursor_pagination(
                 u.query_pairs_mut().append_pair(cursor_param, c);
                 (u.to_string(), None)
             }
-            (HttpMethod::Get, None) => {
-                (
-                    url_with_first_request_params(&store, source_id, source, base_url).await?,
-                    None,
-                )
-            }
+            (HttpMethod::Get, None) => (
+                url_with_first_request_params(&store, source_id, source, base_url).await?,
+                None,
+            ),
             (HttpMethod::Post, Some(c)) => {
                 let body = merge_cursor_into_body(source.body.as_ref(), cursor_param, c);
                 (base_url.to_string(), Some(body))
@@ -573,7 +601,11 @@ async fn poll_cursor_pagination(
                 None,
             ),
         };
-        if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+        if let Some(cb) = source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.circuit_breaker.as_ref())
+        {
             circuit::allow_request(&circuit_store, source_id, cb)
                 .await
                 .context("circuit open")?;
@@ -589,7 +621,10 @@ async fn poll_cursor_pagination(
             &url,
             body_override.as_ref(),
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
-            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
             dpop_key_cache.as_ref(),
         )
@@ -597,7 +632,10 @@ async fn poll_cursor_pagination(
         {
             Ok(r) => {
                 let success = r.status().as_u16() < 500;
-                if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
                 {
                     circuit::record_result(&circuit_store, source_id, cb, success).await;
                 }
@@ -609,8 +647,10 @@ async fn poll_cursor_pagination(
                 r
             }
             Err(e) => {
-                if let Some(cb) =
-                    source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
                 {
                     circuit::record_result(&circuit_store, source_id, cb, false).await;
                 }
@@ -623,7 +663,10 @@ async fn poll_cursor_pagination(
         maybe_adaptive_sleep_after_response(
             response.headers(),
             source_id,
-            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
         )
         .await;
 
@@ -644,10 +687,7 @@ async fn poll_cursor_pagination(
         }
         let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if !status.is_success() {
-            if cursor.is_some()
-                && status.as_u16() >= 400
-                && status.as_u16() < 500
-            {
+            if cursor.is_some() && status.as_u16() >= 400 && status.as_u16() < 500 {
                 let lower = body.to_lowercase();
                 let is_expired = status.as_u16() == 410
                     || lower.contains("expired")
@@ -805,8 +845,10 @@ async fn poll_page_offset_pagination(
             }
         }
         let mut u = Url::parse(base_url).context("page/offset base url")?;
-        u.query_pairs_mut().append_pair(page_param, &page.to_string());
-        u.query_pairs_mut().append_pair(limit_param, &limit.to_string());
+        u.query_pairs_mut()
+            .append_pair(page_param, &page.to_string());
+        u.query_pairs_mut()
+            .append_pair(limit_param, &limit.to_string());
         if page == 1 {
             if let Some(ref params) = source.query_params {
                 for (k, v) in params {
@@ -815,7 +857,11 @@ async fn poll_page_offset_pagination(
             }
         }
         let url = u.to_string();
-        if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+        if let Some(cb) = source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.circuit_breaker.as_ref())
+        {
             circuit::allow_request(&circuit_store, source_id, cb)
                 .await
                 .context("circuit open")?;
@@ -831,7 +877,10 @@ async fn poll_page_offset_pagination(
             &url,
             None, // page_offset: body from source when POST
             source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
-            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
             dpop_key_cache.as_ref(),
         )
@@ -839,7 +888,10 @@ async fn poll_page_offset_pagination(
         {
             Ok(r) => {
                 let success = r.status().as_u16() < 500;
-                if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
                 {
                     circuit::record_result(&circuit_store, source_id, cb, success).await;
                 }
@@ -851,8 +903,10 @@ async fn poll_page_offset_pagination(
                 r
             }
             Err(e) => {
-                if let Some(cb) =
-                    source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref())
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
                 {
                     circuit::record_result(&circuit_store, source_id, cb, false).await;
                 }
@@ -865,7 +919,10 @@ async fn poll_page_offset_pagination(
         maybe_adaptive_sleep_after_response(
             response.headers(),
             source_id,
-            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
         )
         .await;
 
@@ -964,7 +1021,11 @@ async fn poll_single_page(
     rate_limiter: Option<&Arc<ClientRateLimiter>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
-    if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+    if let Some(cb) = source
+        .resilience
+        .as_ref()
+        .and_then(|r| r.circuit_breaker.as_ref())
+    {
         circuit::allow_request(&circuit_store, source_id, cb)
             .await
             .context("circuit open")?;
@@ -980,7 +1041,10 @@ async fn poll_single_page(
         url,
         None, // single page: body from source when POST
         source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
-        source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+        source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.rate_limit.as_ref()),
         Some(&token_cache),
         dpop_key_cache.as_ref(),
     )
@@ -988,7 +1052,11 @@ async fn poll_single_page(
     {
         Ok(r) => {
             let success = r.status().as_u16() < 500;
-            if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+            if let Some(cb) = source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.circuit_breaker.as_ref())
+            {
                 circuit::record_result(&circuit_store, source_id, cb, success).await;
             }
             metrics::record_request(
@@ -999,7 +1067,11 @@ async fn poll_single_page(
             r
         }
         Err(e) => {
-            if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
+            if let Some(cb) = source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.circuit_breaker.as_ref())
+            {
                 circuit::record_result(&circuit_store, source_id, cb, false).await;
             }
             metrics::record_request(source_id, "error", req_start.elapsed().as_secs_f64());
@@ -1011,7 +1083,10 @@ async fn poll_single_page(
     maybe_adaptive_sleep_after_response(
         response.headers(),
         source_id,
-        source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+        source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.rate_limit.as_ref()),
     )
     .await;
 
@@ -1093,7 +1168,10 @@ async fn poll_single_page(
 }
 
 /// Convert response body bytes to string; apply on_invalid_utf8 policy (replace/escape/fail).
-fn bytes_to_string(bytes: &[u8], on_invalid_utf8: Option<InvalidUtf8Behavior>) -> anyhow::Result<String> {
+fn bytes_to_string(
+    bytes: &[u8],
+    on_invalid_utf8: Option<InvalidUtf8Behavior>,
+) -> anyhow::Result<String> {
     match on_invalid_utf8 {
         Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
             Ok(String::from_utf8_lossy(bytes).into_owned())
@@ -1133,21 +1211,28 @@ fn emit_event_line(
     let line = emitted.to_ndjson_line_with_label_key(label_key)?;
     if let Some(max) = source.max_line_bytes {
         if line.len() as u64 > max {
-            match source.max_line_bytes_behavior.unwrap_or(MaxEventBytesBehavior::Fail) {
+            match source
+                .max_line_bytes_behavior
+                .unwrap_or(MaxEventBytesBehavior::Fail)
+            {
                 MaxEventBytesBehavior::Truncate => {
                     let max_usize = max as usize;
                     let truncated: String = if max_usize >= 3 {
                         format!(
                             "{}...",
-                            line.chars().take(max_usize.saturating_sub(3)).collect::<String>()
+                            line.chars()
+                                .take(max_usize.saturating_sub(3))
+                                .collect::<String>()
                         )
                     } else {
                         line.chars().take(max_usize).collect()
                     };
-                    event_sink.write_line_from_source(Some(source_id), &truncated).map_err(|e| {
-                        metrics::record_output_error(source_id);
-                        e
-                    })?;
+                    event_sink
+                        .write_line_from_source(Some(source_id), &truncated)
+                        .map_err(|e| {
+                            metrics::record_output_error(source_id);
+                            e
+                        })?;
                     return Ok(());
                 }
                 MaxEventBytesBehavior::Skip => {
@@ -1169,10 +1254,12 @@ fn emit_event_line(
             }
         }
     }
-    event_sink.write_line_from_source(Some(source_id), &line).map_err(|e| {
-        metrics::record_output_error(source_id);
-        e
-    })
+    event_sink
+        .write_line_from_source(Some(source_id), &line)
+        .map_err(|e| {
+            metrics::record_output_error(source_id);
+            e
+        })
 }
 
 /// Set state key; on error, fail or skip checkpoint per source config or global degradation.emit_without_checkpoint.
@@ -1226,7 +1313,10 @@ fn merge_cursor_into_body(
 
 /// State key for per-source watermark (default "watermark").
 fn watermark_state_key(source: &SourceConfig) -> Option<&str> {
-    source.state.as_ref().map(|s| s.state_key.as_deref().unwrap_or("watermark"))
+    source
+        .state
+        .as_ref()
+        .map(|s| s.state_key.as_deref().unwrap_or("watermark"))
 }
 
 /// Build first-request URL: add watermark state, incremental_from state, or from; and query_params.
@@ -1245,7 +1335,11 @@ async fn url_with_first_request_params(
             }
         }
     } else if let Some(ref inc) = source.incremental_from {
-        if let Some(val) = store.get(source_id, &inc.state_key).await?.filter(|s| !s.is_empty()) {
+        if let Some(val) = store
+            .get(source_id, &inc.state_key)
+            .await?
+            .filter(|s| !s.is_empty())
+        {
             u.query_pairs_mut().append_pair(&inc.param_name, &val);
         }
     } else if let Some(ref from_val) = source.from {
@@ -1292,11 +1386,7 @@ fn value_at_path_as_string(value: &serde_json::Value, path: &str) -> Option<Stri
 }
 
 /// Update max_ts with the max value at path across events (lexicographic comparison).
-fn update_max_timestamp(
-    max_ts: &mut Option<String>,
-    events: &[serde_json::Value],
-    path: &str,
-) {
+fn update_max_timestamp(max_ts: &mut Option<String>, events: &[serde_json::Value], path: &str) {
     for event in events {
         if let Some(v) = value_at_path_as_string(event, path) {
             if max_ts.as_ref().map_or(true, |m| v.as_str() > m.as_str()) {
@@ -1340,8 +1430,7 @@ async fn store_watermark_after_poll(
 
 /// Parse response body: top-level array, or object with "items"/"data"/"events" array.
 fn parse_events_from_body(body: &str) -> anyhow::Result<Vec<serde_json::Value>> {
-    let value: serde_json::Value =
-        serde_json::from_str(body).context("parse response json")?;
+    let value: serde_json::Value = serde_json::from_str(body).context("parse response json")?;
     parse_events_from_value(&value)
 }
 
@@ -1418,7 +1507,10 @@ fn build_emitted_event(
 ) -> EmittedEvent {
     let ts = event_ts_with_field(
         event_value,
-        source.transform.as_ref().and_then(|t| t.timestamp_field.as_deref()),
+        source
+            .transform
+            .as_ref()
+            .and_then(|t| t.timestamp_field.as_deref()),
     );
     let label = effective_source_label(source, source_id);
     let mut emitted = EmittedEvent::new(ts, label, path.to_string(), event_value.clone());
@@ -1469,7 +1561,10 @@ mod tests {
     #[test]
     fn test_json_path_str_dotted() {
         let v = serde_json::json!({"meta": {"next_page_token": "token123"}});
-        assert_eq!(json_path_str(&v, "meta.next_page_token"), Some("token123".into()));
+        assert_eq!(
+            json_path_str(&v, "meta.next_page_token"),
+            Some("token123".into())
+        );
     }
 
     #[test]
@@ -1571,7 +1666,10 @@ state:
 "#;
         let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
         let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
-        assert!(!url.contains("since="), "state takes precedence over from; sync has no store so no param added");
+        assert!(
+            !url.contains("since="),
+            "state takes precedence over from; sync has no store so no param added"
+        );
     }
 
     #[test]
@@ -1616,6 +1714,9 @@ source_label_value: "okta_audit"
 source_label_key: "origin"
 "#;
         let source_override: SourceConfig = serde_yaml::from_str(yaml_override).unwrap();
-        assert_eq!(effective_source_label_key(&global, &source_override), "origin");
+        assert_eq!(
+            effective_source_label_key(&global, &source_override),
+            "origin"
+        );
     }
 }

@@ -5,7 +5,7 @@
 //! rewriting source URLs so the poll uses recorded responses instead of live APIs.
 
 use anyhow::Context;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,7 +25,9 @@ pub struct Recording {
 
 impl Recording {
     pub fn body_bytes(&self) -> anyhow::Result<Vec<u8>> {
-        BASE64.decode(&self.body_base64).context("decode recording body_base64")
+        BASE64
+            .decode(&self.body_base64)
+            .context("decode recording body_base64")
     }
 }
 
@@ -53,7 +55,10 @@ impl RecordState {
         headers: &reqwest::header::HeaderMap,
         body: &[u8],
     ) -> anyhow::Result<()> {
-        let mut counters = self.counters.lock().map_err(|e| anyhow::anyhow!("lock: {}", e))?;
+        let mut counters = self
+            .counters
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {}", e))?;
         let seq = counters.entry(source_id.to_string()).or_insert(0);
         let n = *seq;
         *seq += 1;
@@ -86,10 +91,12 @@ impl RecordState {
 
 fn sanitize_source_id(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-            c
-        } else {
-            '_'
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
         })
         .collect()
 }
@@ -190,7 +197,8 @@ pub async fn start_replay_server(
                             }
                         };
 
-                        let mut response = axum::response::Response::new(axum::body::Body::from(body_bytes));
+                        let mut response =
+                            axum::response::Response::new(axum::body::Body::from(body_bytes));
                         *response.status_mut() = axum::http::StatusCode::from_u16(rec.status)
                             .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
                         for (k, v) in &rec.headers {
@@ -214,7 +222,10 @@ pub async fn start_replay_server(
 
 /// Rewrite config so each source's URL points to the replay server for that source.
 /// Uses sanitized source IDs in the path so they match directory names under the replay dir.
-pub fn rewrite_config_for_replay(config: &crate::config::Config, base_url: &str) -> crate::config::Config {
+pub fn rewrite_config_for_replay(
+    config: &crate::config::Config,
+    base_url: &str,
+) -> crate::config::Config {
     let mut config = config.clone();
     for (source_id, source) in config.sources.iter_mut() {
         let key = sanitize_source_id(source_id);

@@ -49,12 +49,7 @@ pub fn new_dedupe_store() -> DedupeStore {
 
 /// Returns true if `id` was already seen (duplicate) for this source; false if new (and records it).
 /// Creates the per-source LRU on first use.
-pub async fn seen_and_add(
-    store: &DedupeStore,
-    source_id: &str,
-    id: String,
-    capacity: u64,
-) -> bool {
+pub async fn seen_and_add(store: &DedupeStore, source_id: &str, id: String, capacity: u64) -> bool {
     let mut g = store.write().await;
     let dedupe = g
         .entry(source_id.to_string())

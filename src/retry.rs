@@ -2,15 +2,17 @@
 //! On 429, uses Retry-After (or X-RateLimit-Reset) when configured.
 
 use crate::client::build_request;
-use crate::config::{AuthConfig, HttpMethod, RateLimitConfig, RateLimitHeaderMapping, RetryConfig, SourceConfig};
-use rand::Rng;
-use crate::dpop::{build_dpop_proof, get_or_create_dpop_key, DPoPKeyCache};
-use crate::oauth2::{get_google_sa_token, get_oauth_token, invalidate_token, OAuth2TokenCache};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::config::{
+    AuthConfig, HttpMethod, RateLimitConfig, RateLimitHeaderMapping, RetryConfig, SourceConfig,
+};
+use crate::dpop::{DPoPKeyCache, build_dpop_proof, get_or_create_dpop_key};
+use crate::oauth2::{OAuth2TokenCache, get_google_sa_token, get_oauth_token, invalidate_token};
 use anyhow::Context;
+use rand::Rng;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Response};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
 fn is_5xx(code: u16) -> bool {
@@ -18,7 +20,10 @@ fn is_5xx(code: u16) -> bool {
 }
 
 /// Returns true if status should be retried. Uses `retryable_status_codes` when set, else 408, 429, 5xx.
-pub fn is_retryable_status_with_codes(status: reqwest::StatusCode, retryable_codes: Option<&[u16]>) -> bool {
+pub fn is_retryable_status_with_codes(
+    status: reqwest::StatusCode,
+    retryable_codes: Option<&[u16]>,
+) -> bool {
     let code = status.as_u16();
     match retryable_codes {
         Some(codes) => codes.contains(&code),
@@ -125,7 +130,11 @@ pub fn rate_limit_info_from_headers(
         .get(reset_h)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<i64>().ok());
-    RateLimitInfo { limit, remaining, reset_ts }
+    RateLimitInfo {
+        limit,
+        remaining,
+        reset_ts,
+    }
 }
 
 fn cap_duration(d: Duration, max_secs: Option<u64>) -> Duration {
@@ -157,10 +166,7 @@ async fn bearer_for_request(
 }
 
 fn need_dpop_proof(source: &SourceConfig) -> bool {
-    matches!(
-        &source.auth,
-        Some(AuthConfig::OAuth2 { dpop: true, .. })
-    )
+    matches!(&source.auth, Some(AuthConfig::OAuth2 { dpop: true, .. }))
 }
 
 /// DPoP proof for this request when source has dpop; optional nonce and access_token for ath.
@@ -188,7 +194,12 @@ async fn dpop_proof_for_request(
         .duration_since(UNIX_EPOCH)
         .context("system time")?
         .as_secs();
-    let jti = format!("{}-{}-{}", source_id, iat, std::time::Instant::now().elapsed().as_nanos());
+    let jti = format!(
+        "{}-{}-{}",
+        source_id,
+        iat,
+        std::time::Instant::now().elapsed().as_nanos()
+    );
     let proof = build_dpop_proof(method, url, &key, &jti, iat, nonce, access_token)?;
     Ok(Some(proof))
 }
@@ -209,8 +220,17 @@ pub async fn execute_with_retry(
     let retry = match retry {
         Some(r) if r.max_attempts > 0 => r,
         _ => {
-            let bearer = bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
-            let dpop_proof = dpop_proof_for_request(source_id, source, url, dpop_key_cache, None, bearer.as_deref()).await?;
+            let bearer =
+                bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
+            let dpop_proof = dpop_proof_for_request(
+                source_id,
+                source,
+                url,
+                dpop_key_cache,
+                None,
+                bearer.as_deref(),
+            )
+            .await?;
             let req = build_request(client, source, url, bearer.as_deref(), body, dpop_proof)?;
             return client.execute(req).await.context("http request");
         }
@@ -219,8 +239,17 @@ pub async fn execute_with_retry(
     let mut last_err = None;
     let mut auth_refresh_attempted = false;
     for attempt in 0..retry.max_attempts {
-        let bearer = bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
-        let dpop_proof = dpop_proof_for_request(source_id, source, url, dpop_key_cache, None, bearer.as_deref()).await?;
+        let bearer =
+            bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
+        let dpop_proof = dpop_proof_for_request(
+            source_id,
+            source,
+            url,
+            dpop_key_cache,
+            None,
+            bearer.as_deref(),
+        )
+        .await?;
         let req = build_request(client, source, url, bearer.as_deref(), body, dpop_proof)?;
         match client.execute(req).await {
             Ok(response) => {
@@ -241,7 +270,10 @@ pub async fn execute_with_retry(
                     warn!(source = %source_id, "401 Unauthorized, refreshed OAuth token, retrying");
                     continue;
                 }
-                if !is_retryable_status_with_codes(response.status(), retry.retryable_status_codes.as_deref()) {
+                if !is_retryable_status_with_codes(
+                    response.status(),
+                    retry.retryable_status_codes.as_deref(),
+                ) {
                     let status = response.status();
                     let dpop_nonce_header = response
                         .headers()
@@ -264,9 +296,15 @@ pub async fn execute_with_retry(
                                 })
                         });
                         if let Some(ref nonce) = nonce {
-                            let dpop_proof_with_nonce =
-                                dpop_proof_for_request(source_id, source, url, dpop_key_cache, Some(nonce), bearer.as_deref())
-                                    .await?;
+                            let dpop_proof_with_nonce = dpop_proof_for_request(
+                                source_id,
+                                source,
+                                url,
+                                dpop_key_cache,
+                                Some(nonce),
+                                bearer.as_deref(),
+                            )
+                            .await?;
                             let retry_req = build_request(
                                 client,
                                 source,
@@ -290,7 +328,9 @@ pub async fn execute_with_retry(
                                         url
                                     );
                                 }
-                                Err(e) => return Err(anyhow::Error::from(e)).context("http request"),
+                                Err(e) => {
+                                    return Err(anyhow::Error::from(e)).context("http request");
+                                }
                             }
                         }
                     }
@@ -303,8 +343,7 @@ pub async fn execute_with_retry(
                         response.headers(),
                         retry.max_backoff_secs,
                         rate_limit.and_then(|r| r.headers.as_ref()),
-                    )
-                {
+                    ) {
                     let d = if d.as_secs() > 0 {
                         d
                     } else {
@@ -324,7 +363,8 @@ pub async fn execute_with_retry(
                 let body = response.text().await.unwrap_or_default();
                 last_err = Some(anyhow::anyhow!("http {} {}", status, body));
                 if attempt + 1 < retry.max_attempts {
-                    if !(status.as_u16() == 429 && rate_limit.map_or(false, |r| r.respect_headers)) {
+                    if !(status.as_u16() == 429 && rate_limit.map_or(false, |r| r.respect_headers))
+                    {
                         warn!(
                             status = %status,
                             attempt = attempt + 1,
@@ -355,8 +395,7 @@ pub async fn execute_with_retry(
         }
     }
 
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no attempts")))
-        .context("http request")
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no attempts"))).context("http request")
 }
 
 #[cfg(test)]
@@ -367,14 +406,35 @@ mod tests {
     fn test_is_retryable_status() {
         use reqwest::StatusCode;
         // default (None) = 408, 429, 5xx
-        assert!(is_retryable_status_with_codes(StatusCode::REQUEST_TIMEOUT, None)); // 408
-        assert!(is_retryable_status_with_codes(StatusCode::TOO_MANY_REQUESTS, None)); // 429
-        assert!(is_retryable_status_with_codes(StatusCode::INTERNAL_SERVER_ERROR, None));
-        assert!(is_retryable_status_with_codes(StatusCode::BAD_GATEWAY, None));
-        assert!(is_retryable_status_with_codes(StatusCode::SERVICE_UNAVAILABLE, None));
+        assert!(is_retryable_status_with_codes(
+            StatusCode::REQUEST_TIMEOUT,
+            None
+        )); // 408
+        assert!(is_retryable_status_with_codes(
+            StatusCode::TOO_MANY_REQUESTS,
+            None
+        )); // 429
+        assert!(is_retryable_status_with_codes(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            None
+        ));
+        assert!(is_retryable_status_with_codes(
+            StatusCode::BAD_GATEWAY,
+            None
+        ));
+        assert!(is_retryable_status_with_codes(
+            StatusCode::SERVICE_UNAVAILABLE,
+            None
+        ));
         assert!(!is_retryable_status_with_codes(StatusCode::OK, None));
-        assert!(!is_retryable_status_with_codes(StatusCode::BAD_REQUEST, None));
-        assert!(!is_retryable_status_with_codes(StatusCode::UNAUTHORIZED, None));
+        assert!(!is_retryable_status_with_codes(
+            StatusCode::BAD_REQUEST,
+            None
+        ));
+        assert!(!is_retryable_status_with_codes(
+            StatusCode::UNAUTHORIZED,
+            None
+        ));
         assert!(!is_retryable_status_with_codes(StatusCode::NOT_FOUND, None));
     }
 
@@ -397,10 +457,7 @@ mod tests {
     #[test]
     fn test_retry_after_delta_seconds() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            reqwest::header::RETRY_AFTER,
-            "120".parse().unwrap(),
-        );
+        headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
         let d = retry_after_from_headers(&headers, None, None).unwrap();
         assert_eq!(d, Duration::from_secs(120));
         let d = retry_after_from_headers(&headers, Some(60), None).unwrap();
@@ -411,10 +468,7 @@ mod tests {
     fn test_retry_after_x_ratelimit_reset() {
         let mut headers = HeaderMap::new();
         let reset_ts = chrono::Utc::now().timestamp() + 90;
-        headers.insert(
-            "X-RateLimit-Reset",
-            reset_ts.to_string().parse().unwrap(),
-        );
+        headers.insert("X-RateLimit-Reset", reset_ts.to_string().parse().unwrap());
         let d = retry_after_from_headers(&headers, None, None).unwrap();
         assert!(d.as_secs() >= 88 && d.as_secs() <= 92);
     }
@@ -423,10 +477,22 @@ mod tests {
     fn test_is_retryable_status_with_codes_custom_list() {
         use reqwest::StatusCode;
         let codes = [502u16, 503];
-        assert!(is_retryable_status_with_codes(StatusCode::BAD_GATEWAY, Some(&codes)));
-        assert!(is_retryable_status_with_codes(StatusCode::SERVICE_UNAVAILABLE, Some(&codes)));
-        assert!(!is_retryable_status_with_codes(StatusCode::INTERNAL_SERVER_ERROR, Some(&codes)));
-        assert!(!is_retryable_status_with_codes(StatusCode::OK, Some(&codes)));
+        assert!(is_retryable_status_with_codes(
+            StatusCode::BAD_GATEWAY,
+            Some(&codes)
+        ));
+        assert!(is_retryable_status_with_codes(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some(&codes)
+        ));
+        assert!(!is_retryable_status_with_codes(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Some(&codes)
+        ));
+        assert!(!is_retryable_status_with_codes(
+            StatusCode::OK,
+            Some(&codes)
+        ));
     }
 
     #[test]
@@ -459,10 +525,7 @@ mod tests {
     fn test_retry_after_x_rate_limit_reset_okta() {
         let mut headers = HeaderMap::new();
         let reset_ts = chrono::Utc::now().timestamp() + 45;
-        headers.insert(
-            "X-Rate-Limit-Reset",
-            reset_ts.to_string().parse().unwrap(),
-        );
+        headers.insert("X-Rate-Limit-Reset", reset_ts.to_string().parse().unwrap());
         let d = retry_after_from_headers(&headers, None, None).unwrap();
         assert!(d.as_secs() >= 43 && d.as_secs() <= 47);
     }
@@ -471,10 +534,7 @@ mod tests {
     fn test_retry_after_with_custom_reset_header() {
         let mut headers = HeaderMap::new();
         let reset_ts = chrono::Utc::now().timestamp() + 30;
-        headers.insert(
-            "X-Rate-Limit-Reset",
-            reset_ts.to_string().parse().unwrap(),
-        );
+        headers.insert("X-Rate-Limit-Reset", reset_ts.to_string().parse().unwrap());
         let mapping = RateLimitHeaderMapping {
             limit_header: None,
             remaining_header: None,

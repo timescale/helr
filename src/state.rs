@@ -112,10 +112,11 @@ impl StateStore for SqliteStateStore {
         let source_id = source_id.to_string();
         let key = key.to_string();
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
-            let mut stmt = c.prepare(
-                "SELECT value FROM hel_state WHERE source_id = ?1 AND key = ?2",
-            )?;
+            let c = conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let mut stmt =
+                c.prepare("SELECT value FROM hel_state WHERE source_id = ?1 AND key = ?2")?;
             let mut rows = stmt.query([&source_id, &key])?;
             if let Some(row) = rows.next()? {
                 let value: String = row.get(0)?;
@@ -138,7 +139,9 @@ impl StateStore for SqliteStateStore {
             .unwrap()
             .as_secs() as i64;
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let c = conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
             c.execute(
                 "INSERT INTO hel_state (source_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (source_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
@@ -154,8 +157,11 @@ impl StateStore for SqliteStateStore {
         let conn = self.conn.clone();
         let source_id = source_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
-            let mut stmt = c.prepare("SELECT key FROM hel_state WHERE source_id = ?1 ORDER BY key")?;
+            let c = conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let mut stmt =
+                c.prepare("SELECT key FROM hel_state WHERE source_id = ?1 ORDER BY key")?;
             let rows = stmt.query_map([&source_id], |row| row.get(0))?;
             let keys: Result<Vec<String>, _> = rows.collect();
             Ok(keys?)
@@ -167,8 +173,11 @@ impl StateStore for SqliteStateStore {
     async fn list_sources(&self) -> anyhow::Result<Vec<String>> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
-            let mut stmt = c.prepare("SELECT DISTINCT source_id FROM hel_state ORDER BY source_id")?;
+            let c = conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let mut stmt =
+                c.prepare("SELECT DISTINCT source_id FROM hel_state ORDER BY source_id")?;
             let rows = stmt.query_map([], |row| row.get(0))?;
             let ids: Result<Vec<String>, _> = rows.collect();
             Ok(ids?)
@@ -181,7 +190,9 @@ impl StateStore for SqliteStateStore {
         let conn = self.conn.clone();
         let source_id = source_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
+            let c = conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
             c.execute("DELETE FROM hel_state WHERE source_id = ?1", [&source_id])?;
             Ok::<_, anyhow::Error>(())
         })
@@ -408,8 +419,14 @@ mod tests {
         let store = SqliteStateStore::open(&dir).unwrap();
         assert!(store.get("s1", "cursor").await.unwrap().is_none());
         store.set("s1", "cursor", "abc123").await.unwrap();
-        assert_eq!(store.get("s1", "cursor").await.unwrap(), Some("abc123".into()));
-        store.set("s1", "watermark", "2024-01-01T00:00:00Z").await.unwrap();
+        assert_eq!(
+            store.get("s1", "cursor").await.unwrap(),
+            Some("abc123".into())
+        );
+        store
+            .set("s1", "watermark", "2024-01-01T00:00:00Z")
+            .await
+            .unwrap();
         let keys = store.list_keys("s1").await.unwrap();
         assert!(keys.contains(&"cursor".to_string()));
         assert!(keys.contains(&"watermark".to_string()));

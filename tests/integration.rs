@@ -11,12 +11,10 @@ async fn integration_run_once_emits_ndjson() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "1", "msg": "first", "published": "2024-01-15T12:00:00Z"},
-                {"id": "2", "msg": "second", "published": "2024-01-15T12:00:01Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "1", "msg": "first", "published": "2024-01-15T12:00:00Z"},
+            {"id": "2", "msg": "second", "published": "2024-01-15T12:00:01Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -53,9 +51,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -98,11 +94,9 @@ async fn integration_rate_limit_rps_emits_ndjson() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "r1", "msg": "rate-limited", "published": "2024-01-15T12:00:00Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "r1", "msg": "rate-limited", "published": "2024-01-15T12:00:00Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -136,9 +130,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -162,7 +154,10 @@ sources:
     let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap_or_else(|e| {
         panic!("invalid NDJSON line {:?}: {}", lines[0], e);
     });
-    assert_eq!(obj.get("source").and_then(|v| v.as_str()), Some("rps-source"));
+    assert_eq!(
+        obj.get("source").and_then(|v| v.as_str()),
+        Some("rps-source")
+    );
     assert_eq!(obj["event"]["id"], "r1");
 }
 
@@ -172,11 +167,9 @@ async fn integration_tls_min_version_emits_ndjson() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "t1", "msg": "tls-config", "published": "2024-01-15T12:00:00Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "t1", "msg": "tls-config", "published": "2024-01-15T12:00:00Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -209,9 +202,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -235,7 +226,10 @@ sources:
     let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap_or_else(|e| {
         panic!("invalid NDJSON line {:?}: {}", lines[0], e);
     });
-    assert_eq!(obj.get("source").and_then(|v| v.as_str()), Some("tls-source"));
+    assert_eq!(
+        obj.get("source").and_then(|v| v.as_str()),
+        Some("tls-source")
+    );
     assert_eq!(obj["event"]["id"], "t1");
 }
 
@@ -245,12 +239,10 @@ async fn integration_backpressure_block_emits_ndjson() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "bp1", "msg": "backpressure-one", "published": "2024-01-15T12:00:00Z"},
-                {"id": "bp2", "msg": "backpressure-two", "published": "2024-01-15T12:00:01Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "bp1", "msg": "backpressure-one", "published": "2024-01-15T12:00:00Z"},
+            {"id": "bp2", "msg": "backpressure-two", "published": "2024-01-15T12:00:01Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -292,9 +284,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -337,12 +327,10 @@ async fn integration_backpressure_drop_emits_ndjson() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "d1", "msg": "drop-one", "published": "2024-01-15T12:00:00Z"},
-                {"id": "d2", "msg": "drop-two", "published": "2024-01-15T12:00:01Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "d1", "msg": "drop-one", "published": "2024-01-15T12:00:00Z"},
+            {"id": "d2", "msg": "drop-two", "published": "2024-01-15T12:00:01Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -385,9 +373,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -426,11 +412,9 @@ async fn integration_429_then_200_retries_and_emits() {
         .await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "r1", "msg": "after_retry"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "r1", "msg": "after_retry"}
+        ])))
         .mount(&server)
         .await;
 
@@ -473,9 +457,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -508,12 +490,10 @@ async fn integration_file_output_ndjson() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "f1", "msg": "file-one", "published": "2024-01-15T12:00:00Z"},
-                {"id": "f2", "msg": "file-two", "published": "2024-01-15T12:00:01Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "f1", "msg": "file-one", "published": "2024-01-15T12:00:00Z"},
+            {"id": "f2", "msg": "file-two", "published": "2024-01-15T12:00:01Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -553,9 +533,7 @@ sources:
         ])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -568,12 +546,19 @@ sources:
 
     let content = std::fs::read_to_string(&output_path).expect("read output file");
     let lines: Vec<&str> = content.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(lines.len() >= 2, "expected at least 2 NDJSON lines, got {:?}", content);
+    assert!(
+        lines.len() >= 2,
+        "expected at least 2 NDJSON lines, got {:?}",
+        content
+    );
 
     for line in &lines {
-        let obj: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid NDJSON {:?}: {}", line, e));
-        assert_eq!(obj.get("source").and_then(|v| v.as_str()), Some("file-source"));
+        let obj: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("invalid NDJSON {:?}: {}", line, e));
+        assert_eq!(
+            obj.get("source").and_then(|v| v.as_str()),
+            Some("file-source")
+        );
         assert!(obj.get("event").is_some());
     }
     let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -618,9 +603,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -644,11 +627,9 @@ sources:
 async fn integration_record_dir_writes_recordings() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "rec1", "msg": "recorded", "published": "2024-01-15T12:00:00Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "rec1", "msg": "recorded", "published": "2024-01-15T12:00:00Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -687,9 +668,7 @@ sources:
         ])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -701,13 +680,22 @@ sources:
     );
 
     let source_dir = record_dir.join("record-source");
-    assert!(source_dir.is_dir(), "record dir should contain record-source/");
+    assert!(
+        source_dir.is_dir(),
+        "record dir should contain record-source/"
+    );
     let file0 = source_dir.join("000.json");
     assert!(file0.is_file(), "record-source/000.json should exist");
     let content = std::fs::read_to_string(&file0).expect("read 000.json");
     let rec: serde_json::Value = serde_json::from_str(&content).expect("parse recording JSON");
     assert_eq!(rec["status"], 200);
-    assert!(rec.get("body_base64").and_then(|v| v.as_str()).unwrap_or("").len() > 0);
+    assert!(
+        rec.get("body_base64")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .len()
+            > 0
+    );
     let body_b64 = rec["body_base64"].as_str().unwrap();
     let body = base64::engine::general_purpose::STANDARD
         .decode(body_b64)
@@ -773,9 +761,7 @@ sources:
         ])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -818,9 +804,7 @@ fn run_hel(args: &[&str], config_path: &str) -> std::process::Output {
         .args(&args_vec)
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel")
 }
@@ -831,12 +815,10 @@ async fn integration_dedupe_skips_duplicate_ids() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "dup-1", "msg": "first"},
-                {"id": "dup-1", "msg": "duplicate"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "dup-1", "msg": "first"},
+            {"id": "dup-1", "msg": "duplicate"}
+        ])))
         .mount(&server)
         .await;
 
@@ -867,10 +849,20 @@ sources:
 
     let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 1, "expected 1 line (duplicate skipped), got {}: {:?}", lines.len(), stdout);
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected 1 line (duplicate skipped), got {}: {:?}",
+        lines.len(),
+        stdout
+    );
     let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(obj["event"]["id"], "dup-1");
 }
@@ -925,7 +917,11 @@ sources:
         stderr
     );
     let lines: Vec<&str> = stdout.lines().filter(|s| s.contains("\"event\"")).collect();
-    assert!(lines.is_empty(), "expected no events when circuit opens; got {} lines", lines.len());
+    assert!(
+        lines.is_empty(),
+        "expected no events when circuit opens; got {} lines",
+        lines.len()
+    );
 }
 
 /// hel state set: set a single key, then show confirms it.
@@ -969,9 +965,7 @@ sources:
             "https://example.com/logs?after=xyz",
         ])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel state set");
 
@@ -990,9 +984,7 @@ sources:
             "set-test-source",
         ])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel state show");
 
@@ -1016,25 +1008,21 @@ async fn integration_watermark_state_stored_after_poll() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "items": [
-                    {"id": {"time": "1000"}, "msg": "a"},
-                    {"id": {"time": "2000"}, "msg": "b"}
-                ],
-                "nextPageToken": "p1"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [
+                {"id": {"time": "1000"}, "msg": "a"},
+                {"id": {"time": "2000"}, "msg": "b"}
+            ],
+            "nextPageToken": "p1"
+        })))
         .up_to_n_times(1)
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "items": [{"id": {"time": "3000"}, "msg": "c"}]
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": {"time": "3000"}, "msg": "c"}]
+        })))
         .mount(&server)
         .await;
 
@@ -1072,9 +1060,7 @@ sources:
     let out_run = std::process::Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -1093,9 +1079,7 @@ sources:
             "watermark-source",
         ])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel state show");
 
@@ -1123,11 +1107,9 @@ async fn integration_state_backend_redis() {
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "r1", "published": "2024-01-15T12:00:00Z"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "r1", "published": "2024-01-15T12:00:00Z"}
+        ])))
         .mount(&server)
         .await;
 
@@ -1158,9 +1140,7 @@ sources:
     let out_run = std::process::Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel");
 
@@ -1179,9 +1159,7 @@ sources:
             "redis-source",
         ])
         .env("RUST_LOG", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel state show");
 
@@ -1230,23 +1208,19 @@ async fn integration_cursor_pagination_two_pages() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "items": [{"id": "c1", "msg": "page1"}],
-                "next_cursor": "token2"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": "c1", "msg": "page1"}],
+            "next_cursor": "token2"
+        })))
         .up_to_n_times(1)
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "items": [{"id": "c2", "msg": "page2"}],
-                "next_cursor": ""
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": "c2", "msg": "page2"}],
+            "next_cursor": ""
+        })))
         .mount(&server)
         .await;
 
@@ -1275,15 +1249,23 @@ sources:
 
     let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(lines.len() >= 2, "expected 2 events from 2 pages, got {}: {:?}", lines.len(), stdout);
+    assert!(
+        lines.len() >= 2,
+        "expected 2 events from 2 pages, got {}: {:?}",
+        lines.len(),
+        stdout
+    );
     let ids: Vec<String> = lines
         .iter()
         .map(|l| {
-            serde_json::from_str::<serde_json::Value>(l)
-                .unwrap()["event"]["id"]
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["event"]["id"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -1299,19 +1281,15 @@ async fn integration_page_offset_pagination_two_pages() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": "p1"}, {"id": "p2"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "p1"}, {"id": "p2"}
+        ])))
         .up_to_n_times(1)
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
         .mount(&server)
         .await;
 
@@ -1341,15 +1319,24 @@ sources:
 
     let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 2, "expected 2 events, got {}: {:?}", lines.len(), stdout);
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected 2 events, got {}: {:?}",
+        lines.len(),
+        stdout
+    );
     let ids: Vec<String> = lines
         .iter()
         .map(|l| {
-            serde_json::from_str::<serde_json::Value>(l)
-                .unwrap()["event"]["id"]
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["event"]["id"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -1400,10 +1387,20 @@ sources:
 
     let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 2, "max_pages=2 so 2 requests, 2 events; got {}: {:?}", lines.len(), stdout);
+    assert_eq!(
+        lines.len(),
+        2,
+        "max_pages=2 so 2 requests, 2 events; got {}: {:?}",
+        lines.len(),
+        stdout
+    );
 }
 
 /// Recorded/fixture: wiremock returns Okta-shaped JSON; parser accepts it.
@@ -1450,7 +1447,11 @@ sources:
 
     let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1);
@@ -1503,9 +1504,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -1515,41 +1514,109 @@ sources:
     let client = reqwest::Client::new();
     for _ in 0..30 {
         std::thread::sleep(Duration::from_millis(100));
-        if client.get(format!("{}/healthz", base)).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+        if client
+            .get(format!("{}/healthz", base))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
             break;
         }
     }
 
-    let res_health = client.get(format!("{}/healthz", base)).send().await.expect("get healthz");
-    let res_ready = client.get(format!("{}/readyz", base)).send().await.expect("get readyz");
-    let res_startup = client.get(format!("{}/startupz", base)).send().await.expect("get startupz");
+    let res_health = client
+        .get(format!("{}/healthz", base))
+        .send()
+        .await
+        .expect("get healthz");
+    let res_ready = client
+        .get(format!("{}/readyz", base))
+        .send()
+        .await
+        .expect("get readyz");
+    let res_startup = client
+        .get(format!("{}/startupz", base))
+        .send()
+        .await
+        .expect("get startupz");
 
     let _ = child.kill();
 
-    assert!(res_health.status().is_success(), "GET /healthz: {}", res_health.status());
-    assert!(res_ready.status().is_success(), "GET /readyz: {}", res_ready.status());
-    assert!(res_startup.status().is_success(), "GET /startupz: {}", res_startup.status());
+    assert!(
+        res_health.status().is_success(),
+        "GET /healthz: {}",
+        res_health.status()
+    );
+    assert!(
+        res_ready.status().is_success(),
+        "GET /readyz: {}",
+        res_ready.status()
+    );
+    assert!(
+        res_startup.status().is_success(),
+        "GET /startupz: {}",
+        res_startup.status()
+    );
 
     // All endpoints return JSON with version, uptime_secs, sources
-    let ct_health = res_health.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
-    assert!(ct_health.contains("application/json"), "healthz Content-Type: {}", ct_health);
+    let ct_health = res_health
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct_health.contains("application/json"),
+        "healthz Content-Type: {}",
+        ct_health
+    );
     let body_health: serde_json::Value = res_health.json().await.expect("healthz JSON");
-    assert!(!body_health["version"].as_str().unwrap_or("").is_empty(), "healthz version");
-    assert!(body_health["uptime_secs"].as_f64().is_some(), "healthz uptime_secs");
-    let sources = body_health["sources"].as_object().expect("healthz sources object");
-    assert!(sources.contains_key("health-test-source"), "healthz sources.health-test-source");
+    assert!(
+        !body_health["version"].as_str().unwrap_or("").is_empty(),
+        "healthz version"
+    );
+    assert!(
+        body_health["uptime_secs"].as_f64().is_some(),
+        "healthz uptime_secs"
+    );
+    let sources = body_health["sources"]
+        .as_object()
+        .expect("healthz sources object");
+    assert!(
+        sources.contains_key("health-test-source"),
+        "healthz sources.health-test-source"
+    );
     let src = &sources["health-test-source"];
     assert!(src["status"].as_str().is_some(), "healthz source status");
-    assert!(src["circuit_state"]["state"].as_str().is_some(), "healthz source circuit_state.state");
+    assert!(
+        src["circuit_state"]["state"].as_str().is_some(),
+        "healthz source circuit_state.state"
+    );
 
     let body_ready: serde_json::Value = res_ready.json().await.expect("readyz JSON");
-    assert!(body_ready["ready"].as_bool().unwrap_or(false), "readyz ready true when stdout");
-    assert!(body_ready["state_store_connected"].as_bool().unwrap_or(false), "readyz state_store_connected");
-    assert!(body_ready["at_least_one_source_healthy"].as_bool().unwrap_or(false), "readyz at_least_one_source_healthy");
+    assert!(
+        body_ready["ready"].as_bool().unwrap_or(false),
+        "readyz ready true when stdout"
+    );
+    assert!(
+        body_ready["state_store_connected"]
+            .as_bool()
+            .unwrap_or(false),
+        "readyz state_store_connected"
+    );
+    assert!(
+        body_ready["at_least_one_source_healthy"]
+            .as_bool()
+            .unwrap_or(false),
+        "readyz at_least_one_source_healthy"
+    );
     assert!(body_ready["sources"].is_object(), "readyz sources");
 
     let body_startup: serde_json::Value = res_startup.json().await.expect("startupz JSON");
-    assert!(body_startup["started"].as_bool().unwrap_or(false), "startupz started true");
+    assert!(
+        body_startup["started"].as_bool().unwrap_or(false),
+        "startupz started true"
+    );
     assert!(body_startup["sources"].is_object(), "startupz sources");
 }
 
@@ -1602,9 +1669,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -1614,12 +1679,22 @@ sources:
     let client = reqwest::Client::new();
     for _ in 0..30 {
         std::thread::sleep(Duration::from_millis(100));
-        if client.get(format!("{}/healthz", base)).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+        if client
+            .get(format!("{}/healthz", base))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
             break;
         }
     }
 
-    let res = client.get(format!("{}/healthz", base)).send().await.expect("get healthz");
+    let res = client
+        .get(format!("{}/healthz", base))
+        .send()
+        .await
+        .expect("get healthz");
     let _ = child.kill();
     assert!(res.status().is_success());
     let body: serde_json::Value = res.json().await.expect("JSON");
@@ -1627,8 +1702,14 @@ sources:
     assert_eq!(sources.len(), 2, "two sources");
     for (name, src) in sources {
         assert!(src["status"].as_str().is_some(), "{} has status", name);
-        let cs = src["circuit_state"].as_object().expect("circuit_state object");
-        assert!(cs["state"].as_str().is_some(), "{} circuit_state.state", name);
+        let cs = src["circuit_state"]
+            .as_object()
+            .expect("circuit_state object");
+        assert!(
+            cs["state"].as_str().is_some(),
+            "{} circuit_state.state",
+            name
+        );
         let state = cs["state"].as_str().unwrap();
         assert!(
             state == "closed" || state == "open" || state == "half_open",
@@ -1686,9 +1767,7 @@ sources:
         ])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -1698,14 +1777,27 @@ sources:
     let client = reqwest::Client::new();
     for _ in 0..30 {
         std::thread::sleep(Duration::from_millis(100));
-        if client.get(format!("{}/readyz", base)).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+        if client
+            .get(format!("{}/readyz", base))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
             break;
         }
     }
 
-    let res = client.get(format!("{}/readyz", base)).send().await.expect("get readyz");
+    let res = client
+        .get(format!("{}/readyz", base))
+        .send()
+        .await
+        .expect("get readyz");
     let _ = child.kill();
-    assert!(res.status().is_success(), "readyz 200 when output file writable");
+    assert!(
+        res.status().is_success(),
+        "readyz 200 when output file writable"
+    );
     let body: serde_json::Value = res.json().await.expect("JSON");
     assert_eq!(body["ready"], true);
     assert_eq!(body["output_writable"], true);
@@ -1762,9 +1854,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -1774,13 +1864,27 @@ sources:
     let client = reqwest::Client::new();
     for _ in 0..30 {
         std::thread::sleep(Duration::from_millis(100));
-        if client.get(format!("{}/healthz", base)).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+        if client
+            .get(format!("{}/healthz", base))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
             break;
         }
     }
 
-    let res_health = client.get(format!("{}/healthz", base)).send().await.expect("get healthz");
-    assert!(res_health.status().is_success(), "GET /healthz: {}", res_health.status());
+    let res_health = client
+        .get(format!("{}/healthz", base))
+        .send()
+        .await
+        .expect("get healthz");
+    assert!(
+        res_health.status().is_success(),
+        "GET /healthz: {}",
+        res_health.status()
+    );
     let body: serde_json::Value = res_health.json().await.expect("healthz JSON");
     assert_eq!(
         body["state_store_fallback_active"].as_bool(),
@@ -1789,10 +1893,18 @@ sources:
         body
     );
 
-    let res_ready = client.get(format!("{}/readyz", base)).send().await.expect("get readyz");
+    let res_ready = client
+        .get(format!("{}/readyz", base))
+        .send()
+        .await
+        .expect("get readyz");
     assert!(res_ready.status().is_success());
     let body_ready: serde_json::Value = res_ready.json().await.expect("readyz JSON");
-    assert_eq!(body_ready["state_store_fallback_active"].as_bool(), Some(true), "readyz should report state_store_fallback_active true");
+    assert_eq!(
+        body_ready["state_store_fallback_active"].as_bool(),
+        Some(true),
+        "readyz should report state_store_fallback_active true"
+    );
 
     let _ = child.kill();
 }
@@ -1844,9 +1956,7 @@ sources:
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
         .env("HEL_LOG_LEVEL", "error")
-        .current_dir(
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()),
-        )
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

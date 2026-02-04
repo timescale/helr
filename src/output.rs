@@ -22,11 +22,7 @@ pub trait EventSink: Send + Sync {
     fn write_line(&self, line: &str) -> anyhow::Result<()>;
 
     /// Write one line with optional source label (for backpressure drop metrics). Default calls write_line(line).
-    fn write_line_from_source(
-        &self,
-        source: Option<&str>,
-        line: &str,
-    ) -> anyhow::Result<()> {
+    fn write_line_from_source(&self, source: Option<&str>, line: &str) -> anyhow::Result<()> {
         let _ = source;
         self.write_line(line)
     }
@@ -74,7 +70,10 @@ pub fn parse_rotation(s: &str) -> anyhow::Result<RotationPolicy> {
         return Ok(RotationPolicy::Daily);
     }
     if let Some(n) = s.strip_prefix("size:") {
-        let mb: u64 = n.trim().parse().map_err(|_| anyhow::anyhow!("size must be a number (MB)"))?;
+        let mb: u64 = n
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("size must be a number (MB)"))?;
         if mb == 0 {
             anyhow::bail!("size must be > 0");
         }
@@ -135,10 +134,7 @@ impl FileSink {
             RotationPolicy::SizeBytes(max) => inner.bytes_written >= *max,
             RotationPolicy::Daily => {
                 let today = chrono::Utc::now().date_naive();
-                inner
-                    .open_date
-                    .map(|d| d != today)
-                    .unwrap_or(false)
+                inner.open_date.map(|d| d != today).unwrap_or(false)
             }
         };
         if !do_rotate {
@@ -148,8 +144,16 @@ impl FileSink {
             f.flush()?;
             drop(f);
         }
-        let stem = inner.path.file_stem().and_then(|s| s.to_str()).unwrap_or("hel");
-        let ext = inner.path.extension().and_then(|s| s.to_str()).unwrap_or("ndjson");
+        let stem = inner
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("hel");
+        let ext = inner
+            .path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("ndjson");
         let parent = inner.path.parent().unwrap_or(std::path::Path::new("."));
         let suffix = match &inner.rotation {
             RotationPolicy::Daily => chrono::Utc::now().format("%Y-%m-%d").to_string(),
@@ -174,7 +178,10 @@ impl EventSink for FileSink {
     }
 
     fn write_line(&self, line: &str) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock().map_err(|e| anyhow::anyhow!("lock: {}", e))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {}", e))?;
         self.maybe_rotate(&mut inner)?;
         if let Some(ref mut f) = inner.file {
             let buf = format!("{}\n", line);
@@ -185,7 +192,10 @@ impl EventSink for FileSink {
     }
 
     fn flush(&self) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock().map_err(|e| anyhow::anyhow!("lock: {}", e))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {}", e))?;
         if let Some(ref mut f) = inner.file {
             f.flush()?;
         }
@@ -314,8 +324,8 @@ fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureI
             let path_for_drain = (guard.queue.is_empty()
                 && guard.disk_buffer_path.is_some()
                 && shared.disk_buffer_mutex.is_some())
-                .then(|| guard.disk_buffer_path.clone())
-                .flatten();
+            .then(|| guard.disk_buffer_path.clone())
+            .flatten();
             if guard.queue.is_empty() && path_for_drain.is_none() {
                 shared.empty_for_flush.notify_one();
             }
@@ -395,7 +405,8 @@ impl BackpressureSink {
         });
         let inner_clone = inner.clone();
         let shared_clone = shared.clone();
-        let writer_handle = thread::spawn(move || backpressure_writer_loop(inner_clone, shared_clone));
+        let writer_handle =
+            thread::spawn(move || backpressure_writer_loop(inner_clone, shared_clone));
         Ok(Self {
             inner,
             shared,
@@ -418,7 +429,8 @@ impl BackpressureSink {
             while let Some(front) = guard.queue.front() {
                 if now.saturating_duration_since(front.2).as_secs() >= max_age_secs {
                     let (s_opt, line, _) = guard.queue.pop_front().unwrap();
-                    guard.total_queued_bytes = guard.total_queued_bytes.saturating_sub(line.len() as u64);
+                    guard.total_queued_bytes =
+                        guard.total_queued_bytes.saturating_sub(line.len() as u64);
                     if let Some(ref s) = s_opt {
                         metrics::record_event_dropped(s, "max_queue_age");
                         if let Some(entry) = guard.pending_per_source.get_mut(s) {
@@ -436,10 +448,7 @@ impl BackpressureSink {
         // Apply backpressure when memory over threshold (same as queue full).
         let over_memory = guard
             .memory_threshold_mb
-            .map(|mb| {
-                current_process_rss_bytes()
-                    > mb.saturating_mul(1024).saturating_mul(1024)
-            })
+            .map(|mb| current_process_rss_bytes() > mb.saturating_mul(1024).saturating_mul(1024))
             .unwrap_or(false);
 
         let over_stdout_bytes = guard.stdout_buffer_size > 0
@@ -458,9 +467,10 @@ impl BackpressureSink {
                 }
                 BackpressureStrategyConfig::Drop => {
                     let dropped = match guard.drop_policy {
-                        DropPolicyConfig::OldestFirst => {
-                            guard.queue.pop_front().map(|(s, line, _)| (s, line.len() as u64))
-                        }
+                        DropPolicyConfig::OldestFirst => guard
+                            .queue
+                            .pop_front()
+                            .map(|(s, line, _)| (s, line.len() as u64)),
                         DropPolicyConfig::NewestFirst => {
                             drop(guard);
                             metrics::record_event_dropped(
@@ -477,7 +487,7 @@ impl BackpressureSink {
                                 .map(|(s, line, _)| (s, line.len() as u64))
                         }
                     };
-                        if let Some((ref s_opt, len)) = dropped {
+                    if let Some((ref s_opt, len)) = dropped {
                         guard.total_queued_bytes = guard.total_queued_bytes.saturating_sub(len);
                         if let Some(s) = s_opt {
                             metrics::record_event_dropped(s.as_str(), "backpressure");
@@ -529,8 +539,12 @@ impl BackpressureSink {
                 }
             }
         }
-        guard.total_queued_bytes = guard.total_queued_bytes.saturating_add(line_owned.len() as u64);
-        guard.queue.push_back((source_owned.clone(), line_owned, Instant::now()));
+        guard.total_queued_bytes = guard
+            .total_queued_bytes
+            .saturating_add(line_owned.len() as u64);
+        guard
+            .queue
+            .push_back((source_owned.clone(), line_owned, Instant::now()));
         if let Some(ref s) = source_owned {
             let entry = guard.pending_per_source.entry(s.clone()).or_insert(0);
             *entry += 1;
@@ -548,11 +562,7 @@ impl EventSink for BackpressureSink {
         Self::push_one(&self.shared, None, line)
     }
 
-    fn write_line_from_source(
-        &self,
-        source: Option<&str>,
-        line: &str,
-    ) -> anyhow::Result<()> {
+    fn write_line_from_source(&self, source: Option<&str>, line: &str) -> anyhow::Result<()> {
         Self::push_one(&self.shared, source, line)
     }
 
@@ -628,7 +638,11 @@ mod tests {
     #[test]
     fn backpressure_block_drains_all() {
         let inner = Arc::new(RecordingSink::new());
-        let cfg = backpressure_config(3, BackpressureStrategyConfig::Block, DropPolicyConfig::OldestFirst);
+        let cfg = backpressure_config(
+            3,
+            BackpressureStrategyConfig::Block,
+            DropPolicyConfig::OldestFirst,
+        );
         let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
         sink.write_line_from_source(Some("src1"), "a").unwrap();
         sink.write_line_from_source(Some("src1"), "b").unwrap();
@@ -641,7 +655,11 @@ mod tests {
     #[test]
     fn backpressure_drop_oldest_first() {
         let inner = Arc::new(RecordingSink::new());
-        let cfg = backpressure_config(2, BackpressureStrategyConfig::Drop, DropPolicyConfig::OldestFirst);
+        let cfg = backpressure_config(
+            2,
+            BackpressureStrategyConfig::Drop,
+            DropPolicyConfig::OldestFirst,
+        );
         let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
         sink.write_line_from_source(Some("s"), "first").unwrap();
         sink.write_line_from_source(Some("s"), "second").unwrap();
@@ -654,7 +672,11 @@ mod tests {
     #[test]
     fn backpressure_drop_newest_first() {
         let inner = Arc::new(RecordingSink::new());
-        let cfg = backpressure_config(2, BackpressureStrategyConfig::Drop, DropPolicyConfig::NewestFirst);
+        let cfg = backpressure_config(
+            2,
+            BackpressureStrategyConfig::Drop,
+            DropPolicyConfig::NewestFirst,
+        );
         let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
         sink.write_line_from_source(Some("s"), "first").unwrap();
         sink.write_line_from_source(Some("s"), "second").unwrap();
@@ -667,7 +689,11 @@ mod tests {
     #[test]
     fn backpressure_drop_random_one_dropped() {
         let inner = Arc::new(RecordingSink::new());
-        let cfg = backpressure_config(2, BackpressureStrategyConfig::Drop, DropPolicyConfig::Random);
+        let cfg = backpressure_config(
+            2,
+            BackpressureStrategyConfig::Drop,
+            DropPolicyConfig::Random,
+        );
         let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
         // Push more than capacity so we trigger drops regardless of writer speed.
         for label in ["a", "b", "c", "d", "e"] {
@@ -675,20 +701,34 @@ mod tests {
         }
         sink.flush().unwrap();
         let lines = inner.lines();
-        assert_eq!(lines.len(), 2, "capacity 2 and 5 pushes: exactly 2 events remain after 3 drops");
+        assert_eq!(
+            lines.len(),
+            2,
+            "capacity 2 and 5 pushes: exactly 2 events remain after 3 drops"
+        );
         let valid = ["a", "b", "c", "d", "e"];
         for line in &lines {
-            assert!(valid.contains(&line.as_str()), "line {:?} should be one of {:?}", line, valid);
+            assert!(
+                valid.contains(&line.as_str()),
+                "line {:?} should be one of {:?}",
+                line,
+                valid
+            );
         }
     }
 
     #[test]
     fn backpressure_flush_waits_for_drain() {
         let inner = Arc::new(RecordingSink::new());
-        let cfg = backpressure_config(10, BackpressureStrategyConfig::Block, DropPolicyConfig::OldestFirst);
+        let cfg = backpressure_config(
+            10,
+            BackpressureStrategyConfig::Block,
+            DropPolicyConfig::OldestFirst,
+        );
         let sink = BackpressureSink::new(inner.clone(), &cfg).unwrap();
         for i in 0..5 {
-            sink.write_line_from_source(Some("s"), &format!("line{}", i)).unwrap();
+            sink.write_line_from_source(Some("s"), &format!("line{}", i))
+                .unwrap();
         }
         sink.flush().unwrap();
         let lines = inner.lines();
@@ -701,7 +741,11 @@ mod tests {
     #[test]
     fn backpressure_event_queue_size_zero_fails() {
         let inner = Arc::new(RecordingSink::new());
-        let mut cfg = backpressure_config(10, BackpressureStrategyConfig::Block, DropPolicyConfig::OldestFirst);
+        let mut cfg = backpressure_config(
+            10,
+            BackpressureStrategyConfig::Block,
+            DropPolicyConfig::OldestFirst,
+        );
         cfg.detection.event_queue_size = 0;
         match BackpressureSink::new(inner, &cfg) {
             Err(e) => assert!(e.to_string().contains("event_queue_size")),
@@ -711,8 +755,14 @@ mod tests {
 
     #[test]
     fn parse_rotation_daily() {
-        assert!(matches!(parse_rotation("daily").unwrap(), RotationPolicy::Daily));
-        assert!(matches!(parse_rotation("  Daily  ").unwrap(), RotationPolicy::Daily));
+        assert!(matches!(
+            parse_rotation("daily").unwrap(),
+            RotationPolicy::Daily
+        ));
+        assert!(matches!(
+            parse_rotation("  Daily  ").unwrap(),
+            RotationPolicy::Daily
+        ));
     }
 
     #[test]

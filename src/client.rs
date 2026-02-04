@@ -5,17 +5,21 @@
 use crate::config::{self, AuthConfig, ResilienceConfig, SourceConfig, TlsConfig};
 use anyhow::Context;
 use base64::Engine;
-use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
-use reqwest::tls::{Certificate, Identity, Version};
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
+use reqwest::tls::{Certificate, Identity, Version};
 use std::time::Duration;
 
 /// Effective timeout values: from split timeouts when set, else from legacy timeout_secs.
 /// Connect and request are always set (fallback to legacy); read and idle only when configured.
-fn effective_timeouts(resilience: Option<&ResilienceConfig>) -> (Duration, Duration, Option<Duration>, Option<Duration>) {
+fn effective_timeouts(
+    resilience: Option<&ResilienceConfig>,
+) -> (Duration, Duration, Option<Duration>, Option<Duration>) {
     let legacy_secs = resilience.map(|r| r.timeout_secs).unwrap_or(30);
     let t = resilience.and_then(|r| r.timeouts.as_ref());
-    let connect_secs = t.and_then(|t| t.connect_secs).unwrap_or_else(|| std::cmp::min(10, legacy_secs));
+    let connect_secs = t
+        .and_then(|t| t.connect_secs)
+        .unwrap_or_else(|| std::cmp::min(10, legacy_secs));
     let request_secs = t.and_then(|t| t.request_secs).unwrap_or(legacy_secs);
     let connect = Duration::from_secs(connect_secs);
     let request = Duration::from_secs(request_secs);
@@ -26,10 +30,7 @@ fn effective_timeouts(resilience: Option<&ResilienceConfig>) -> (Duration, Durat
 
 /// Load CA cert(s) from PEM (single or bundle) and return certs for reqwest.
 fn load_ca_certs(tls: &TlsConfig) -> anyhow::Result<Vec<Certificate>> {
-    let pem = config::read_secret(
-        tls.ca_file.as_deref(),
-        tls.ca_env.as_deref().unwrap_or(""),
-    )?;
+    let pem = config::read_secret(tls.ca_file.as_deref(), tls.ca_env.as_deref().unwrap_or(""))?;
     let bytes = pem.as_bytes();
     // Bundle = multiple BEGIN CERTIFICATE blocks; otherwise single cert.
     let is_bundle = pem.contains("-----BEGIN CERTIFICATE-----")
@@ -66,8 +67,14 @@ fn apply_tls(
 ) -> anyhow::Result<reqwest::ClientBuilder> {
     let has_ca = tls.ca_file.as_deref().map_or(false, |p| !p.is_empty())
         || tls.ca_env.as_deref().map_or(false, |e| !e.is_empty());
-    let has_identity = tls.client_cert_file.as_deref().map_or(false, |p| !p.is_empty())
-        || tls.client_cert_env.as_deref().map_or(false, |e| !e.is_empty());
+    let has_identity = tls
+        .client_cert_file
+        .as_deref()
+        .map_or(false, |p| !p.is_empty())
+        || tls
+            .client_cert_env
+            .as_deref()
+            .map_or(false, |e| !e.is_empty());
 
     let mut builder = builder;
 
@@ -101,9 +108,7 @@ fn apply_tls(
 /// Uses split timeouts (connect, request, read, idle) when set; otherwise timeout_secs for request and min(10, timeout_secs) for connect.
 pub fn build_client(resilience: Option<&ResilienceConfig>) -> anyhow::Result<Client> {
     let (connect, request, read, idle) = effective_timeouts(resilience);
-    let mut builder = Client::builder()
-        .connect_timeout(connect)
-        .timeout(request);
+    let mut builder = Client::builder().connect_timeout(connect).timeout(request);
     if let Some(d) = read {
         builder = builder.read_timeout(d);
     }
@@ -140,7 +145,11 @@ pub fn build_request(
         }
     };
     if let Some(token) = bearer_override {
-        let scheme = if dpop_proof.is_some() { "DPoP" } else { "Bearer" };
+        let scheme = if dpop_proof.is_some() {
+            "DPoP"
+        } else {
+            "Bearer"
+        };
         let value = format!("{} {}", scheme, token);
         let hv = HeaderValue::try_from(value).context("invalid bearer token")?;
         req = req.header(AUTHORIZATION, hv);

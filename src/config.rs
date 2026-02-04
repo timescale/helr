@@ -55,6 +55,19 @@ pub struct GlobalConfig {
     /// Graceful degradation: state store fallback, emit without checkpoint, reduced poll frequency when degraded.
     #[serde(default)]
     pub degradation: Option<DegradationConfig>,
+
+    /// SIGHUP behaviour: reload config; optionally restart source tasks (clear circuit breaker and OAuth2 token cache).
+    #[serde(default)]
+    pub reload: Option<ReloadConfig>,
+}
+
+/// Config reload on SIGHUP.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReloadConfig {
+    /// When true, on SIGHUP also clear circuit breaker and OAuth2 token cache so sources re-establish on next tick.
+    #[serde(default)]
+    pub restart_sources_on_sighup: bool,
 }
 
 /// Graceful degradation when state store fails or is unavailable.
@@ -794,8 +807,8 @@ impl Config {
         let s = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("read config {:?}: {}", path, e))?;
         let expanded = expand_env_vars_strict(&s)?;
-        let config: Config = serde_yaml::from_str(&expanded)
-            .map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
+        let config: Config =
+            serde_yaml::from_str(&expanded).map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
         if config.sources.is_empty() {
             anyhow::bail!("config must have at least one source");
         }
@@ -811,10 +824,22 @@ pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
         let Some(tls) = source.resilience.as_ref().and_then(|r| r.tls.as_ref()) else {
             continue;
         };
-        let has_cert = tls.client_cert_file.as_deref().map_or(false, |p| !p.is_empty())
-            || tls.client_cert_env.as_deref().map_or(false, |e| !e.is_empty());
-        let has_key = tls.client_key_file.as_deref().map_or(false, |p| !p.is_empty())
-            || tls.client_key_env.as_deref().map_or(false, |e| !e.is_empty());
+        let has_cert = tls
+            .client_cert_file
+            .as_deref()
+            .map_or(false, |p| !p.is_empty())
+            || tls
+                .client_cert_env
+                .as_deref()
+                .map_or(false, |e| !e.is_empty());
+        let has_key = tls
+            .client_key_file
+            .as_deref()
+            .map_or(false, |p| !p.is_empty())
+            || tls
+                .client_key_env
+                .as_deref()
+                .map_or(false, |e| !e.is_empty());
         if has_cert != has_key {
             anyhow::bail!(
                 "source {}: tls client_cert and client_key must both be set (cert_file/cert_env and key_file/key_env)",
@@ -865,7 +890,9 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     read_secret(token_file.as_deref(), token_env)
                         .with_context(|| format!("source {}: bearer token", source_id))?;
                 }
-                AuthConfig::ApiKey { key_env, key_file, .. } => {
+                AuthConfig::ApiKey {
+                    key_env, key_file, ..
+                } => {
                     read_secret(key_file.as_deref(), key_env)
                         .with_context(|| format!("source {}: api key", source_id))?;
                 }
@@ -893,10 +920,18 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                 } => {
                     read_secret(client_id_file.as_deref(), client_id_env)
                         .with_context(|| format!("source {}: oauth2 client_id", source_id))?;
-                    let has_private_key = client_private_key_env.as_deref().map_or(false, |e| !e.is_empty())
-                        || client_private_key_file.as_deref().map_or(false, |p| !p.is_empty());
-                    let has_secret = client_secret_env.as_deref().map_or(false, |e| !e.is_empty())
-                        || client_secret_file.as_deref().map_or(false, |p| !p.is_empty());
+                    let has_private_key = client_private_key_env
+                        .as_deref()
+                        .map_or(false, |e| !e.is_empty())
+                        || client_private_key_file
+                            .as_deref()
+                            .map_or(false, |p| !p.is_empty());
+                    let has_secret = client_secret_env
+                        .as_deref()
+                        .map_or(false, |e| !e.is_empty())
+                        || client_secret_file
+                            .as_deref()
+                            .map_or(false, |p| !p.is_empty());
                     if !has_private_key && !has_secret {
                         anyhow::bail!(
                             "source {}: oauth2 requires client_secret (client_secret_env/client_secret_file) \
@@ -908,19 +943,28 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         read_secret(
                             client_private_key_file.as_deref(),
                             client_private_key_env.as_deref().unwrap_or(""),
-                        ).with_context(|| format!("source {}: oauth2 client_private_key (PEM)", source_id))?;
+                        )
+                        .with_context(|| {
+                            format!("source {}: oauth2 client_private_key (PEM)", source_id)
+                        })?;
                     } else {
                         read_secret(
                             client_secret_file.as_deref(),
                             client_secret_env.as_deref().unwrap_or(""),
-                        ).with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
+                        )
+                        .with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
                     }
-                    let has_refresh = refresh_token_env.as_deref().map_or(false, |e| !e.is_empty())
-                        || refresh_token_file.as_deref().map_or(false, |p| !p.is_empty());
+                    let has_refresh = refresh_token_env
+                        .as_deref()
+                        .map_or(false, |e| !e.is_empty())
+                        || refresh_token_file
+                            .as_deref()
+                            .map_or(false, |p| !p.is_empty());
                     if has_refresh {
                         let rt_env = refresh_token_env.as_deref().unwrap_or("");
-                        read_secret(refresh_token_file.as_deref(), rt_env)
-                            .with_context(|| format!("source {}: oauth2 refresh_token", source_id))?;
+                        read_secret(refresh_token_file.as_deref(), rt_env).with_context(|| {
+                            format!("source {}: oauth2 refresh_token", source_id)
+                        })?;
                     }
                 }
                 AuthConfig::GoogleServiceAccount {
@@ -934,10 +978,12 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         if path.is_empty() {
                             None
                         } else {
-                            Some(
-                                std::fs::read_to_string(Path::new(path))
-                                    .with_context(|| format!("source {}: google_service_account credentials_file", source_id))?,
-                            )
+                            Some(std::fs::read_to_string(Path::new(path)).with_context(|| {
+                                format!(
+                                    "source {}: google_service_account credentials_file",
+                                    source_id
+                                )
+                            })?)
                         }
                     } else {
                         None
@@ -950,16 +996,26 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     let json_str = json_str
                         .with_context(|| format!("source {}: google_service_account credentials (set credentials_file or credentials_env)", source_id))?;
                     let creds: serde_json::Value =
-                        serde_json::from_str(&json_str).with_context(|| format!("source {}: google_service_account credentials JSON", source_id))?;
-                    creds.get("client_email").with_context(|| format!("source {}: credentials missing client_email", source_id))?;
-                    creds.get("private_key").with_context(|| format!("source {}: credentials missing private_key", source_id))?;
+                        serde_json::from_str(&json_str).with_context(|| {
+                            format!(
+                                "source {}: google_service_account credentials JSON",
+                                source_id
+                            )
+                        })?;
+                    creds.get("client_email").with_context(|| {
+                        format!("source {}: credentials missing client_email", source_id)
+                    })?;
+                    creds.get("private_key").with_context(|| {
+                        format!("source {}: credentials missing private_key", source_id)
+                    })?;
                     if let Some(env) = subject_env.as_deref() {
                         read_secret(subject_file.as_deref(), env)
                             .with_context(|| format!("source {}: google_service_account subject (domain-wide delegation)", source_id))?;
                     } else if let Some(path) = subject_file.as_deref() {
                         if !path.is_empty() {
-                            std::fs::read_to_string(Path::new(path))
-                                .with_context(|| format!("source {}: google_service_account subject file", source_id))?;
+                            std::fs::read_to_string(Path::new(path)).with_context(|| {
+                                format!("source {}: google_service_account subject file", source_id)
+                            })?;
                         }
                     }
                 }
@@ -984,7 +1040,13 @@ fn expand_env_vars_strict(s: &str) -> anyhow::Result<String> {
                     .unwrap_or_else(|e| Err(e))
             })
             .map(|cow| cow.into_owned())
-            .map_err(|e| anyhow::anyhow!("config placeholder ${{{}}} is unset: {}", e.var_name, e.cause))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "config placeholder ${{{}}} is unset: {}",
+                    e.var_name,
+                    e.cause
+                )
+            })?;
             out.push_str(&expanded);
         }
         out.push('\n');
@@ -1090,7 +1152,10 @@ sources:
         let config = Config::load(&path).unwrap();
         assert_eq!(config.global.log_level, "info");
         assert!(config.sources.contains_key("test-source"));
-        assert_eq!(config.sources["test-source"].url, "https://example.com/logs");
+        assert_eq!(
+            config.sources["test-source"].url,
+            "https://example.com/logs"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1151,6 +1216,29 @@ sources:
         assert_eq!(d.state_store_fallback.as_deref(), Some("memory"));
         assert_eq!(d.emit_without_checkpoint, Some(true));
         assert_eq!(d.reduced_frequency_multiplier, 2.5);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_reload() {
+        let dir = std::env::temp_dir().join("hel_config_reload");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  reload:
+    restart_sources_on_sighup: true
+sources:
+  s1:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let r = config.global.reload.as_ref().unwrap();
+        assert!(r.restart_sources_on_sighup);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1284,7 +1372,10 @@ sources:
         assert!(s.query_params.is_none());
         assert_eq!(s.on_parse_error, Some(OnParseErrorBehavior::Skip));
         assert_eq!(s.max_response_bytes, Some(5_242_880));
-        assert_eq!(s.on_state_write_error, Some(OnStateWriteErrorBehavior::SkipCheckpoint));
+        assert_eq!(
+            s.on_state_write_error,
+            Some(OnStateWriteErrorBehavior::SkipCheckpoint)
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1307,7 +1398,8 @@ sources:
         .unwrap();
         let err = Config::load(&path).unwrap_err();
         assert!(
-            err.to_string().contains("unset") || err.to_string().contains("HEL_UNSET_PLACEHOLDER_TEST"),
+            err.to_string().contains("unset")
+                || err.to_string().contains("HEL_UNSET_PLACEHOLDER_TEST"),
             "expected unset placeholder error, got: {}",
             err
         );
@@ -1340,7 +1432,8 @@ sources:
         unsafe {
             std::env::remove_var("HEL_TEST_COMMENT_EXPAND_BASE");
         }
-        let config = result.expect("load should succeed; comment placeholders must not be expanded");
+        let config =
+            result.expect("load should succeed; comment placeholders must not be expanded");
         assert_eq!(config.sources["x"].url, "https://api.example.com/logs");
         let _ = std::fs::remove_file(&path);
     }
@@ -1370,8 +1463,14 @@ sources:
         let config = Config::load(&path).unwrap();
         let s = &config.sources["okta"];
         let params = s.query_params.as_ref().unwrap();
-        assert_eq!(params.get("limit").map(|v| v.to_param_value()), Some("20".to_string()));
-        assert_eq!(params.get("sortOrder").map(|v| v.to_param_value()), Some("ASCENDING".to_string()));
+        assert_eq!(
+            params.get("limit").map(|v| v.to_param_value()),
+            Some("20".to_string())
+        );
+        assert_eq!(
+            params.get("sortOrder").map(|v| v.to_param_value()),
+            Some("ASCENDING".to_string())
+        );
         assert_eq!(
             params.get("filter").map(|v| v.to_param_value()),
             Some("eventType eq \"user.session.start\"".to_string())
@@ -1407,7 +1506,11 @@ sources:
         .unwrap();
         let config = Config::load(&path).unwrap();
         let s = &config.sources["x"];
-        let t = s.resilience.as_ref().and_then(|r| r.timeouts.as_ref()).unwrap();
+        let t = s
+            .resilience
+            .as_ref()
+            .and_then(|r| r.timeouts.as_ref())
+            .unwrap();
         assert_eq!(t.connect_secs, Some(10));
         assert_eq!(t.request_secs, Some(25));
         assert_eq!(t.read_secs, Some(20));
@@ -1447,7 +1550,11 @@ sources:
         .unwrap();
         let config = Config::load(&path).unwrap();
         let s = &config.sources["x"];
-        let r = s.resilience.as_ref().and_then(|res| res.retries.as_ref()).unwrap();
+        let r = s
+            .resilience
+            .as_ref()
+            .and_then(|res| res.retries.as_ref())
+            .unwrap();
         assert_eq!(r.max_attempts, 5);
         assert_eq!(r.jitter, Some(0.1));
         assert_eq!(
@@ -1493,9 +1600,21 @@ sources:
         let ca_path = dir.join("ca.pem");
         let cert_path = dir.join("client.pem");
         let key_path = dir.join("client-key.pem");
-        std::fs::write(&ca_path, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n").unwrap();
-        std::fs::write(&cert_path, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n").unwrap();
-        std::fs::write(&key_path, "-----BEGIN PRIVATE KEY-----\nMOCK\n-----END PRIVATE KEY-----\n").unwrap();
+        std::fs::write(
+            &ca_path,
+            "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &cert_path,
+            "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &key_path,
+            "-----BEGIN PRIVATE KEY-----\nMOCK\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap();
         let path = dir.join("hel.yaml");
         let yaml = format!(
             r#"
@@ -1525,8 +1644,14 @@ sources:
         let t = s.resilience.as_ref().and_then(|r| r.tls.as_ref()).unwrap();
         assert_eq!(t.ca_file.as_deref(), Some(ca_path.to_str().unwrap()));
         assert!(t.ca_only);
-        assert_eq!(t.client_cert_file.as_deref(), Some(cert_path.to_str().unwrap()));
-        assert_eq!(t.client_key_file.as_deref(), Some(key_path.to_str().unwrap()));
+        assert_eq!(
+            t.client_cert_file.as_deref(),
+            Some(cert_path.to_str().unwrap())
+        );
+        assert_eq!(
+            t.client_key_file.as_deref(),
+            Some(key_path.to_str().unwrap())
+        );
         assert_eq!(t.min_version.as_deref(), Some("1.2"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&ca_path);
@@ -1683,6 +1808,9 @@ sources:
         let config_pg: Config = serde_yaml::from_str(yaml_pg).unwrap();
         let st_pg = config_pg.global.state.as_ref().unwrap();
         assert_eq!(st_pg.backend, "postgres");
-        assert_eq!(st_pg.url.as_deref(), Some("postgres://user:pass@localhost/hel"));
+        assert_eq!(
+            st_pg.url.as_deref(),
+            Some("postgres://user:pass@localhost/hel")
+        );
     }
 }

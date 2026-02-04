@@ -1,17 +1,17 @@
 //! DPoP (RFC 9449): signed JWT proof for token and API requests.
 
 use anyhow::Context;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
-use rsa::pkcs1v15::SigningKey;
-use rsa::signature::{Signer, SignatureEncoding};
-use rsa::traits::PublicKeyParts;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use rsa::RsaPrivateKey;
+use rsa::pkcs1v15::SigningKey;
+use rsa::signature::{SignatureEncoding, Signer};
+use rsa::traits::PublicKeyParts;
 use serde_json::json;
 use sha2::Sha256;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
 
 /// Cache of DPoP key per source (same key used for token and API requests when token is DPoP-bound).
 pub type DPoPKeyCache = Arc<RwLock<HashMap<String, RsaPrivateKey>>>;
@@ -102,8 +102,7 @@ pub fn build_dpop_proof(
     let message_bytes = message.as_bytes();
 
     let signing_key = SigningKey::<Sha256>::new(private_key.clone());
-    let signature = signing_key
-        .sign(message_bytes);
+    let signature = signing_key.sign(message_bytes);
     let sig_b64 = B64.encode(signature.to_bytes());
 
     Ok(format!("{}.{}", message, sig_b64))
@@ -116,7 +115,16 @@ mod tests {
     #[test]
     fn test_dpop_proof_shape() {
         let key = RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap();
-        let proof = build_dpop_proof("POST", "https://example.com/oauth2/v1/token", &key, "test-jti", 12345, None, None).unwrap();
+        let proof = build_dpop_proof(
+            "POST",
+            "https://example.com/oauth2/v1/token",
+            &key,
+            "test-jti",
+            12345,
+            None,
+            None,
+        )
+        .unwrap();
         let parts: Vec<&str> = proof.split('.').collect();
         assert_eq!(parts.len(), 3);
         let header_json = String::from_utf8(B64.decode(parts[0]).unwrap()).unwrap();

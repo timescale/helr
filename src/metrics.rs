@@ -20,11 +20,17 @@ struct MetricsInner {
 /// Initialize metrics and register with the default registry. Call once when metrics are enabled.
 pub fn init() -> Result<(), prometheus::Error> {
     let requests_total = IntCounterVec::new(
-        Opts::new("hel_requests_total", "Total HTTP requests by source and status"),
+        Opts::new(
+            "hel_requests_total",
+            "Total HTTP requests by source and status",
+        ),
         &["source", "status"],
     )?;
     let events_emitted_total = IntCounterVec::new(
-        Opts::new("hel_events_emitted_total", "Total events emitted to stdout by source"),
+        Opts::new(
+            "hel_events_emitted_total",
+            "Total events emitted to stdout by source",
+        ),
         &["source"],
     )?;
     let errors_total = IntCounterVec::new(
@@ -32,7 +38,10 @@ pub fn init() -> Result<(), prometheus::Error> {
         &["source"],
     )?;
     let output_errors_total = IntCounterVec::new(
-        Opts::new("hel_output_errors_total", "Output write errors (e.g. broken pipe, disk full)"),
+        Opts::new(
+            "hel_output_errors_total",
+            "Output write errors (e.g. broken pipe, disk full)",
+        ),
         &["source"],
     )?;
     let request_duration_seconds = prometheus::HistogramVec::new(
@@ -58,7 +67,10 @@ pub fn init() -> Result<(), prometheus::Error> {
         &["source", "reason"],
     )?;
     let pending_events = IntGaugeVec::new(
-        Opts::new("hel_pending_events", "Events currently queued for output by source"),
+        Opts::new(
+            "hel_pending_events",
+            "Events currently queued for output by source",
+        ),
         &["source"],
     )?;
 
@@ -87,8 +99,14 @@ pub fn init() -> Result<(), prometheus::Error> {
 /// Record one HTTP request (success or failure). status_class: "2xx", "3xx", "4xx", "5xx", "error".
 pub fn record_request(source: &str, status_class: &str, duration_secs: f64) {
     if let Some(m) = METRICS.get() {
-        let _ = m.requests_total.with_label_values(&[source, status_class]).inc();
-        let _ = m.request_duration_seconds.with_label_values(&[source]).observe(duration_secs);
+        let _ = m
+            .requests_total
+            .with_label_values(&[source, status_class])
+            .inc();
+        let _ = m
+            .request_duration_seconds
+            .with_label_values(&[source])
+            .observe(duration_secs);
     }
 }
 
@@ -142,9 +160,7 @@ pub fn set_circuit_state(source: &str, state: CircuitStateValue) {
             CircuitStateValue::Open => 1,
             CircuitStateValue::HalfOpen => 2,
         };
-        m.circuit_breaker_state
-            .with_label_values(&[source])
-            .set(v);
+        m.circuit_breaker_state.with_label_values(&[source]).set(v);
     }
 }
 

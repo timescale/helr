@@ -12,9 +12,16 @@ use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub enum CircuitState {
     /// Closed: normal operation. failures/requests used for count and rate thresholds.
-    Closed { failures: u32, requests: u32 },
-    Open { open_until: Instant },
-    HalfOpen { successes: u32 },
+    Closed {
+        failures: u32,
+        requests: u32,
+    },
+    Open {
+        open_until: Instant,
+    },
+    HalfOpen {
+        successes: u32,
+    },
 }
 
 /// Per-source circuit state. Shared across poll ticks.
@@ -51,7 +58,13 @@ pub async fn allow_request(
     let state = g.get(source_id).cloned();
     let now = Instant::now();
     let (allowed, new_state) = match state {
-        None => (true, Some(CircuitState::Closed { failures: 0, requests: 0 })),
+        None => (
+            true,
+            Some(CircuitState::Closed {
+                failures: 0,
+                requests: 0,
+            }),
+        ),
         Some(CircuitState::Closed { .. }) => (true, None),
         Some(CircuitState::Open { open_until }) => {
             if now >= open_until {
@@ -105,7 +118,8 @@ pub async fn record_result(
             let open_on_rate = config.minimum_requests.is_some()
                 && config.failure_rate_threshold.is_some()
                 && requests >= config.minimum_requests.unwrap_or(0)
-                && (failures as f64 / requests as f64) >= config.failure_rate_threshold.unwrap_or(0.0);
+                && (failures as f64 / requests as f64)
+                    >= config.failure_rate_threshold.unwrap_or(0.0);
             if !success && (open_on_count || open_on_rate) {
                 let open_until = now + std::time::Duration::from_secs(open_duration_secs);
                 warn!(
@@ -126,7 +140,10 @@ pub async fn record_result(
                 let s = successes + 1;
                 if s >= config.success_threshold {
                     info!(source = %source_id, "circuit closed after half-open success");
-                    CircuitState::Closed { failures: 0, requests: 0 }
+                    CircuitState::Closed {
+                        failures: 0,
+                        requests: 0,
+                    }
                 } else {
                     CircuitState::HalfOpen { successes: s }
                 }
@@ -218,8 +235,15 @@ mod tests {
             record_result(&store, "s1", &config, false).await;
         }
         let err = allow_request(&store, "s1", &config).await.unwrap_err();
-        let open_secs = err.open_until.saturating_duration_since(Instant::now()).as_secs();
-        assert!(open_secs <= 2, "open duration capped by reset_timeout_secs=1, got {}s", open_secs);
+        let open_secs = err
+            .open_until
+            .saturating_duration_since(Instant::now())
+            .as_secs();
+        assert!(
+            open_secs <= 2,
+            "open duration capped by reset_timeout_secs=1, got {}s",
+            open_secs
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod circuit;
 mod client;
@@ -28,7 +28,7 @@ use circuit::new_circuit_store;
 use config::Config;
 use dpop::new_dpop_key_cache;
 use oauth2::new_oauth2_token_cache;
-use output::{parse_rotation, BackpressureSink, EventSink, FileSink, RotationPolicy, StdoutSink};
+use output::{BackpressureSink, EventSink, FileSink, RotationPolicy, StdoutSink, parse_rotation};
 use state::{MemoryStateStore, PostgresStateStore, RedisStateStore, SqliteStateStore, StateStore};
 use std::collections::HashMap;
 use std::io::Write;
@@ -117,13 +117,16 @@ enum Commands {
         #[command(subcommand)]
         subcommand: Option<StateSubcommand>,
     },
-
 }
 
 #[derive(Subcommand)]
 enum StateSubcommand {
-    Show { source: String },
-    Reset { source: String },
+    Show {
+        source: String,
+    },
+    Reset {
+        source: String,
+    },
     /// Set a single state key for a source
     Set {
         source: String,
@@ -165,7 +168,10 @@ async fn main() -> anyhow::Result<()> {
     ignore_sigpipe();
 
     if cli.dry_run {
-        tracing::info!("dry-run: would load config from {:?}", hel_config_path(&cli));
+        tracing::info!(
+            "dry-run: would load config from {:?}",
+            hel_config_path(&cli)
+        );
         return Ok(());
     }
 
@@ -179,32 +185,30 @@ async fn main() -> anyhow::Result<()> {
             init_logging(Some(&config), &cli);
             match other {
                 Some(Commands::Run {
+                    config: run_config_path,
                     once,
                     source,
                     output,
                     output_rotate,
                     record_dir,
                     replay_dir,
-                    ..
                 }) => {
                     if record_dir.is_some() && replay_dir.is_some() {
                         anyhow::bail!("cannot use both --record-dir and --replay-dir");
                     }
-                    let (event_sink, output_path): (Arc<dyn EventSink>, Option<PathBuf>) = match output {
-                        Some(path) => {
-                            let rotation = output_rotate
-                                .as_deref()
-                                .map(parse_rotation)
-                                .transpose()?
-                                .unwrap_or(RotationPolicy::None);
-                            let path_clone = path.clone();
-                            (
-                                Arc::new(FileSink::new(&path, rotation)?),
-                                Some(path_clone),
-                            )
-                        }
-                        None => (Arc::new(StdoutSink), None),
-                    };
+                    let (event_sink, output_path): (Arc<dyn EventSink>, Option<PathBuf>) =
+                        match output {
+                            Some(path) => {
+                                let rotation = output_rotate
+                                    .as_deref()
+                                    .map(parse_rotation)
+                                    .transpose()?
+                                    .unwrap_or(RotationPolicy::None);
+                                let path_clone = path.clone();
+                                (Arc::new(FileSink::new(&path, rotation)?), Some(path_clone))
+                            }
+                            None => (Arc::new(StdoutSink), None),
+                        };
                     let record_state = if let Some(dir) = record_dir {
                         Some(Arc::new(replay::RecordState::new(dir)?))
                     } else {
@@ -223,19 +227,51 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         (config.clone(), record_state)
                     };
-                    let event_sink: Arc<dyn EventSink> =
-                        if config_to_use.global.backpressure.as_ref().is_some_and(|b| b.enabled) {
-                            let cfg = config_to_use.global.backpressure.as_ref().unwrap();
-                            Arc::new(BackpressureSink::new(event_sink, cfg)?)
-                        } else {
-                            event_sink
-                        };
-                    run_collector(&config_to_use, *once, source.as_deref(), event_sink, output_path, record_state).await
+                    let event_sink: Arc<dyn EventSink> = if config_to_use
+                        .global
+                        .backpressure
+                        .as_ref()
+                        .is_some_and(|b| b.enabled)
+                    {
+                        let cfg = config_to_use.global.backpressure.as_ref().unwrap();
+                        Arc::new(BackpressureSink::new(event_sink, cfg)?)
+                    } else {
+                        event_sink
+                    };
+                    let reload_path = if *once || replay_dir.is_some() {
+                        None
+                    } else {
+                        Some(run_config_path.as_path())
+                    };
+                    run_collector(
+                        reload_path,
+                        &config_to_use,
+                        *once,
+                        source.as_deref(),
+                        event_sink,
+                        output_path,
+                        record_state,
+                    )
+                    .await
                 }
-                Some(Commands::Test { source, .. }) => run_test(&config, source, Arc::new(StdoutSink)).await,
-                Some(Commands::State { subcommand, .. }) => run_state(&config, subcommand.as_ref()).await,
+                Some(Commands::Test { source, .. }) => {
+                    run_test(&config, source, Arc::new(StdoutSink)).await
+                }
+                Some(Commands::State { subcommand, .. }) => {
+                    run_state(&config, subcommand.as_ref()).await
+                }
                 None => {
-                    run_collector(&config, false, None, Arc::new(StdoutSink), None, None).await
+                    let path = hel_config_path(&cli);
+                    run_collector(
+                        Some(path.as_path()),
+                        &config,
+                        false,
+                        None,
+                        Arc::new(StdoutSink),
+                        None,
+                        None,
+                    )
+                    .await
                 }
                 _ => unreachable!(),
             }
@@ -264,7 +300,10 @@ fn add_source_to_json_log_line(line: &str) -> String {
                     .get()
                     .map(|s| s.as_str())
                     .unwrap_or("hel");
-                obj.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                obj.insert(
+                    key.to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
                 // Rename tracing "target" (module path) to "module" so the producer field is unambiguous.
                 if let Some(t) = obj.remove("target") {
                     obj.insert("module".to_string(), t);
@@ -349,8 +388,10 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for HelJsonStderr {
 fn init_logging(config: Option<&Config>, cli: &Cli) {
     let use_json = match config.and_then(|c| c.global.log_format.as_deref()) {
         Some("json") => true,
-        _ => std::env::var("HEL_LOG_FORMAT").as_deref() == Ok("json")
-            || std::env::var("RUST_LOG_JSON").as_deref() == Ok("1"),
+        _ => {
+            std::env::var("HEL_LOG_FORMAT").as_deref() == Ok("json")
+                || std::env::var("RUST_LOG_JSON").as_deref() == Ok("1")
+        }
     };
     if use_json {
         let key = config
@@ -437,15 +478,10 @@ fn run_validate(config_path: &std::path::Path) -> anyhow::Result<()> {
 
 /// Open state store from config. On primary failure, falls back to memory when `degradation.state_store_fallback: memory`.
 /// Returns (store, state_store_fallback_active).
-async fn open_store_with_fallback(
-    config: &Config,
-) -> anyhow::Result<(Arc<dyn StateStore>, bool)> {
+async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn StateStore>, bool)> {
     match &config.global.state {
         Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
-            let path = state
-                .path
-                .as_deref()
-                .unwrap_or("./hel-state.db");
+            let path = state.path.as_deref().unwrap_or("./hel-state.db");
             match SqliteStateStore::open(Path::new(path)) {
                 Ok(s) => Ok((Arc::new(s), false)),
                 Err(e) => {
@@ -469,10 +505,7 @@ async fn open_store_with_fallback(
             }
         }
         Some(state) if state.backend.eq_ignore_ascii_case("redis") => {
-            let url = state
-                .url
-                .as_deref()
-                .unwrap_or("redis://127.0.0.1/");
+            let url = state.url.as_deref().unwrap_or("redis://127.0.0.1/");
             match RedisStateStore::connect(url).await {
                 Ok(s) => Ok((Arc::new(s), false)),
                 Err(e) => {
@@ -562,10 +595,7 @@ async fn run_test(
 }
 
 /// State subcommands: show, reset, export.
-async fn run_state(
-    config: &Config,
-    subcommand: Option<&StateSubcommand>,
-) -> anyhow::Result<()> {
+async fn run_state(config: &Config, subcommand: Option<&StateSubcommand>) -> anyhow::Result<()> {
     let store = open_store(config).await?;
     match subcommand {
         Some(StateSubcommand::Show { source }) => state_show(store.as_ref(), source).await,
@@ -631,7 +661,10 @@ async fn state_export(store: &dyn StateStore) -> anyhow::Result<()> {
         }
         out.insert(source_id, serde_json::Value::Object(m));
     }
-    println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(out))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::Value::Object(out))?
+    );
     Ok(())
 }
 
@@ -647,9 +680,9 @@ async fn state_import(store: &dyn StateStore) -> anyhow::Result<()> {
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("source {:?} value must be an object", source_id))?;
         for (key, v) in obj {
-            let s = v
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("state value for {:?}.{} must be a string", source_id, key))?;
+            let s = v.as_str().ok_or_else(|| {
+                anyhow::anyhow!("state value for {:?}.{} must be a string", source_id, key)
+            })?;
             store.set(&source_id, key, s).await?;
         }
     }
@@ -658,6 +691,7 @@ async fn state_import(store: &dyn StateStore) -> anyhow::Result<()> {
 }
 
 async fn run_collector(
+    config_path: Option<&Path>,
     config: &Config,
     once: bool,
     source_filter: Option<&str>,
@@ -675,7 +709,7 @@ async fn run_collector(
     let dedupe_store = dedupe::new_dedupe_store();
     let last_errors: poll::LastErrorStore = Arc::new(RwLock::new(HashMap::new()));
     poll::run_one_tick(
-        &config,
+        config,
         store.clone(),
         source_filter,
         circuit_store.clone(),
@@ -714,7 +748,13 @@ async fn run_collector(
                     "/metrics",
                     get(|| async {
                         let body = metrics::encode();
-                        ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
+                        (
+                            [(
+                                axum::http::header::CONTENT_TYPE,
+                                "text/plain; charset=utf-8",
+                            )],
+                            body,
+                        )
                     }),
                 );
                 if let Err(e) = axum::serve(listener, app).await {
@@ -757,21 +797,52 @@ async fn run_collector(
 
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
+    let config_arc = Arc::new(RwLock::new(config.clone()));
+    let config_path_for_reload = config_path.map(std::path::Path::to_path_buf);
+
     let mut tick = 0u64;
     'run: loop {
-        let delay = next_delay(&config, state_store_fallback_active);
+        let delay = {
+            let g = config_arc.read().await;
+            next_delay(&*g, state_store_fallback_active)
+        };
         tick += 1;
         tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
 
+        let sighup_fut = sighup_fut_optional(config_path_for_reload.is_some());
         tokio::select! {
             _ = shutdown_signal() => {
                 tracing::info!("shutdown signal received, stopping scheduler");
                 break 'run;
             }
+            _ = sighup_fut => {
+                if let Some(path) = config_path_for_reload.as_deref() {
+                    match Config::load(path) {
+                        Ok(new_config) => {
+                            {
+                                let mut g = config_arc.write().await;
+                                *g = new_config;
+                            }
+                            let restart = config_arc.read().await.global.reload.as_ref()
+                                .is_some_and(|r| r.restart_sources_on_sighup);
+                            if restart {
+                                circuit_store.write().await.clear();
+                                token_cache.write().await.clear();
+                                tracing::info!("config reloaded on SIGHUP, circuit breaker and token cache cleared");
+                            } else {
+                                tracing::info!("config reloaded on SIGHUP");
+                            }
+                        }
+                        Err(e) => tracing::warn!("config reload on SIGHUP failed: {}", e),
+                    }
+                }
+                continue 'run;
+            }
             _ = tokio::time::sleep(delay) => {}
         }
 
-        let config_ref = &config;
+        let config_guard = config_arc.read().await;
+        let config_ref = &*config_guard;
         let store_ref = store.clone();
         let source_filter_ref = source_filter;
         let circuit_store_ref = circuit_store.clone();
@@ -823,10 +894,33 @@ async fn run_collector(
     Ok(())
 }
 
+/// Future that completes when SIGHUP is received (Unix only). When listen is false, never completes.
+fn sighup_fut_optional(listen: bool) -> impl std::future::Future<Output = ()> + Send {
+    async move {
+        if listen {
+            #[cfg(unix)]
+            {
+                let mut sig =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                        .expect("failed to install SIGHUP handler");
+                let _ = sig.recv().await;
+            }
+            #[cfg(not(unix))]
+            {
+                std::future::pending::<()>().await
+            }
+        } else {
+            std::future::pending::<()>().await
+        }
+    }
+}
+
 /// Future that completes when SIGINT (Ctrl+C) or SIGTERM is received.
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
 
     #[cfg(unix)]
@@ -889,7 +983,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v.get("source").and_then(|s| s.as_str()), Some("hel"));
         assert_eq!(v.get("message").and_then(|s| s.as_str()), Some("started"));
-        assert!(v.get("target").is_none(), "target should be renamed to module");
+        assert!(
+            v.get("target").is_none(),
+            "target should be renamed to module"
+        );
         assert_eq!(v.get("module").and_then(|s| s.as_str()), Some("hel"));
     }
 
@@ -928,7 +1025,15 @@ sources:
         let _ = std::fs::remove_file(&path);
         let delay_fallback = next_delay(&config, true);
         let delay_normal = next_delay(&config, false);
-        assert_eq!(delay_normal.as_secs(), 60, "normal delay = interval when jitter 0");
-        assert_eq!(delay_fallback.as_secs(), 120, "when fallback active, delay = interval * reduced_frequency_multiplier");
+        assert_eq!(
+            delay_normal.as_secs(),
+            60,
+            "normal delay = interval when jitter 0"
+        );
+        assert_eq!(
+            delay_fallback.as_secs(),
+            120,
+            "when fallback active, delay = interval * reduced_frequency_multiplier"
+        );
     }
 }
