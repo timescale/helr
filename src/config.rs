@@ -602,16 +602,47 @@ pub struct ResilienceConfig {
     pub rate_limit: Option<RateLimitConfig>,
 }
 
+/// Header names for rate limit info (limit, remaining, reset). When unset, defaults are used.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitHeaderMapping {
+    /// Header for rate limit ceiling (e.g. "X-RateLimit-Limit").
+    #[serde(default)]
+    pub limit_header: Option<String>,
+    /// Header for remaining requests in window (e.g. "X-RateLimit-Remaining").
+    #[serde(default)]
+    pub remaining_header: Option<String>,
+    /// Header for window reset time, Unix timestamp (e.g. "X-RateLimit-Reset").
+    #[serde(default)]
+    pub reset_header: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
-    /// When true, use Retry-After or X-RateLimit-Reset from response on 429 instead of generic backoff.
+    /// When true, use Retry-After or reset header from response on 429 instead of generic backoff.
     #[serde(default = "default_respect_headers")]
     pub respect_headers: bool,
 
     /// Optional delay in seconds between pagination requests. Reduces burst; reusable across APIs.
     #[serde(default)]
     pub page_delay_secs: Option<u64>,
+
+    /// Header names for limit/remaining/reset. When unset, defaults: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset.
+    #[serde(default)]
+    pub headers: Option<RateLimitHeaderMapping>,
+
+    /// Client-side max requests per second (RPS). When set, requests are throttled to this rate before sending.
+    #[serde(default)]
+    pub max_requests_per_second: Option<f64>,
+
+    /// Client-side burst size (max requests allowed in a burst). When unset with max_requests_per_second, defaults to ceil(rps).
+    #[serde(default)]
+    pub burst_size: Option<u32>,
+
+    /// When true, use remaining/reset from response headers to throttle: if remaining is 0 or low, wait until reset before next request.
+    #[serde(default)]
+    pub adaptive: Option<bool>,
 }
 
 fn default_respect_headers() -> bool {
@@ -1001,6 +1032,50 @@ sources:
         assert_eq!(d.state_store_fallback.as_deref(), Some("memory"));
         assert_eq!(d.emit_without_checkpoint, Some(true));
         assert_eq!(d.reduced_frequency_multiplier, 2.5);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_rate_limit() {
+        let dir = std::env::temp_dir().join("hel_config_rate_limit");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global: {}
+sources:
+  x:
+    url: "https://example.com/logs"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      rate_limit:
+        respect_headers: true
+        page_delay_secs: 1
+        headers:
+          limit_header: "X-RateLimit-Limit"
+          remaining_header: "X-RateLimit-Remaining"
+          reset_header: "X-Rate-Limit-Reset"
+        max_requests_per_second: 10.0
+        burst_size: 5
+        adaptive: true
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let rl = config.sources["x"]
+            .resilience
+            .as_ref()
+            .and_then(|r| r.rate_limit.as_ref())
+            .unwrap();
+        assert!(rl.respect_headers);
+        assert_eq!(rl.page_delay_secs, Some(1));
+        let h = rl.headers.as_ref().unwrap();
+        assert_eq!(h.limit_header.as_deref(), Some("X-RateLimit-Limit"));
+        assert_eq!(h.remaining_header.as_deref(), Some("X-RateLimit-Remaining"));
+        assert_eq!(h.reset_header.as_deref(), Some("X-Rate-Limit-Reset"));
+        assert_eq!(rl.max_requests_per_second, Some(10.0));
+        assert_eq!(rl.burst_size, Some(5));
+        assert_eq!(rl.adaptive, Some(true));
         let _ = std::fs::remove_file(&path);
     }
 

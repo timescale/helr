@@ -9,7 +9,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, 1Password Events API (audit), Tailscale configuration audit and network flow logs, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries/logs) with Link-header or cursor pagination
 - **Auth:** Bearer (including SSWS for Okta), API key, Basic, OAuth2 (refresh token or client credentials; optional private_key_jwt, DPoP), Google Service Account (JWT, domain-wide delegation for GWS)
 - **Pagination:** Link header (`rel=next`), cursor (query param or body), page/offset
-- **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, rate-limit handling (including Retry-After), optional per-page delay
+- **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, **rate limit** — header mapping (X-RateLimit-Limit/Remaining/Reset or custom names), client-side RPS/burst cap, optional adaptive rate limiting (throttle when remaining is low)
 - **State:** SQLite (or in-memory) for cursor/next_url; single-writer per store
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
 - **Backpressure:** When the downstream consumer (stdout/file) can’t keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
@@ -90,7 +90,7 @@ Configuration is merged in this order (later overrides earlier):
 - **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
 - **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
 - **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `rate_limit.page_delay_secs`, `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
+- **Options:** `from` / `from_param`, `query_params`, `dedupe.id_path`, `resilience.rate_limit` (header mapping, `max_requests_per_second`, `burst_size`, `adaptive`, `page_delay_secs`), `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
 
@@ -99,6 +99,8 @@ Configuration is merged in this order (later overrides earlier):
 **Backpressure:** When the downstream consumer (stdout or file) can’t keep up, enable `global.backpressure.enabled` so Hel uses a bounded queue and a writer thread. You can **block** (pause poll until the queue drains; no data loss), **disk_buffer** (spill to a file when the queue is full; requires `disk_buffer.path`), or **drop** (drop events with a policy: oldest_first, newest_first, random; tracked in `hel_events_dropped_total`). Optionally set `memory_threshold_mb` to apply the same strategy when process RSS exceeds the limit, and `max_queue_age_secs` to drop events that sit in the queue too long.
 
 **Graceful degradation** (`global.degradation:`): When the primary state store (e.g. SQLite) fails to open or becomes unwritable, you can set `state_store_fallback: memory` so Hel falls back to an in-memory store (state is not durable across restarts). When degraded, set `reduced_frequency_multiplier` (e.g. `2.0`) to poll less often and reduce load. Set `emit_without_checkpoint: true` to continue emitting events when state writes fail (e.g. disk full); otherwise state write errors fail the tick. Health and readyz JSON include `state_store_fallback_active: true` when the fallback is in use.
+
+**Rate limit** (`resilience.rate_limit:`): You can map API rate limit headers (e.g. `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`) via `headers` when the API uses different names. Set `max_requests_per_second` and optional `burst_size` to cap client-side request rate (token bucket) so you don’t exceed the API’s limit. Set `adaptive: true` to throttle proactively: when the response reports remaining ≤ 1, Hel waits until the reset window before the next request. On 429, Hel uses Retry-After or the configured reset header when `respect_headers` is true.
 
 **State:** One writer per state store (e.g. one SQLite file). For multiple instances, use a shared backend (e.g. Redis/Postgres) when supported.
 
@@ -244,8 +246,15 @@ Secrets can be read from env var or file; file takes precedence when set.
 | `circuit_breaker.reset_timeout_secs` | Max time in open state (open duration = min(half_open_timeout_secs, reset_timeout_secs)) | number | — |
 | `circuit_breaker.failure_rate_threshold` | Optional: open when failure rate ≥ this (0.0–1.0); requires `minimum_requests` | number | — |
 | `circuit_breaker.minimum_requests` | Minimum requests before evaluating `failure_rate_threshold` | number | — |
-| `rate_limit.respect_headers` | Use Retry-After / X-RateLimit-Reset on 429 | boolean | `true` |
+| `rate_limit.respect_headers` | Use Retry-After or reset header on 429 (see `headers.reset_header`) | boolean | `true` |
 | `rate_limit.page_delay_secs` | Delay between pagination requests (seconds) | number | — |
+| `rate_limit.headers` | Header names for limit/remaining/reset (when API uses different names) | object | — |
+| `rate_limit.headers.limit_header` | Header for rate limit ceiling (e.g. `X-RateLimit-Limit`) | string | `X-RateLimit-Limit` |
+| `rate_limit.headers.remaining_header` | Header for remaining requests in window | string | `X-RateLimit-Remaining` |
+| `rate_limit.headers.reset_header` | Header for window reset (Unix timestamp); used on 429 and for adaptive | string | `X-RateLimit-Reset` |
+| `rate_limit.max_requests_per_second` | Client-side RPS cap; requests are throttled before sending (token bucket) | number | — |
+| `rate_limit.burst_size` | Client-side burst size (max requests in a burst). When unset with `max_requests_per_second`, defaults to ceil(rps) | number | — |
+| `rate_limit.adaptive` | When true, use remaining/reset from response: if remaining ≤ 1, wait until reset before next request | boolean | — |
 
 </details>
 

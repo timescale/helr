@@ -5,7 +5,7 @@ use crate::client::build_client;
 use crate::config::{
     CheckpointTiming, Config, CursorExpiredBehavior, GlobalConfig, InvalidUtf8Behavior,
     MaxEventBytesBehavior, OnParseErrorBehavior, OnStateWriteErrorBehavior, PaginationConfig,
-    SourceConfig,
+    RateLimitConfig, SourceConfig,
 };
 use crate::dedupe::{self, DedupeStore};
 use crate::event::EmittedEvent;
@@ -15,15 +15,24 @@ use crate::oauth2::OAuth2TokenCache;
 use crate::output::EventSink;
 use crate::pagination::next_link_from_headers;
 use crate::replay::RecordState;
-use crate::retry::execute_with_retry;
+use crate::retry::{execute_with_retry, rate_limit_info_from_headers};
 use crate::state::StateStore;
 use anyhow::Context;
 use chrono::Utc;
+use governor::{Quota, RateLimiter};
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::instrument;
+
+/// Type for client-side rate limiter (governor direct limiter).
+type ClientRateLimiter = RateLimiter<
+    governor::state::NotKeyed,
+    governor::state::InMemoryState,
+    governor::clock::DefaultClock,
+>;
 
 /// Shared store of last error message per source (for health endpoints).
 pub type LastErrorStore = Arc<RwLock<HashMap<String, String>>>;
@@ -59,6 +68,19 @@ pub async fn run_one_tick(
         let dedupe_store = dedupe_store.clone();
         let event_sink = event_sink.clone();
         let record_state = record_state.clone();
+        let rate_limiter: Option<Arc<ClientRateLimiter>> = source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.rate_limit.as_ref())
+            .and_then(|r| {
+                let rps = r.max_requests_per_second.filter(|&x| x > 0.0 && x.is_finite())?;
+                let rps_u = (rps.ceil() as u32).max(1);
+                let rps_nz = NonZeroU32::new(rps_u)?;
+                let burst = r.burst_size.unwrap_or(rps_u).max(1);
+                let burst_nz = NonZeroU32::new(burst).unwrap_or(NonZeroU32::MIN);
+                let quota = Quota::per_second(rps_nz).allow_burst(burst_nz);
+                Some(Arc::new(RateLimiter::direct(quota)))
+            });
         let poll_tick_secs = source
             .resilience
             .as_ref()
@@ -76,6 +98,7 @@ pub async fn run_one_tick(
                 dedupe_store,
                 event_sink,
                 record_state,
+                rate_limiter,
             );
             match poll_tick_secs {
                 Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), poll_fut).await {
@@ -126,6 +149,7 @@ async fn poll_one_source(
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
+    rate_limiter: Option<Arc<ClientRateLimiter>>,
 ) -> anyhow::Result<()> {
     let client = build_client(source.resilience.as_ref())?;
 
@@ -145,6 +169,7 @@ async fn poll_one_source(
                 dedupe_store,
                 event_sink,
                 record_state,
+                rate_limiter.as_ref(),
             )
             .await
         }
@@ -168,6 +193,7 @@ async fn poll_one_source(
                 dedupe_store,
                 event_sink,
                 record_state,
+                rate_limiter.as_ref(),
             )
             .await
         }
@@ -193,6 +219,7 @@ async fn poll_one_source(
                 dedupe_store,
                 event_sink,
                 record_state,
+                rate_limiter.as_ref(),
             )
             .await
         }
@@ -210,9 +237,42 @@ async fn poll_one_source(
                 dedupe_store,
                 event_sink,
                 record_state.clone(),
+                rate_limiter.as_ref(),
             )
             .await;
         }
+    }
+}
+
+/// If adaptive rate limiting is enabled and remaining is 0 or low, sleep until reset (or a short delay).
+async fn maybe_adaptive_sleep_after_response(
+    headers: &reqwest::header::HeaderMap,
+    source_id: &str,
+    rate_limit_config: Option<&RateLimitConfig>,
+) {
+    let rl = match rate_limit_config {
+        Some(r) if r.adaptive == Some(true) => r,
+        _ => return,
+    };
+    let info = rate_limit_info_from_headers(headers, rl.headers.as_ref());
+    if !info.remaining.map_or(false, |n| n <= 1) {
+        return;
+    }
+    let reset_ts = match info.reset_ts {
+        Some(t) => t,
+        _ => return,
+    };
+    let now = Utc::now().timestamp();
+    let wait_secs = (reset_ts - now).max(0) as u64;
+    if wait_secs > 0 {
+        tracing::debug!(
+            source = %source_id,
+            remaining = ?info.remaining,
+            reset_ts,
+            wait_secs,
+            "adaptive rate limit: remaining <= 1, waiting until reset"
+        );
+        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
     }
 }
 
@@ -231,6 +291,7 @@ async fn poll_link_header(
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
+    rate_limiter: Option<&Arc<ClientRateLimiter>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let from_store = store.get(source_id, "next_url").await?.filter(|s| !s.is_empty());
@@ -268,6 +329,9 @@ async fn poll_link_header(
             circuit::allow_request(&circuit_store, source_id, cb)
                 .await
                 .context("circuit open")?;
+        }
+        if let Some(limiter) = rate_limiter {
+            limiter.until_ready().await;
         }
         let req_start = std::time::Instant::now();
         let response = match execute_with_retry(
@@ -312,6 +376,13 @@ async fn poll_link_header(
                 return Err(e).context("http request");
             }
         };
+
+        maybe_adaptive_sleep_after_response(
+            response.headers(),
+            source_id,
+            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+        )
+        .await;
 
         let status = response.status();
         if !status.is_success() {
@@ -437,6 +508,7 @@ async fn poll_cursor_pagination(
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
+    rate_limiter: Option<&Arc<ClientRateLimiter>>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -486,6 +558,9 @@ async fn poll_cursor_pagination(
                 .await
                 .context("circuit open")?;
         }
+        if let Some(limiter) = rate_limiter {
+            limiter.until_ready().await;
+        }
         let req_start = std::time::Instant::now();
         let response = match execute_with_retry(
             client,
@@ -524,6 +599,14 @@ async fn poll_cursor_pagination(
                 return Err(e).context("http request");
             }
         };
+
+        maybe_adaptive_sleep_after_response(
+            response.headers(),
+            source_id,
+            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+        )
+        .await;
+
         let status = response.status();
         let path = response.url().path().to_string();
         let record_url = response.url().clone();
@@ -673,6 +756,7 @@ async fn poll_page_offset_pagination(
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
+    rate_limiter: Option<&Arc<ClientRateLimiter>>,
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
@@ -705,6 +789,9 @@ async fn poll_page_offset_pagination(
             circuit::allow_request(&circuit_store, source_id, cb)
                 .await
                 .context("circuit open")?;
+        }
+        if let Some(limiter) = rate_limiter {
+            limiter.until_ready().await;
         }
         let req_start = std::time::Instant::now();
         let response = match execute_with_retry(
@@ -744,6 +831,14 @@ async fn poll_page_offset_pagination(
                 return Err(e).context("http request");
             }
         };
+
+        maybe_adaptive_sleep_after_response(
+            response.headers(),
+            source_id,
+            source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+        )
+        .await;
+
         let path = response.url().path().to_string();
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
@@ -828,12 +923,16 @@ async fn poll_single_page(
     dedupe_store: DedupeStore,
     event_sink: Arc<dyn EventSink>,
     record_state: Option<Arc<RecordState>>,
+    rate_limiter: Option<&Arc<ClientRateLimiter>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     if let Some(cb) = source.resilience.as_ref().and_then(|r| r.circuit_breaker.as_ref()) {
         circuit::allow_request(&circuit_store, source_id, cb)
             .await
             .context("circuit open")?;
+    }
+    if let Some(limiter) = rate_limiter {
+        limiter.until_ready().await;
     }
     let req_start = std::time::Instant::now();
     let response = match execute_with_retry(
@@ -870,6 +969,13 @@ async fn poll_single_page(
             return Err(e).context("http request");
         }
     };
+
+    maybe_adaptive_sleep_after_response(
+        response.headers(),
+        source_id,
+        source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+    )
+    .await;
 
     let record_url = response.url().clone();
     let record_status = response.status().as_u16();

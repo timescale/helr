@@ -2,7 +2,7 @@
 //! On 429, uses Retry-After (or X-RateLimit-Reset) when configured.
 
 use crate::client::build_request;
-use crate::config::{AuthConfig, HttpMethod, RateLimitConfig, RetryConfig, SourceConfig};
+use crate::config::{AuthConfig, HttpMethod, RateLimitConfig, RateLimitHeaderMapping, RetryConfig, SourceConfig};
 use rand::Rng;
 use crate::dpop::{build_dpop_proof, get_or_create_dpop_key, DPoPKeyCache};
 use crate::oauth2::{get_google_sa_token, get_oauth_token, invalidate_token, OAuth2TokenCache};
@@ -45,11 +45,13 @@ fn backoff_duration(retry: &RetryConfig, attempt: u32) -> Duration {
     Duration::from_secs_f64(delay_secs)
 }
 
-/// Parse Retry-After (delta-seconds or HTTP-date) and optionally X-RateLimit-Reset (Unix timestamp).
+/// Parse Retry-After (delta-seconds or HTTP-date) and optionally reset header (e.g. X-RateLimit-Reset).
+/// Uses header_mapping.reset_header when set, else tries X-RateLimit-Reset, X-Rate-Limit-Reset.
 /// Returns None if header missing or unparseable. Caps duration by max_cap_secs when given.
 pub fn retry_after_from_headers(
     headers: &HeaderMap,
     max_cap_secs: Option<u64>,
+    header_mapping: Option<&RateLimitHeaderMapping>,
 ) -> Option<Duration> {
     if let Some(v) = headers.get("Retry-After") {
         let s = v.to_str().ok()?.trim();
@@ -70,8 +72,12 @@ pub fn retry_after_from_headers(
             return Some(cap_duration(Duration::from_secs(secs), max_cap_secs));
         }
     }
-    for name in ["X-RateLimit-Reset", "X-Rate-Limit-Reset"] {
-        if let Some(v) = headers.get(name) {
+    let reset_names: Vec<&str> = header_mapping
+        .and_then(|m| m.reset_header.as_deref())
+        .map(|n| vec![n])
+        .unwrap_or_else(|| vec!["X-RateLimit-Reset", "X-Rate-Limit-Reset"]);
+    for name in &reset_names {
+        if let Some(v) = headers.get(*name) {
             let s = v.to_str().ok()?.trim();
             if let Ok(reset_ts) = s.parse::<i64>() {
                 let now_secs = chrono::Utc::now().timestamp();
@@ -81,6 +87,45 @@ pub fn retry_after_from_headers(
         }
     }
     None
+}
+
+/// Rate limit info parsed from response headers (for adaptive rate limiting).
+#[derive(Debug, Clone, Default)]
+pub struct RateLimitInfo {
+    /// Rate limit ceiling (e.g. X-RateLimit-Limit). Used for logging and future adaptive use.
+    #[allow(dead_code)]
+    pub limit: Option<u64>,
+    pub remaining: Option<i64>,
+    pub reset_ts: Option<i64>,
+}
+
+/// Parse limit, remaining, reset from response headers using optional header mapping.
+pub fn rate_limit_info_from_headers(
+    headers: &HeaderMap,
+    header_mapping: Option<&RateLimitHeaderMapping>,
+) -> RateLimitInfo {
+    let limit_h = header_mapping
+        .and_then(|m| m.limit_header.as_deref())
+        .unwrap_or("X-RateLimit-Limit");
+    let remaining_h = header_mapping
+        .and_then(|m| m.remaining_header.as_deref())
+        .unwrap_or("X-RateLimit-Remaining");
+    let reset_h = header_mapping
+        .and_then(|m| m.reset_header.as_deref())
+        .unwrap_or("X-RateLimit-Reset");
+    let limit = headers
+        .get(limit_h)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let remaining = headers
+        .get(remaining_h)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<i64>().ok());
+    let reset_ts = headers
+        .get(reset_h)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<i64>().ok());
+    RateLimitInfo { limit, remaining, reset_ts }
 }
 
 fn cap_duration(d: Duration, max_secs: Option<u64>) -> Duration {
@@ -254,8 +299,11 @@ pub async fn execute_with_retry(
                 let status = response.status();
                 let delay = if status.as_u16() == 429
                     && rate_limit.map_or(false, |r| r.respect_headers)
-                    && let Some(d) =
-                        retry_after_from_headers(response.headers(), retry.max_backoff_secs)
+                    && let Some(d) = retry_after_from_headers(
+                        response.headers(),
+                        retry.max_backoff_secs,
+                        rate_limit.and_then(|r| r.headers.as_ref()),
+                    )
                 {
                     let d = if d.as_secs() > 0 {
                         d
@@ -353,9 +401,9 @@ mod tests {
             reqwest::header::RETRY_AFTER,
             "120".parse().unwrap(),
         );
-        let d = retry_after_from_headers(&headers, None).unwrap();
+        let d = retry_after_from_headers(&headers, None, None).unwrap();
         assert_eq!(d, Duration::from_secs(120));
-        let d = retry_after_from_headers(&headers, Some(60)).unwrap();
+        let d = retry_after_from_headers(&headers, Some(60), None).unwrap();
         assert_eq!(d, Duration::from_secs(60)); // capped
     }
 
@@ -367,7 +415,7 @@ mod tests {
             "X-RateLimit-Reset",
             reset_ts.to_string().parse().unwrap(),
         );
-        let d = retry_after_from_headers(&headers, None).unwrap();
+        let d = retry_after_from_headers(&headers, None, None).unwrap();
         assert!(d.as_secs() >= 88 && d.as_secs() <= 92);
     }
 
@@ -415,7 +463,53 @@ mod tests {
             "X-Rate-Limit-Reset",
             reset_ts.to_string().parse().unwrap(),
         );
-        let d = retry_after_from_headers(&headers, None).unwrap();
+        let d = retry_after_from_headers(&headers, None, None).unwrap();
         assert!(d.as_secs() >= 43 && d.as_secs() <= 47);
+    }
+
+    #[test]
+    fn test_retry_after_with_custom_reset_header() {
+        let mut headers = HeaderMap::new();
+        let reset_ts = chrono::Utc::now().timestamp() + 30;
+        headers.insert(
+            "X-Rate-Limit-Reset",
+            reset_ts.to_string().parse().unwrap(),
+        );
+        let mapping = RateLimitHeaderMapping {
+            limit_header: None,
+            remaining_header: None,
+            reset_header: Some("X-Rate-Limit-Reset".to_string()),
+        };
+        let d = retry_after_from_headers(&headers, None, Some(&mapping)).unwrap();
+        assert!(d.as_secs() >= 28 && d.as_secs() <= 32);
+    }
+
+    #[test]
+    fn test_rate_limit_info_from_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-RateLimit-Limit", "100".parse().unwrap());
+        headers.insert("X-RateLimit-Remaining", "42".parse().unwrap());
+        headers.insert("X-RateLimit-Reset", "1700000000".parse().unwrap());
+        let info = rate_limit_info_from_headers(&headers, None);
+        assert_eq!(info.limit, Some(100));
+        assert_eq!(info.remaining, Some(42));
+        assert_eq!(info.reset_ts, Some(1700000000));
+    }
+
+    #[test]
+    fn test_rate_limit_info_from_headers_custom_names() {
+        let mut headers = HeaderMap::new();
+        headers.insert("RateLimit-Limit", "50".parse().unwrap());
+        headers.insert("RateLimit-Remaining", "0".parse().unwrap());
+        headers.insert("RateLimit-Reset", "1700000100".parse().unwrap());
+        let mapping = RateLimitHeaderMapping {
+            limit_header: Some("RateLimit-Limit".to_string()),
+            remaining_header: Some("RateLimit-Remaining".to_string()),
+            reset_header: Some("RateLimit-Reset".to_string()),
+        };
+        let info = rate_limit_info_from_headers(&headers, Some(&mapping));
+        assert_eq!(info.limit, Some(50));
+        assert_eq!(info.remaining, Some(0));
+        assert_eq!(info.reset_ts, Some(1700000100));
     }
 }
