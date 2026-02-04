@@ -577,13 +577,12 @@ pub enum AuthConfig {
 
 /// Resolve a secret from file path (if set) or environment variable. File takes precedence.
 pub fn read_secret(file_path: Option<&str>, env_var: &str) -> anyhow::Result<String> {
-    if let Some(p) = file_path {
-        if !p.is_empty() {
+    if let Some(p) = file_path
+        && !p.is_empty() {
             let s = std::fs::read_to_string(Path::new(p))
                 .with_context(|| format!("read secret file {:?}", p))?;
             return Ok(s.trim().to_string());
         }
-    }
     std::env::var(env_var).with_context(|| format!("env {} not set", env_var))
 }
 
@@ -827,19 +826,19 @@ pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
         let has_cert = tls
             .client_cert_file
             .as_deref()
-            .map_or(false, |p| !p.is_empty())
+            .is_some_and(|p| !p.is_empty())
             || tls
                 .client_cert_env
                 .as_deref()
-                .map_or(false, |e| !e.is_empty());
+                .is_some_and(|e| !e.is_empty());
         let has_key = tls
             .client_key_file
             .as_deref()
-            .map_or(false, |p| !p.is_empty())
+            .is_some_and(|p| !p.is_empty())
             || tls
                 .client_key_env
                 .as_deref()
-                .map_or(false, |e| !e.is_empty());
+                .is_some_and(|e| !e.is_empty());
         if has_cert != has_key {
             anyhow::bail!(
                 "source {}: tls client_cert and client_key must both be set (cert_file/cert_env and key_file/key_env)",
@@ -858,21 +857,20 @@ pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
             )
             .with_context(|| format!("source {}: tls client_key", source_id))?;
         }
-        let has_ca = tls.ca_file.as_deref().map_or(false, |p| !p.is_empty())
-            || tls.ca_env.as_deref().map_or(false, |e| !e.is_empty());
+        let has_ca = tls.ca_file.as_deref().is_some_and(|p| !p.is_empty())
+            || tls.ca_env.as_deref().is_some_and(|e| !e.is_empty());
         if has_ca {
             read_secret(tls.ca_file.as_deref(), tls.ca_env.as_deref().unwrap_or(""))
                 .with_context(|| format!("source {}: tls ca", source_id))?;
         }
-        if let Some(v) = tls.min_version.as_deref() {
-            if v != "1.2" && v != "1.3" {
+        if let Some(v) = tls.min_version.as_deref()
+            && v != "1.2" && v != "1.3" {
                 anyhow::bail!(
                     "source {}: tls min_version must be \"1.2\" or \"1.3\", got {:?}",
                     source_id,
                     v
                 );
             }
-        }
     }
     Ok(())
 }
@@ -922,16 +920,16 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         .with_context(|| format!("source {}: oauth2 client_id", source_id))?;
                     let has_private_key = client_private_key_env
                         .as_deref()
-                        .map_or(false, |e| !e.is_empty())
+                        .is_some_and(|e| !e.is_empty())
                         || client_private_key_file
                             .as_deref()
-                            .map_or(false, |p| !p.is_empty());
+                            .is_some_and(|p| !p.is_empty());
                     let has_secret = client_secret_env
                         .as_deref()
-                        .map_or(false, |e| !e.is_empty())
+                        .is_some_and(|e| !e.is_empty())
                         || client_secret_file
                             .as_deref()
-                            .map_or(false, |p| !p.is_empty());
+                            .is_some_and(|p| !p.is_empty());
                     if !has_private_key && !has_secret {
                         anyhow::bail!(
                             "source {}: oauth2 requires client_secret (client_secret_env/client_secret_file) \
@@ -956,10 +954,10 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     }
                     let has_refresh = refresh_token_env
                         .as_deref()
-                        .map_or(false, |e| !e.is_empty())
+                        .is_some_and(|e| !e.is_empty())
                         || refresh_token_file
                             .as_deref()
-                            .map_or(false, |p| !p.is_empty());
+                            .is_some_and(|p| !p.is_empty());
                     if has_refresh {
                         let rt_env = refresh_token_env.as_deref().unwrap_or("");
                         read_secret(refresh_token_file.as_deref(), rt_env).with_context(|| {
@@ -1011,13 +1009,12 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     if let Some(env) = subject_env.as_deref() {
                         read_secret(subject_file.as_deref(), env)
                             .with_context(|| format!("source {}: google_service_account subject (domain-wide delegation)", source_id))?;
-                    } else if let Some(path) = subject_file.as_deref() {
-                        if !path.is_empty() {
+                    } else if let Some(path) = subject_file.as_deref()
+                        && !path.is_empty() {
                             std::fs::read_to_string(Path::new(path)).with_context(|| {
                                 format!("source {}: google_service_account subject file", source_id)
                             })?;
                         }
-                    }
                 }
             }
         }
@@ -1037,7 +1034,7 @@ fn expand_env_vars_strict(s: &str) -> anyhow::Result<String> {
             let expanded = shellexpand::env_with_context(line, |var: &str| {
                 std::env::var(var)
                     .map(|v| Ok(Some(std::borrow::Cow::Owned(v))))
-                    .unwrap_or_else(|e| Err(e))
+                    .unwrap_or_else(Err)
             })
             .map(|cow| cow.into_owned())
             .map_err(|e| {

@@ -205,7 +205,7 @@ async fn main() -> anyhow::Result<()> {
                                     .transpose()?
                                     .unwrap_or(RotationPolicy::None);
                                 let path_clone = path.clone();
-                                (Arc::new(FileSink::new(&path, rotation)?), Some(path_clone))
+                                (Arc::new(FileSink::new(path, rotation)?), Some(path_clone))
                             }
                             None => (Arc::new(StdoutSink), None),
                         };
@@ -499,7 +499,7 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
                         );
                         Ok((Arc::new(MemoryStateStore::new()), true))
                     } else {
-                        Err(e.into())
+                        Err(e)
                     }
                 }
             }
@@ -523,7 +523,7 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
                         );
                         Ok((Arc::new(MemoryStateStore::new()), true))
                     } else {
-                        Err(e.into())
+                        Err(e)
                     }
                 }
             }
@@ -549,7 +549,7 @@ async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn St
                         );
                         Ok((Arc::new(MemoryStateStore::new()), true))
                     } else {
-                        Err(e.into())
+                        Err(e)
                     }
                 }
             }
@@ -573,14 +573,14 @@ async fn run_test(
         anyhow::bail!("source {:?} not found in config", source_name);
     }
     tracing::info!("testing source {:?} (one poll tick)", source_name);
-    let store = open_store(&config).await?;
+    let store = open_store(config).await?;
     let circuit_store = new_circuit_store();
     let token_cache = new_oauth2_token_cache();
     let dpop_key_cache = Some(new_dpop_key_cache());
     let dedupe_store = dedupe::new_dedupe_store();
     let last_errors: poll::LastErrorStore = Arc::new(RwLock::new(HashMap::new()));
     poll::run_one_tick(
-        &config,
+        config,
         store,
         Some(source_name),
         circuit_store,
@@ -765,8 +765,8 @@ async fn run_collector(
     }
 
     // Health server: bind only when enabled and running continuously
-    if let Some(health) = &config.global.health {
-        if health.enabled {
+    if let Some(health) = &config.global.health
+        && health.enabled {
             let addr: SocketAddr = format!("{}:{}", health.address, health.port)
                 .parse()
                 .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
@@ -793,7 +793,6 @@ async fn run_collector(
                 }
             });
         }
-    }
 
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -804,7 +803,7 @@ async fn run_collector(
     'run: loop {
         let delay = {
             let g = config_arc.read().await;
-            next_delay(&*g, state_store_fallback_active)
+            next_delay(&g, state_store_fallback_active)
         };
         tick += 1;
         tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
@@ -895,23 +894,21 @@ async fn run_collector(
 }
 
 /// Future that completes when SIGHUP is received (Unix only). When listen is false, never completes.
-fn sighup_fut_optional(listen: bool) -> impl std::future::Future<Output = ()> + Send {
-    async move {
-        if listen {
-            #[cfg(unix)]
-            {
-                let mut sig =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-                        .expect("failed to install SIGHUP handler");
-                let _ = sig.recv().await;
-            }
-            #[cfg(not(unix))]
-            {
-                std::future::pending::<()>().await
-            }
-        } else {
+async fn sighup_fut_optional(listen: bool) {
+    if listen {
+        #[cfg(unix)]
+        {
+            let mut sig =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                    .expect("failed to install SIGHUP handler");
+            let _ = sig.recv().await;
+        }
+        #[cfg(not(unix))]
+        {
             std::future::pending::<()>().await
         }
+    } else {
+        std::future::pending::<()>().await
     }
 }
 
@@ -961,14 +958,13 @@ fn next_delay(config: &Config, state_store_fallback_active: bool) -> Duration {
         0
     };
     let mut secs = (interval_secs as i64 + delta).max(1) as u64;
-    if state_store_fallback_active {
-        if let Some(d) = config.global.degradation.as_ref() {
+    if state_store_fallback_active
+        && let Some(d) = config.global.degradation.as_ref() {
             let mult = d.reduced_frequency_multiplier;
             if mult > 0.0 && mult.is_finite() {
                 secs = (secs as f64 * mult).ceil().max(1.0) as u64;
             }
         }
-    }
     Duration::from_secs(secs)
 }
 

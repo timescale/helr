@@ -338,7 +338,7 @@ pub async fn execute_with_retry(
                 }
                 let status = response.status();
                 let delay = if status.as_u16() == 429
-                    && rate_limit.map_or(false, |r| r.respect_headers)
+                    && rate_limit.is_some_and(|r| r.respect_headers)
                     && let Some(d) = retry_after_from_headers(
                         response.headers(),
                         retry.max_backoff_secs,
@@ -363,7 +363,7 @@ pub async fn execute_with_retry(
                 let body = response.text().await.unwrap_or_default();
                 last_err = Some(anyhow::anyhow!("http {} {}", status, body));
                 if attempt + 1 < retry.max_attempts {
-                    if !(status.as_u16() == 429 && rate_limit.map_or(false, |r| r.respect_headers))
+                    if !(status.as_u16() == 429 && rate_limit.is_some_and(|r| r.respect_headers))
                     {
                         warn!(
                             status = %status,

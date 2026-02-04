@@ -133,7 +133,7 @@ async fn build_sources(
     let circuits = circuit_store.read().await;
     let errors = last_errors.read().await;
     let mut sources = HashMap::new();
-    for (source_id, _) in &config.sources {
+    for source_id in config.sources.keys() {
         let circuit_state = circuits
             .get(source_id)
             .map(circuit_state_to_dto)
@@ -194,7 +194,7 @@ pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
         .output_path
         .as_ref()
         .map(|p| std::fs::OpenOptions::new().append(true).open(p).is_ok());
-    let output_ok = output_writable.map_or(true, |w| w);
+    let output_ok = output_writable.is_none_or(|w| w);
     let state_store_connected = match &state.state_store {
         Some(store) => store.list_sources().await.is_ok(),
         None => true,

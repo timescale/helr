@@ -256,8 +256,8 @@ fn drain_disk_buffer(path: &Path, file_lock: &Mutex<()>) -> Vec<String> {
     let _guard = file_lock.lock().unwrap();
     let old_path = disk_buffer_old_path(path);
     let mut lines = Vec::new();
-    if old_path.exists() {
-        if let Ok(file) = std::fs::File::open(&old_path) {
+    if old_path.exists()
+        && let Ok(file) = std::fs::File::open(&old_path) {
             let reader = BufReader::new(file);
             for line in reader.lines().filter_map(|r| r.ok()) {
                 if !line.trim().is_empty() {
@@ -266,7 +266,6 @@ fn drain_disk_buffer(path: &Path, file_lock: &Mutex<()>) -> Vec<String> {
             }
             let _ = std::fs::remove_file(&old_path);
         }
-    }
     if path.exists() {
         if let Ok(file) = std::fs::File::open(path) {
             let reader = BufReader::new(file);
@@ -339,8 +338,8 @@ fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureI
         if let Err(e) = inner.write_line(&line) {
             tracing::warn!(error = %e, "backpressure writer: inner write_line failed");
         }
-        if let Some(path) = drain_disk {
-            if let Some(ref lock) = shared.disk_buffer_mutex {
+        if let Some(path) = drain_disk
+            && let Some(ref lock) = shared.disk_buffer_mutex {
                 let lines = drain_disk_buffer(&path, lock);
                 for l in &lines {
                     let _ = inner.write_line(l);
@@ -349,7 +348,6 @@ fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureI
                     shared.empty_for_flush.notify_one();
                 }
             }
-        }
     }
 }
 
@@ -518,11 +516,10 @@ impl BackpressureSink {
                             }
                         }
                         let mut need_rotate = false;
-                        if let Some(seg) = segment_bytes {
-                            if std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) >= seg {
+                        if let Some(seg) = segment_bytes
+                            && std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) >= seg {
                                 need_rotate = true;
                             }
-                        }
                         if need_rotate {
                             let old_path = disk_buffer_old_path(&p);
                             let _ = std::fs::rename(&p, &old_path);

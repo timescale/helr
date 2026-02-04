@@ -121,7 +121,7 @@ pub fn load_recordings(dir: &Path) -> anyhow::Result<HashMap<String, Vec<Recordi
                 .context("read source replay dir")?
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
-                .filter(|p| p.extension().map_or(false, |e| e == "json"))
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
                 .collect();
             names.sort();
             for p in names {

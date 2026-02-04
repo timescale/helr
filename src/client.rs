@@ -65,16 +65,16 @@ fn apply_tls(
     builder: reqwest::ClientBuilder,
     tls: &TlsConfig,
 ) -> anyhow::Result<reqwest::ClientBuilder> {
-    let has_ca = tls.ca_file.as_deref().map_or(false, |p| !p.is_empty())
-        || tls.ca_env.as_deref().map_or(false, |e| !e.is_empty());
+    let has_ca = tls.ca_file.as_deref().is_some_and(|p| !p.is_empty())
+        || tls.ca_env.as_deref().is_some_and(|e| !e.is_empty());
     let has_identity = tls
         .client_cert_file
         .as_deref()
-        .map_or(false, |p| !p.is_empty())
+        .is_some_and(|p| !p.is_empty())
         || tls
             .client_cert_env
             .as_deref()
-            .map_or(false, |e| !e.is_empty());
+            .is_some_and(|e| !e.is_empty());
 
     let mut builder = builder;
 
@@ -158,11 +158,10 @@ pub fn build_request(
         let hv = HeaderValue::try_from(proof).context("invalid DPoP proof")?;
         req = req.header("DPoP", hv);
     }
-    if bearer_override.is_none() {
-        if let Some(auth) = &source.auth {
+    if bearer_override.is_none()
+        && let Some(auth) = &source.auth {
             req = add_auth(req, auth)?;
         }
-    }
     if let Some(headers) = &source.headers {
         for (k, v) in headers {
             let name = HeaderName::try_from(k.as_str())
