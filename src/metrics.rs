@@ -99,12 +99,10 @@ pub fn init() -> Result<(), prometheus::Error> {
 /// Record one HTTP request (success or failure). status_class: "2xx", "3xx", "4xx", "5xx", "error".
 pub fn record_request(source: &str, status_class: &str, duration_secs: f64) {
     if let Some(m) = METRICS.get() {
-        m
-            .requests_total
+        m.requests_total
             .with_label_values(&[source, status_class])
             .inc();
-        m
-            .request_duration_seconds
+        m.request_duration_seconds
             .with_label_values(&[source])
             .observe(duration_secs);
     }
@@ -136,8 +134,7 @@ pub fn record_output_error(source: &str) {
 /// Record one event dropped (e.g. backpressure).
 pub fn record_event_dropped(source: &str, reason: &str) {
     if let Some(m) = METRICS.get() {
-        m
-            .events_dropped_total
+        m.events_dropped_total
             .with_label_values(&[source, reason])
             .inc();
     }

@@ -59,6 +59,10 @@ pub struct GlobalConfig {
     /// SIGHUP behaviour: reload config; optionally restart source tasks (clear circuit breaker and OAuth2 token cache).
     #[serde(default)]
     pub reload: Option<ReloadConfig>,
+
+    /// SIGUSR1 behaviour: dump state and metrics to log or file.
+    #[serde(default)]
+    pub dump_on_sigusr1: Option<DumpOnSigusr1Config>,
 }
 
 /// Config reload on SIGHUP.
@@ -68,6 +72,23 @@ pub struct ReloadConfig {
     /// When true, on SIGHUP also clear circuit breaker and OAuth2 token cache so sources re-establish on next tick.
     #[serde(default)]
     pub restart_sources_on_sighup: bool,
+}
+
+/// Dump state and metrics on SIGUSR1.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DumpOnSigusr1Config {
+    /// Where to write the dump: "log" (tracing at INFO) or "file".
+    #[serde(default = "default_dump_destination")]
+    pub destination: String,
+
+    /// Path when destination is "file". Required when destination is "file".
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+fn default_dump_destination() -> String {
+    "log".to_string()
 }
 
 /// Graceful degradation when state store fails or is unavailable.
@@ -578,11 +599,12 @@ pub enum AuthConfig {
 /// Resolve a secret from file path (if set) or environment variable. File takes precedence.
 pub fn read_secret(file_path: Option<&str>, env_var: &str) -> anyhow::Result<String> {
     if let Some(p) = file_path
-        && !p.is_empty() {
-            let s = std::fs::read_to_string(Path::new(p))
-                .with_context(|| format!("read secret file {:?}", p))?;
-            return Ok(s.trim().to_string());
-        }
+        && !p.is_empty()
+    {
+        let s = std::fs::read_to_string(Path::new(p))
+            .with_context(|| format!("read secret file {:?}", p))?;
+        return Ok(s.trim().to_string());
+    }
     std::env::var(env_var).with_context(|| format!("env {} not set", env_var))
 }
 
@@ -835,10 +857,7 @@ pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
             .client_key_file
             .as_deref()
             .is_some_and(|p| !p.is_empty())
-            || tls
-                .client_key_env
-                .as_deref()
-                .is_some_and(|e| !e.is_empty());
+            || tls.client_key_env.as_deref().is_some_and(|e| !e.is_empty());
         if has_cert != has_key {
             anyhow::bail!(
                 "source {}: tls client_cert and client_key must both be set (cert_file/cert_env and key_file/key_env)",
@@ -864,13 +883,15 @@ pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
                 .with_context(|| format!("source {}: tls ca", source_id))?;
         }
         if let Some(v) = tls.min_version.as_deref()
-            && v != "1.2" && v != "1.3" {
-                anyhow::bail!(
-                    "source {}: tls min_version must be \"1.2\" or \"1.3\", got {:?}",
-                    source_id,
-                    v
-                );
-            }
+            && v != "1.2"
+            && v != "1.3"
+        {
+            anyhow::bail!(
+                "source {}: tls min_version must be \"1.2\" or \"1.3\", got {:?}",
+                source_id,
+                v
+            );
+        }
     }
     Ok(())
 }
@@ -924,12 +945,8 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         || client_private_key_file
                             .as_deref()
                             .is_some_and(|p| !p.is_empty());
-                    let has_secret = client_secret_env
-                        .as_deref()
-                        .is_some_and(|e| !e.is_empty())
-                        || client_secret_file
-                            .as_deref()
-                            .is_some_and(|p| !p.is_empty());
+                    let has_secret = client_secret_env.as_deref().is_some_and(|e| !e.is_empty())
+                        || client_secret_file.as_deref().is_some_and(|p| !p.is_empty());
                     if !has_private_key && !has_secret {
                         anyhow::bail!(
                             "source {}: oauth2 requires client_secret (client_secret_env/client_secret_file) \
@@ -952,12 +969,8 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         )
                         .with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
                     }
-                    let has_refresh = refresh_token_env
-                        .as_deref()
-                        .is_some_and(|e| !e.is_empty())
-                        || refresh_token_file
-                            .as_deref()
-                            .is_some_and(|p| !p.is_empty());
+                    let has_refresh = refresh_token_env.as_deref().is_some_and(|e| !e.is_empty())
+                        || refresh_token_file.as_deref().is_some_and(|p| !p.is_empty());
                     if has_refresh {
                         let rt_env = refresh_token_env.as_deref().unwrap_or("");
                         read_secret(refresh_token_file.as_deref(), rt_env).with_context(|| {
@@ -1010,11 +1023,12 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         read_secret(subject_file.as_deref(), env)
                             .with_context(|| format!("source {}: google_service_account subject (domain-wide delegation)", source_id))?;
                     } else if let Some(path) = subject_file.as_deref()
-                        && !path.is_empty() {
-                            std::fs::read_to_string(Path::new(path)).with_context(|| {
-                                format!("source {}: google_service_account subject file", source_id)
-                            })?;
-                        }
+                        && !path.is_empty()
+                    {
+                        std::fs::read_to_string(Path::new(path)).with_context(|| {
+                            format!("source {}: google_service_account subject file", source_id)
+                        })?;
+                    }
                 }
             }
         }
@@ -1236,6 +1250,31 @@ sources:
         let config = Config::load(&path).unwrap();
         let r = config.global.reload.as_ref().unwrap();
         assert!(r.restart_sources_on_sighup);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_dump_on_sigusr1() {
+        let dir = std::env::temp_dir().join("hel_config_dump_sigusr1");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hel.yaml");
+        let yaml = r#"
+global:
+  dump_on_sigusr1:
+    destination: file
+    path: /tmp/hel-dump.txt
+sources:
+  s1:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+      rel: next
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let d = config.global.dump_on_sigusr1.as_ref().unwrap();
+        assert_eq!(d.destination, "file");
+        assert_eq!(d.path.as_deref(), Some("/tmp/hel-dump.txt"));
         let _ = std::fs::remove_file(&path);
     }
 

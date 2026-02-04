@@ -81,11 +81,10 @@ pub async fn allow_request(
         g.insert(source_id.to_string(), s.clone());
         metrics::set_circuit_state(source_id, circuit_state_to_value(&s));
     }
-    if !allowed
-        && let Some(CircuitState::Open { open_until }) = state {
-            warn!(source = %source_id, "request rejected: circuit open");
-            return Err(CircuitOpenError { open_until });
-        }
+    if !allowed && let Some(CircuitState::Open { open_until }) = state {
+        warn!(source = %source_id, "request rejected: circuit open");
+        return Err(CircuitOpenError { open_until });
+    }
     Ok(())
 }
 

@@ -25,7 +25,7 @@ mod state;
 
 use axum::routing::get;
 use circuit::new_circuit_store;
-use config::Config;
+use config::{Config, DumpOnSigusr1Config};
 use dpop::new_dpop_key_cache;
 use oauth2::new_oauth2_token_cache;
 use output::{BackpressureSink, EventSink, FileSink, RotationPolicy, StdoutSink, parse_rotation};
@@ -668,6 +668,54 @@ async fn state_export(store: &dyn StateStore) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Export state to a JSON string (same shape as state export).
+async fn state_export_to_string(store: &dyn StateStore) -> anyhow::Result<String> {
+    let sources = store.list_sources().await?;
+    let mut out = serde_json::Map::new();
+    for source_id in sources {
+        let keys = store.list_keys(&source_id).await?;
+        let mut m = serde_json::Map::new();
+        for key in keys {
+            if let Some(v) = store.get(&source_id, &key).await? {
+                m.insert(key, serde_json::Value::String(v));
+            }
+        }
+        out.insert(source_id, serde_json::Value::Object(m));
+    }
+    serde_json::to_string_pretty(&serde_json::Value::Object(out)).map_err(Into::into)
+}
+
+/// Dump state and metrics to log or file per DumpOnSigusr1Config.
+async fn dump_state_and_metrics(
+    store: &dyn StateStore,
+    cfg: &DumpOnSigusr1Config,
+) -> anyhow::Result<()> {
+    let state_json = state_export_to_string(store)
+        .await
+        .unwrap_or_else(|e| format!("(state export failed: {})", e));
+    let metrics_text = metrics::encode();
+    let body = format!(
+        "=== state ===\n{}\n=== metrics ===\n{}",
+        state_json,
+        if metrics_text.is_empty() {
+            "(metrics not initialized)"
+        } else {
+            &metrics_text
+        }
+    );
+    let dest = cfg.destination.to_lowercase();
+    if dest == "file" {
+        let path = cfg.path.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("dump_on_sigusr1.path is required when destination is file")
+        })?;
+        std::fs::write(path, &body)?;
+        tracing::info!(path = %path, "SIGUSR1 dump written to file");
+    } else {
+        tracing::info!("SIGUSR1 dump:\n{}", body);
+    }
+    Ok(())
+}
+
 /// Import state from JSON on stdin (same shape as export: { "source_id": { "key": "value", ... }, ... }).
 async fn state_import(store: &dyn StateStore) -> anyhow::Result<()> {
     let stdin = std::io::stdin();
@@ -766,33 +814,34 @@ async fn run_collector(
 
     // Health server: bind only when enabled and running continuously
     if let Some(health) = &config.global.health
-        && health.enabled {
-            let addr: SocketAddr = format!("{}:{}", health.address, health.port)
-                .parse()
-                .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
-            let listener = tokio::net::TcpListener::bind(addr).await?;
-            let started_at = Instant::now();
-            let health_state = Arc::new(health::HealthState {
-                config: Arc::new(config.clone()),
-                circuit_store: circuit_store.clone(),
-                last_errors: last_errors.clone(),
-                started_at,
-                output_path: output_path.clone(),
-                state_store: Some(store.clone()),
-                state_store_fallback_active,
-            });
-            tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
-            tokio::spawn(async move {
-                let app = axum::Router::new()
-                    .route("/healthz", get(health::healthz_handler))
-                    .route("/readyz", get(health::readyz_handler))
-                    .route("/startupz", get(health::startupz_handler))
-                    .with_state(health_state);
-                if let Err(e) = axum::serve(listener, app).await {
-                    tracing::error!("health server error: {}", e);
-                }
-            });
-        }
+        && health.enabled
+    {
+        let addr: SocketAddr = format!("{}:{}", health.address, health.port)
+            .parse()
+            .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let started_at = Instant::now();
+        let health_state = Arc::new(health::HealthState {
+            config: Arc::new(config.clone()),
+            circuit_store: circuit_store.clone(),
+            last_errors: last_errors.clone(),
+            started_at,
+            output_path: output_path.clone(),
+            state_store: Some(store.clone()),
+            state_store_fallback_active,
+        });
+        tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
+        tokio::spawn(async move {
+            let app = axum::Router::new()
+                .route("/healthz", get(health::healthz_handler))
+                .route("/readyz", get(health::readyz_handler))
+                .route("/startupz", get(health::startupz_handler))
+                .with_state(health_state);
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!("health server error: {}", e);
+            }
+        });
+    }
 
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -801,14 +850,18 @@ async fn run_collector(
 
     let mut tick = 0u64;
     'run: loop {
-        let delay = {
+        let (delay, dump_enabled) = {
             let g = config_arc.read().await;
-            next_delay(&g, state_store_fallback_active)
+            (
+                next_delay(&g, state_store_fallback_active),
+                g.global.dump_on_sigusr1.is_some(),
+            )
         };
         tick += 1;
         tracing::debug!(tick, delay_secs = delay.as_secs(), "scheduling next tick");
 
         let sighup_fut = sighup_fut_optional(config_path_for_reload.is_some());
+        let sigusr1_fut = sigusr1_fut_optional(dump_enabled);
         tokio::select! {
             _ = shutdown_signal() => {
                 tracing::info!("shutdown signal received, stopping scheduler");
@@ -834,6 +887,15 @@ async fn run_collector(
                         }
                         Err(e) => tracing::warn!("config reload on SIGHUP failed: {}", e),
                     }
+                }
+                continue 'run;
+            }
+            _ = sigusr1_fut => {
+                let cfg = config_arc.read().await.global.dump_on_sigusr1.clone();
+                if let Some(c) = cfg
+                    && let Err(e) = dump_state_and_metrics(store.as_ref(), &c).await
+                {
+                    tracing::warn!("SIGUSR1 dump failed: {}", e);
                 }
                 continue 'run;
             }
@@ -893,14 +955,32 @@ async fn run_collector(
     Ok(())
 }
 
+/// Future that completes when SIGUSR1 is received (Unix only). When listen is false, never completes.
+async fn sigusr1_fut_optional(listen: bool) {
+    if listen {
+        #[cfg(unix)]
+        {
+            let mut sig =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
+                    .expect("failed to install SIGUSR1 handler");
+            let _ = sig.recv().await;
+        }
+        #[cfg(not(unix))]
+        {
+            std::future::pending::<()>().await
+        }
+    } else {
+        std::future::pending::<()>().await
+    }
+}
+
 /// Future that completes when SIGHUP is received (Unix only). When listen is false, never completes.
 async fn sighup_fut_optional(listen: bool) {
     if listen {
         #[cfg(unix)]
         {
-            let mut sig =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-                    .expect("failed to install SIGHUP handler");
+            let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("failed to install SIGHUP handler");
             let _ = sig.recv().await;
         }
         #[cfg(not(unix))]
@@ -958,13 +1038,12 @@ fn next_delay(config: &Config, state_store_fallback_active: bool) -> Duration {
         0
     };
     let mut secs = (interval_secs as i64 + delta).max(1) as u64;
-    if state_store_fallback_active
-        && let Some(d) = config.global.degradation.as_ref() {
-            let mult = d.reduced_frequency_multiplier;
-            if mult > 0.0 && mult.is_finite() {
-                secs = (secs as f64 * mult).ceil().max(1.0) as u64;
-            }
+    if state_store_fallback_active && let Some(d) = config.global.degradation.as_ref() {
+        let mult = d.reduced_frequency_multiplier;
+        if mult > 0.0 && mult.is_finite() {
+            secs = (secs as f64 * mult).ceil().max(1.0) as u64;
         }
+    }
     Duration::from_secs(secs)
 }
 

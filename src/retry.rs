@@ -364,8 +364,7 @@ pub async fn execute_with_retry(
                 let body = response.text().await.unwrap_or_default();
                 last_err = Some(anyhow::anyhow!("http {} {}", status, body));
                 if attempt + 1 < retry.max_attempts {
-                    if !(status.as_u16() == 429 && rate_limit.is_some_and(|r| r.respect_headers))
-                    {
+                    if !(status.as_u16() == 429 && rate_limit.is_some_and(|r| r.respect_headers)) {
                         warn!(
                             status = %status,
                             attempt = attempt + 1,

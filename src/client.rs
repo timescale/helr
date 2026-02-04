@@ -159,9 +159,10 @@ pub fn build_request(
         req = req.header("DPoP", hv);
     }
     if bearer_override.is_none()
-        && let Some(auth) = &source.auth {
-            req = add_auth(req, auth)?;
-        }
+        && let Some(auth) = &source.auth
+    {
+        req = add_auth(req, auth)?;
+    }
     if let Some(headers) = &source.headers {
         for (k, v) in headers {
             let name = HeaderName::try_from(k.as_str())

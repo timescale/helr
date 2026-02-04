@@ -10,9 +10,10 @@ pub fn next_link_from_headers(headers: &HeaderMap, rel: &str) -> Option<String> 
     let link_values = headers.get_all(reqwest::header::LINK);
     for value in link_values {
         if let Ok(s) = value.to_str()
-            && let Some(url) = parse_link_header(s, rel) {
-                return Some(url);
-            }
+            && let Some(url) = parse_link_header(s, rel)
+        {
+            return Some(url);
+        }
     }
     None
 }

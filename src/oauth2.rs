@@ -81,17 +81,18 @@ pub async fn get_oauth_token(
         dpop,
     ) = oauth;
 
-    let use_private_key_jwt = client_private_key_env.is_some()
-        || client_private_key_file.is_some_and(|p| !p.is_empty());
+    let use_private_key_jwt =
+        client_private_key_env.is_some() || client_private_key_file.is_some_and(|p| !p.is_empty());
     let now = Instant::now();
     let buffer = Duration::from_secs(REFRESH_BUFFER_SECS);
 
     {
         let g = cache.read().await;
         if let Some((token, expires_at)) = g.get(source_id)
-            && now + buffer < *expires_at {
-                return Ok(token.clone());
-            }
+            && now + buffer < *expires_at
+        {
+            return Ok(token.clone());
+        }
     }
 
     let client_id = config::read_secret(client_id_file, client_id_env)?;
@@ -343,9 +344,10 @@ pub async fn get_google_sa_token(
     {
         let g = cache.read().await;
         if let Some((token, expires_at)) = g.get(source_id)
-            && now + buffer < *expires_at {
-                return Ok(token.clone());
-            }
+            && now + buffer < *expires_at
+        {
+            return Ok(token.clone());
+        }
     }
     let json_str = if let Some(p) = creds_path {
         if p.is_empty() {

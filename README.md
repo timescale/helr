@@ -123,6 +123,8 @@ Configuration is merged in this order (later overrides earlier):
 | `health.address` | Health server bind address | string | `0.0.0.0` |
 | `health.port` | Health server port | number | `8080` |
 | `reload.restart_sources_on_sighup` | On SIGHUP, also clear circuit breaker and OAuth2 token cache so sources re-establish on next tick | boolean | `false` |
+| `dump_on_sigusr1.destination` | Where to write SIGUSR1 dump: `log` (tracing at INFO) or `file` | string | `log` |
+| `dump_on_sigusr1.path` | Path when destination is `file`; required when destination is `file` | string | — |
 
 When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return detailed JSON (version, uptime, per-source status, circuit state, last_error). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.
 
@@ -149,6 +151,8 @@ When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return
 Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"}`, `hel_pending_events{source}`.
 
 **SIGHUP** (Unix): When running continuously (not `--once`, not replay), sending SIGHUP to the process reloads the config from the same file. The next poll tick uses the new config (sources, schedule, auth, etc.). Set `global.reload.restart_sources_on_sighup: true` to also clear the circuit breaker and OAuth2 token cache so each source re-establishes connections and tokens on the next tick.
+
+**SIGUSR1** (Unix): When `global.dump_on_sigusr1` is set, sending SIGUSR1 to the process dumps the current state (same shape as `hel state export`) and Prometheus metrics. Use `destination: log` to write the dump to the process log (INFO level), or `destination: file` with `path: /path/to/dump.txt` to write to a file.
 
 **Graceful degradation** (`global.degradation:`): State store fallback, emit without checkpoint on state write failure, and reduced poll frequency when degraded.
 

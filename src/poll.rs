@@ -55,9 +55,10 @@ pub async fn run_one_tick(
     let mut handles = Vec::new();
     for (source_id, source) in &config.sources {
         if let Some(filter) = source_filter
-            && filter != source_id {
-                continue;
-            }
+            && filter != source_id
+        {
+            continue;
+        }
         let store = store.clone();
         let source_id_key = source_id.clone();
         let source = source.clone();
@@ -340,10 +341,11 @@ async fn poll_link_header(
             break;
         }
         if page > 1
-            && let Some(secs) = page_delay {
-                tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
-                tokio::time::sleep(Duration::from_secs(secs)).await;
-            }
+            && let Some(secs) = page_delay
+        {
+            tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+        }
 
         if let Some(cb) = source
             .resilience
@@ -442,13 +444,14 @@ async fn poll_link_header(
         }
         let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit {
-                anyhow::bail!(
-                    "response body size {} exceeds max_response_bytes {}",
-                    body.len(),
-                    limit
-                );
-            }
+            && body.len() as u64 > limit
+        {
+            anyhow::bail!(
+                "response body size {} exceeds max_response_bytes {}",
+                body.len(),
+                limit
+            );
+        }
         total_bytes += body.len() as u64;
         let events = match parse_events_from_body(&body) {
             Ok(ev) => ev,
@@ -523,9 +526,10 @@ async fn poll_link_header(
         }
     }
     if source.checkpoint == Some(CheckpointTiming::EndOfTick)
-        && let Some(ref v) = pending_next_url {
-            store_set_or_skip(&store, source_id, source, global, "next_url", v).await?;
-        }
+        && let Some(ref v) = pending_next_url
+    {
+        store_set_or_skip(&store, source_id, source, global, "next_url", v).await?;
+    }
     store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
     store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
     Ok(())
@@ -576,10 +580,11 @@ async fn poll_cursor_pagination(
             break;
         }
         if page > 1
-            && let Some(secs) = page_delay {
-                tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
-                tokio::time::sleep(Duration::from_secs(secs)).await;
-            }
+            && let Some(secs) = page_delay
+        {
+            tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+        }
         use crate::config::HttpMethod;
         let (url, body_override) = match (&source.method, &cursor) {
             (HttpMethod::Get, Some(c)) => {
@@ -704,24 +709,26 @@ async fn poll_cursor_pagination(
             anyhow::bail!("http {} {}", status, body);
         }
         if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit {
-                anyhow::bail!(
-                    "response body size {} exceeds max_response_bytes {}",
-                    body.len(),
-                    limit
-                );
-            }
+            && body.len() as u64 > limit
+        {
+            anyhow::bail!(
+                "response body size {} exceeds max_response_bytes {}",
+                body.len(),
+                limit
+            );
+        }
         total_bytes += body.len() as u64;
         if let Some(limit) = max_bytes
-            && total_bytes > limit {
-                tracing::warn!(
-                    source = %source_id,
-                    total_bytes,
-                    max_bytes = limit,
-                    "reached max_bytes limit, stopping cursor pagination"
-                );
-                break;
-            }
+            && total_bytes > limit
+        {
+            tracing::warn!(
+                source = %source_id,
+                total_bytes,
+                max_bytes = limit,
+                "reached max_bytes limit, stopping cursor pagination"
+            );
+            break;
+        }
         let value: serde_json::Value = match serde_json::from_str(&body) {
             Ok(v) => v,
             Err(e) => {
@@ -795,9 +802,10 @@ async fn poll_cursor_pagination(
         }
     }
     if source.checkpoint == Some(CheckpointTiming::EndOfTick)
-        && let Some(ref v) = pending_cursor {
-            store_set_or_skip(&store, source_id, source, global, "cursor", v).await?;
-        }
+        && let Some(ref v) = pending_cursor
+    {
+        store_set_or_skip(&store, source_id, source, global, "cursor", v).await?;
+    }
     store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
     store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
     Ok(())
@@ -836,21 +844,23 @@ async fn poll_page_offset_pagination(
         .and_then(|rl| rl.page_delay_secs);
     for page in 1..=max_pages {
         if page > 1
-            && let Some(secs) = page_delay {
-                tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
-                tokio::time::sleep(Duration::from_secs(secs)).await;
-            }
+            && let Some(secs) = page_delay
+        {
+            tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+        }
         let mut u = Url::parse(base_url).context("page/offset base url")?;
         u.query_pairs_mut()
             .append_pair(page_param, &page.to_string());
         u.query_pairs_mut()
             .append_pair(limit_param, &limit.to_string());
         if page == 1
-            && let Some(ref params) = source.query_params {
-                for (k, v) in params {
-                    u.query_pairs_mut().append_pair(k, &v.to_param_value());
-                }
+            && let Some(ref params) = source.query_params
+        {
+            for (k, v) in params {
+                u.query_pairs_mut().append_pair(k, &v.to_param_value());
             }
+        }
         let url = u.to_string();
         if let Some(cb) = source
             .resilience
@@ -941,13 +951,14 @@ async fn poll_page_offset_pagination(
         }
         let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit {
-                anyhow::bail!(
-                    "response body size {} exceeds max_response_bytes {}",
-                    body.len(),
-                    limit
-                );
-            }
+            && body.len() as u64 > limit
+        {
+            anyhow::bail!(
+                "response body size {} exceeds max_response_bytes {}",
+                body.len(),
+                limit
+            );
+        }
         let events = match parse_events_from_body(&body) {
             Ok(ev) => ev,
             Err(e) => {
@@ -1107,13 +1118,14 @@ async fn poll_single_page(
     let path = record_url.path().to_string();
     let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
     if let Some(limit) = source.max_response_bytes
-        && body.len() as u64 > limit {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body.len(),
-                limit
-            );
-        }
+        && body.len() as u64 > limit
+    {
+        anyhow::bail!(
+            "response body size {} exceeds max_response_bytes {}",
+            body.len(),
+            limit
+        );
+    }
     let events = match parse_events_from_body(&body) {
         Ok(ev) => ev,
         Err(e) => {
@@ -1204,48 +1216,49 @@ fn emit_event_line(
     let label_key = effective_source_label_key(global, source);
     let line = emitted.to_ndjson_line_with_label_key(label_key)?;
     if let Some(max) = source.max_line_bytes
-        && line.len() as u64 > max {
-            match source
-                .max_line_bytes_behavior
-                .unwrap_or(MaxEventBytesBehavior::Fail)
-            {
-                MaxEventBytesBehavior::Truncate => {
-                    let max_usize = max as usize;
-                    let truncated: String = if max_usize >= 3 {
-                        format!(
-                            "{}...",
-                            line.chars()
-                                .take(max_usize.saturating_sub(3))
-                                .collect::<String>()
-                        )
-                    } else {
-                        line.chars().take(max_usize).collect()
-                    };
-                    event_sink
-                        .write_line_from_source(Some(source_id), &truncated)
-                        .inspect_err(|_e| {
-                            metrics::record_output_error(source_id);
-                        })?;
-                    return Ok(());
-                }
-                MaxEventBytesBehavior::Skip => {
-                    tracing::warn!(
-                        source = %source_id,
-                        line_len = line.len(),
-                        max = max,
-                        "event line exceeds max_line_bytes, skipping"
-                    );
-                    return Ok(());
-                }
-                MaxEventBytesBehavior::Fail => {
-                    anyhow::bail!(
-                        "event line length {} exceeds max_line_bytes {}",
-                        line.len(),
-                        max
-                    );
-                }
+        && line.len() as u64 > max
+    {
+        match source
+            .max_line_bytes_behavior
+            .unwrap_or(MaxEventBytesBehavior::Fail)
+        {
+            MaxEventBytesBehavior::Truncate => {
+                let max_usize = max as usize;
+                let truncated: String = if max_usize >= 3 {
+                    format!(
+                        "{}...",
+                        line.chars()
+                            .take(max_usize.saturating_sub(3))
+                            .collect::<String>()
+                    )
+                } else {
+                    line.chars().take(max_usize).collect()
+                };
+                event_sink
+                    .write_line_from_source(Some(source_id), &truncated)
+                    .inspect_err(|_e| {
+                        metrics::record_output_error(source_id);
+                    })?;
+                return Ok(());
+            }
+            MaxEventBytesBehavior::Skip => {
+                tracing::warn!(
+                    source = %source_id,
+                    line_len = line.len(),
+                    max = max,
+                    "event line exceeds max_line_bytes, skipping"
+                );
+                return Ok(());
+            }
+            MaxEventBytesBehavior::Fail => {
+                anyhow::bail!(
+                    "event line length {} exceeds max_line_bytes {}",
+                    line.len(),
+                    max
+                );
             }
         }
+    }
     event_sink
         .write_line_from_source(Some(source_id), &line)
         .inspect_err(|_e| {
@@ -1292,7 +1305,8 @@ fn merge_cursor_into_body(
     cursor_value: &str,
 ) -> serde_json::Value {
     let mut obj = base
-        .and_then(|v| v.as_object()).cloned()
+        .and_then(|v| v.as_object())
+        .cloned()
         .unwrap_or_default();
     obj.insert(
         cursor_param.to_string(),
@@ -1320,9 +1334,10 @@ async fn url_with_first_request_params(
     let mut u = reqwest::Url::parse(url).context("parse url for first-request params")?;
     if let Some(ref st) = source.state {
         if let Some(key) = watermark_state_key(source)
-            && let Some(val) = store.get(source_id, key).await?.filter(|s| !s.is_empty()) {
-                u.query_pairs_mut().append_pair(&st.watermark_param, &val);
-            }
+            && let Some(val) = store.get(source_id, key).await?.filter(|s| !s.is_empty())
+        {
+            u.query_pairs_mut().append_pair(&st.watermark_param, &val);
+        }
     } else if let Some(ref inc) = source.incremental_from {
         if let Some(val) = store
             .get(source_id, &inc.state_key)
@@ -1378,9 +1393,10 @@ fn value_at_path_as_string(value: &serde_json::Value, path: &str) -> Option<Stri
 fn update_max_timestamp(max_ts: &mut Option<String>, events: &[serde_json::Value], path: &str) {
     for event in events {
         if let Some(v) = value_at_path_as_string(event, path)
-            && max_ts.as_ref().is_none_or(|m| v.as_str() > m.as_str()) {
-                *max_ts = Some(v);
-            }
+            && max_ts.as_ref().is_none_or(|m| v.as_str() > m.as_str())
+        {
+            *max_ts = Some(v);
+        }
     }
 }
 
@@ -1430,9 +1446,10 @@ fn parse_events_from_value(value: &serde_json::Value) -> anyhow::Result<Vec<serd
     if let Some(obj) = value.as_object() {
         for key in &["items", "data", "events", "logs", "entries"] {
             if let Some(v) = obj.get(*key)
-                && let Some(arr) = v.as_array() {
-                    return Ok(arr.clone());
-                }
+                && let Some(arr) = v.as_array()
+            {
+                return Ok(arr.clone());
+            }
         }
     }
     Ok(vec![value.clone()])
@@ -1477,9 +1494,10 @@ fn event_ts_fallback(event: &serde_json::Value) -> String {
 fn event_ts_with_field(event: &serde_json::Value, timestamp_field: Option<&str>) -> String {
     if let Some(path) = timestamp_field
         && let Some(s) = json_path_str(event, path)
-            && !s.is_empty() {
-                return s;
-            }
+        && !s.is_empty()
+    {
+        return s;
+    }
     event_ts_fallback(event)
 }
 
@@ -1500,9 +1518,10 @@ fn build_emitted_event(
     let label = effective_source_label(source, source_id);
     let mut emitted = EmittedEvent::new(ts, label, path.to_string(), event_value.clone());
     if let Some(id_path) = source.transform.as_ref().and_then(|t| t.id_field.as_ref())
-        && let Some(id) = event_id(event_value, id_path) {
-            emitted = emitted.with_id(id);
-        }
+        && let Some(id) = event_id(event_value, id_path)
+    {
+        emitted = emitted.with_id(id);
+    }
     emitted
 }
 
