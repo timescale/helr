@@ -39,6 +39,7 @@ pub type LastErrorStore = Arc<RwLock<HashMap<String, String>>>;
 
 /// Run one poll tick for all sources (or only those matching source_filter).
 /// Sources are polled concurrently (one task per source).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_one_tick(
     config: &Config,
     store: Arc<dyn StateStore>,
@@ -142,6 +143,7 @@ pub async fn run_one_tick(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip(
     store,
     source,
@@ -292,6 +294,7 @@ async fn maybe_adaptive_sleep_after_response(
 }
 
 /// Link-header pagination: follow rel="next" until no more or max_pages.
+#[allow(clippy::too_many_arguments)]
 async fn poll_link_header(
     store: Arc<dyn StateStore>,
     source_id: &str,
@@ -529,6 +532,7 @@ async fn poll_link_header(
 }
 
 /// Cursor-in-body pagination: get cursor from response JSON path, pass as query param on next request.
+#[allow(clippy::too_many_arguments)]
 async fn poll_cursor_pagination(
     store: Arc<dyn StateStore>,
     source_id: &str,
@@ -800,6 +804,7 @@ async fn poll_cursor_pagination(
 }
 
 /// Page/offset pagination: increment page (or offset) each request, stop when empty or max_pages.
+#[allow(clippy::too_many_arguments)]
 async fn poll_page_offset_pagination(
     store: Arc<dyn StateStore>,
     source_id: &str,
@@ -994,6 +999,7 @@ async fn poll_page_offset_pagination(
 }
 
 /// Single page (no pagination loop): one GET, emit events, clear next_url.
+#[allow(clippy::too_many_arguments)]
 async fn poll_single_page(
     store: Arc<dyn StateStore>,
     source_id: &str,

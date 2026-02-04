@@ -259,7 +259,7 @@ fn drain_disk_buffer(path: &Path, file_lock: &Mutex<()>) -> Vec<String> {
     if old_path.exists()
         && let Ok(file) = std::fs::File::open(&old_path) {
             let reader = BufReader::new(file);
-            for line in reader.lines().filter_map(|r| r.ok()) {
+            for line in reader.lines().map_while(Result::ok) {
                 if !line.trim().is_empty() {
                     lines.push(line);
                 }
@@ -269,7 +269,7 @@ fn drain_disk_buffer(path: &Path, file_lock: &Mutex<()>) -> Vec<String> {
     if path.exists() {
         if let Ok(file) = std::fs::File::open(path) {
             let reader = BufReader::new(file);
-            for line in reader.lines().filter_map(|r| r.ok()) {
+            for line in reader.lines().map_while(Result::ok) {
                 if !line.trim().is_empty() {
                     lines.push(line);
                 }

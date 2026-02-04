@@ -206,6 +206,7 @@ async fn dpop_proof_for_request(
 
 /// Execute a GET or POST request with optional retries. Uses source auth and headers.
 /// Retries on 408, 429, 5xx, and transport errors; on 429 uses Retry-After when rate_limit.respect_headers is true.
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_with_retry(
     client: &Client,
     source: &SourceConfig,
@@ -261,12 +262,12 @@ pub async fn execute_with_retry(
                         source.auth,
                         Some(AuthConfig::OAuth2 { .. } | AuthConfig::GoogleServiceAccount { .. })
                     )
-                    && token_cache.is_some()
                     && !auth_refresh_attempted
+                    && let Some(cache) = token_cache
                 {
                     auth_refresh_attempted = true;
                     let _ = response.text().await;
-                    invalidate_token(token_cache.unwrap(), source_id).await;
+                    invalidate_token(cache, source_id).await;
                     warn!(source = %source_id, "401 Unauthorized, refreshed OAuth token, retrying");
                     continue;
                 }
