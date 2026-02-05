@@ -66,27 +66,11 @@ sources:
         stderr
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 2,
-        "expected at least 2 NDJSON lines, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-
-    for line in &lines {
-        let obj: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("invalid NDJSON line {:?}: {}", line, e));
-        assert_eq!(
-            obj.get("source").and_then(|v| v.as_str()),
-            Some("test-log-source")
-        );
-        assert!(obj.get("event").is_some());
-    }
-
-    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(first["event"]["id"], "1");
-    assert_eq!(first["event"]["msg"], "first");
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"/","event":{"id":"1","msg":"first","published":"2024-01-15T12:00:00Z"},"meta":{},"source":"test-log-source","ts":"REDACTED_TS"}
+{"endpoint":"/","event":{"id":"2","msg":"second","published":"2024-01-15T12:00:01Z"},"meta":{},"source":"test-log-source","ts":"REDACTED_TS"}
+"#);
 }
 
 /// Client-side rate limit (max_requests_per_second): hel throttles requests and still emits NDJSON.
@@ -145,21 +129,10 @@ sources:
         stderr
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 1,
-        "expected at least 1 NDJSON line with rate_limit, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap_or_else(|e| {
-        panic!("invalid NDJSON line {:?}: {}", lines[0], e);
-    });
-    assert_eq!(
-        obj.get("source").and_then(|v| v.as_str()),
-        Some("rps-source")
-    );
-    assert_eq!(obj["event"]["id"], "r1");
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"/","event":{"id":"r1","msg":"rate-limited","published":"2024-01-15T12:00:00Z"},"meta":{},"source":"rps-source","ts":"REDACTED_TS"}
+"#);
 }
 
 /// TLS config (min_version only): hel builds client and emits NDJSON (mock is HTTP; TLS applies to HTTPS sources).
@@ -217,21 +190,10 @@ sources:
         stderr
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 1,
-        "expected at least 1 NDJSON line with tls config, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-    let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap_or_else(|e| {
-        panic!("invalid NDJSON line {:?}: {}", lines[0], e);
-    });
-    assert_eq!(
-        obj.get("source").and_then(|v| v.as_str()),
-        Some("tls-source")
-    );
-    assert_eq!(obj["event"]["id"], "t1");
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"/","event":{"id":"t1","msg":"tls-config","published":"2024-01-15T12:00:00Z"},"meta":{},"source":"tls-source","ts":"REDACTED_TS"}
+"#);
 }
 
 /// Backpressure enabled (strategy block): hel still emits NDJSON to stdout.
@@ -299,27 +261,11 @@ sources:
         stderr
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 2,
-        "expected at least 2 NDJSON lines with backpressure, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-
-    for line in &lines {
-        let obj: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("invalid NDJSON line {:?}: {}", line, e));
-        assert_eq!(
-            obj.get("source").and_then(|v| v.as_str()),
-            Some("bp-source")
-        );
-        assert!(obj.get("event").is_some());
-    }
-
-    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(first["event"]["id"], "bp1");
-    assert_eq!(first["event"]["msg"], "backpressure-one");
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"/","event":{"id":"bp1","msg":"backpressure-one","published":"2024-01-15T12:00:00Z"},"meta":{},"source":"bp-source","ts":"REDACTED_TS"}
+{"endpoint":"/","event":{"id":"bp2","msg":"backpressure-two","published":"2024-01-15T12:00:01Z"},"meta":{},"source":"bp-source","ts":"REDACTED_TS"}
+"#);
 }
 
 /// Backpressure enabled (strategy drop): hel emits NDJSON; under load some events may be dropped (metrics).
@@ -388,17 +334,11 @@ sources:
         stderr
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 1,
-        "expected at least 1 NDJSON line with backpressure drop, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-
-    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(first["source"], "drop-source");
-    assert!(first.get("event").is_some());
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    // Under drop strategy we only assert at least one line; snapshot the first line's structure.
+    let lines: Vec<&str> = snapshot_output.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(!lines.is_empty(), "expected at least 1 NDJSON line: {}", stdout);
+    assert_snapshot!(lines[0], @r#"{"endpoint":"/","event":{"id":"d1","msg":"drop-one","published":"2024-01-15T12:00:00Z"},"meta":{},"source":"drop-source","ts":"REDACTED_TS"}"#);
 }
 
 /// 429 then 200: retry layer eventually succeeds and we get NDJSON.
@@ -808,6 +748,44 @@ fn run_hel(args: &[&str], config_path: &str) -> std::process::Output {
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
         .expect("run hel")
+}
+
+/// Redact variable parts of hel stdout so inline snapshots are stable across runs.
+fn redact_stdout_for_snapshot(stdout: &str, server_uri: Option<&str>) -> String {
+    let mut out = if let Some(uri) = server_uri {
+        stdout.replace(uri, "http://mock-server/")
+    } else {
+        stdout.to_string()
+    };
+    // Redact request_id (e.g. "hel-1770292017945225000").
+    let mut i = 0;
+    while let Some(pos) = out[i..].find("\"request_id\":\"hel-") {
+        let start = i + pos + "\"request_id\":\"hel-".len();
+        let end = start
+            + out[start..]
+                .bytes()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+        out.replace_range(start..end, "REDACTED");
+        i = start + 8; // "REDACTED".len()
+    }
+    // Redact "ts":"<iso datetime>" so snapshots are stable.
+    let mut i = 0;
+    while let Some(pos) = out[i..].find("\"ts\":\"") {
+        let start = i + pos + "\"ts\":\"".len();
+        let end = start
+            + out[start..]
+                .bytes()
+                .take_while(|b| *b != b'"')
+                .count();
+        if end > start {
+            out.replace_range(start..end, "REDACTED_TS");
+            i = start + 11; // "REDACTED_TS".len()
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 /// Dedupe: same event ID twice in one response → only one NDJSON line emitted.
@@ -1256,24 +1234,11 @@ sources:
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 2,
-        "expected 2 events from 2 pages, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-    let ids: Vec<String> = lines
-        .iter()
-        .map(|l| {
-            serde_json::from_str::<serde_json::Value>(l).unwrap()["event"]["id"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
-        .collect();
-    assert!(ids.contains(&"c1".to_string()));
-    assert!(ids.contains(&"c2".to_string()));
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"/","event":{"id":"c1","msg":"page1"},"meta":{},"source":"cursor-source","ts":"REDACTED_TS"}
+{"endpoint":"/","event":{"id":"c2","msg":"page2"},"meta":{},"source":"cursor-source","ts":"REDACTED_TS"}
+"#);
 }
 
 /// Page/offset pagination: two pages then empty.
@@ -1326,25 +1291,11 @@ sources:
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert_eq!(
-        lines.len(),
-        2,
-        "expected 2 events, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-    let ids: Vec<String> = lines
-        .iter()
-        .map(|l| {
-            serde_json::from_str::<serde_json::Value>(l).unwrap()["event"]["id"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
-        .collect();
-    assert!(ids.contains(&"p1".to_string()));
-    assert!(ids.contains(&"p2".to_string()));
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"/","event":{"id":"p1"},"meta":{},"source":"page-source","ts":"REDACTED_TS"}
+{"endpoint":"/","event":{"id":"p2"},"meta":{},"source":"page-source","ts":"REDACTED_TS"}
+"#);
 }
 
 /// Link-header max_pages: stop after max_pages even if next link present.
@@ -2062,23 +2013,9 @@ sources:
         stderr
     );
 
-    // Redact variable parts so the snapshot is stable across runs.
-    let mut snapshot_output = stdout
-        .replace(server.uri().as_str(), "http://mock-server/");
-    // Redact request_id (e.g. "hel-1770292017945225000") so snapshot is stable.
-    let mut i = 0;
-    while let Some(pos) = snapshot_output[i..].find("\"request_id\":\"hel-") {
-        let start = i + pos + "\"request_id\":\"hel-".len();
-        let end = start
-            + snapshot_output[start..]
-                .bytes()
-                .take_while(|b| b.is_ascii_digit())
-                .count();
-        snapshot_output.replace_range(start..end, "REDACTED");
-        i = start + 8; // "REDACTED".len()
-    }
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
     assert_snapshot!(snapshot_output, @r#"
-{"endpoint":"http://mock-server//","event":{"action":"login","id":"h1","published":"2024-06-01T10:00:00Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"2024-06-01T10:00:00Z"}
-{"endpoint":"http://mock-server//","event":{"action":"logout","id":"h2","published":"2024-06-01T10:00:01Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"2024-06-01T10:00:01Z"}
+{"endpoint":"http://mock-server//","event":{"action":"login","id":"h1","published":"2024-06-01T10:00:00Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"REDACTED_TS"}
+{"endpoint":"http://mock-server//","event":{"action":"logout","id":"h2","published":"2024-06-01T10:00:01Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"REDACTED_TS"}
 "#);
 }
