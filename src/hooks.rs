@@ -5,7 +5,10 @@
 
 use crate::config::HooksConfig;
 use anyhow::{Context as AnyhowContext, bail};
-use boa_engine::{Context, JsError, JsValue, Source};
+use boa_engine::{Context, JsError, JsResult, JsValue, Source};
+use boa_gc::{Finalize, Trace};
+use boa_runtime::console::{ConsoleState, Logger};
+use boa_runtime::Console;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -63,6 +66,14 @@ pub struct HookResponse {
     pub body: serde_json::Value,
 }
 
+/// Request that was sent (url and optional body). Passed to getNextPage so the hook can derive the next page (e.g. offset).
+#[derive(Debug, Clone, Serialize)]
+pub struct HookRequest {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+}
+
 /// One event from parseResponse: ts, source, event, meta (optional).
 #[derive(Debug, Clone)]
 pub struct HookEvent {
@@ -82,6 +93,29 @@ pub struct GetNextPageResult {
 /// State to commit from commitState: key-value pairs to write to the state store.
 pub type CommitStateResult = HashMap<String, String>;
 
+/// Logger that forwards console.log/info/warn/error to Hel's tracing (JSON logs).
+#[derive(Debug, Trace, Finalize)]
+struct TracingLogger;
+
+impl Logger for TracingLogger {
+    fn log(&self, msg: String, _state: &ConsoleState, _context: &mut Context) -> JsResult<()> {
+        tracing::info!(hook_console = %msg);
+        Ok(())
+    }
+    fn info(&self, msg: String, _state: &ConsoleState, _context: &mut Context) -> JsResult<()> {
+        tracing::info!(hook_console = %msg);
+        Ok(())
+    }
+    fn warn(&self, msg: String, _state: &ConsoleState, _context: &mut Context) -> JsResult<()> {
+        tracing::warn!(hook_console = %msg);
+        Ok(())
+    }
+    fn error(&self, msg: String, _state: &ConsoleState, _context: &mut Context) -> JsResult<()> {
+        tracing::error!(hook_console = %msg);
+        Ok(())
+    }
+}
+
 /// Run script, call fn_name with args (serialized as JSON), return result as JSON. Runs in spawn_blocking with timeout.
 /// Boa types are not Send, so we convert to serde_json/String inside the blocking task.
 async fn run_hook(
@@ -91,15 +125,17 @@ async fn run_hook(
     timeout: Duration,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let script = script.to_string();
-    let fn_name = fn_name.to_string();
+    let fn_name_owned = fn_name.to_string();
     let join_handle = task::spawn_blocking(move || {
         let mut context = Context::default();
+        Console::register_with_logger(TracingLogger, &mut context)
+            .map_err(|e: JsError| e.to_string())?;
         context
             .eval(Source::from_bytes(script.as_bytes()))
             .map_err(|e: JsError| e.to_string())?;
         let global = context.global_object();
         let func_val = global
-            .get(boa_engine::js_string!(fn_name.as_str()), &mut context)
+            .get(boa_engine::js_string!(fn_name_owned.as_str()), &mut context)
             .map_err(|e: JsError| e.to_string())?;
         let Some(func) = func_val.as_callable() else {
             return Ok(None);
@@ -120,9 +156,13 @@ async fn run_hook(
     let guard = tokio::time::timeout(timeout, join_handle);
     match guard.await {
         Ok(Ok(Ok(v))) => Ok(v),
-        Ok(Ok(Err(e))) => bail!("hook error: {}", e),
-        Ok(Err(e)) => bail!("hook task join: {}", e),
-        Err(_) => bail!("hook timed out after {:?}", timeout),
+        Ok(Ok(Err(e))) => {
+            // Use first line only so we don't duplicate Boa stack trace in logs
+            let msg = e.lines().next().unwrap_or(e.as_str()).trim();
+            bail!("hook {} error: {}", fn_name, msg)
+        }
+        Ok(Err(e)) => bail!("hook {} task join: {}", fn_name, e),
+        Err(_) => bail!("hook {} timed out after {:?}", fn_name, timeout),
     }
 }
 
@@ -213,17 +253,25 @@ pub async fn call_parse_response(
     Ok(events)
 }
 
-/// Call getNextPage(ctx, response). Returns null or { url?, body? }.
+/// Call getNextPage(ctx, response, request). Returns null or { url?, body? }. request is the request that was sent (url, body).
 pub async fn call_get_next_page(
     script: &str,
     ctx: &HookContext,
     response: &HookResponse,
+    request: &HookRequest,
     hooks_config: &HooksConfig,
 ) -> anyhow::Result<Option<GetNextPageResult>> {
     let timeout = Duration::from_secs(hooks_config.timeout_secs);
     let ctx_json = serde_json::to_value(ctx).context("serialize hook ctx")?;
     let resp_json = serde_json::to_value(response).context("serialize hook response")?;
-    let result = run_hook(script, "getNextPage", vec![ctx_json, resp_json], timeout).await?;
+    let request_json = serde_json::to_value(request).context("serialize hook request")?;
+    let result = run_hook(
+        script,
+        "getNextPage",
+        vec![ctx_json, resp_json, request_json],
+        timeout,
+    )
+    .await?;
     let Some(obj) = result.and_then(|v| v.as_object().cloned()) else {
         return Ok(None);
     };
@@ -363,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_hook_get_next_page_returns_null() {
-        let script = r#" function getNextPage(ctx, response) { return null; } "#;
+        let script = r#" function getNextPage(ctx, response, request) { return null; } "#;
         let ctx = HookContext {
             env: std::collections::HashMap::new(),
             state: std::collections::HashMap::new(),
@@ -377,8 +425,12 @@ mod tests {
             headers: std::collections::HashMap::new(),
             body: serde_json::json!({}),
         };
+        let request = HookRequest {
+            url: "https://example.com".to_string(),
+            body: None,
+        };
         let cfg = default_hooks_config();
-        let next = call_get_next_page(script, &ctx, &response, &cfg)
+        let next = call_get_next_page(script, &ctx, &response, &request, &cfg)
             .await
             .unwrap();
         assert!(next.is_none());

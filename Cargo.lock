@@ -346,6 +346,7 @@ dependencies = [
  "cow-utils",
  "dashmap",
  "dynify",
+ "either",
  "fast-float2",
  "float16",
  "futures-channel",
@@ -386,6 +387,7 @@ checksum = "f1179f690cbfcbe5364cceee5f1cb577265bb6f07b0be6f210aabe270adcf9da"
 dependencies = [
  "boa_macros",
  "boa_string",
+ "either",
  "hashbrown 0.16.1",
  "thin-vec",
 ]
@@ -436,6 +438,24 @@ dependencies = [
  "num-traits",
  "regress",
  "rustc-hash",
+]
+
+[[package]]
+name = "boa_runtime"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ee83c5e3634de25fe80c785c4a240483daedf9e346a9848ec87f7a13250471"
+dependencies = [
+ "boa_engine",
+ "boa_gc",
+ "bytemuck",
+ "either",
+ "futures",
+ "futures-lite",
+ "http",
+ "rustc-hash",
+ "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -1345,6 +1365,8 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "boa_engine",
+ "boa_gc",
+ "boa_runtime",
  "chrono",
  "clap",
  "governor",

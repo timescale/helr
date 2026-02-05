@@ -1,6 +1,6 @@
 # JS Hooks (Boa)
 
-Optional JavaScript hooks let you customize request building, response parsing, pagination, and state commit per source. Hooks run in a **sandbox**: timeout per call, no network (`fetch`) or file system (`require`) — Boa does not expose them by default.
+Optional JavaScript hooks let you customize request building, response parsing, pagination, and state commit per source. Hooks run in a **sandbox**: timeout per call, no network (`fetch`) or file system (`require`) — Boa does not expose them by default. **`console.log`, `console.warn`, and `console.error`** are available; output is forwarded to Hel's logger (tracing), so it appears as JSON like other Hel logs, with field `hook_console`.
 
 **Requires:** Build with `--features hooks` and enable hooks in config.
 
@@ -60,7 +60,7 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 |------|-------------|--------------|
 | **buildRequest(ctx)** | Before each HTTP request | `{ url?, headers?, query?, body? }` or `null` to use default |
 | **parseResponse(ctx, response)** | After each response | Array of `{ ts, source, event, meta? }` |
-| **getNextPage(ctx, response)** | After parsing; decide next page | `{ url?, body? }` or `null` when no more pages |
+| **getNextPage(ctx, response, request)** | After parsing; decide next page | `{ url?, body? }` or `null` when no more pages |
 | **commitState(ctx, events)** | After a successful poll tick | Object of key-value pairs to write to the state store |
 
 ### Context (`ctx`)
@@ -77,6 +77,11 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 - **response.status** — HTTP status code (number).
 - **response.headers** — Object of header name → value.
 - **response.body** — Parsed JSON (or string if not JSON).
+
+### Request (`request`), passed to getNextPage
+
+- **request.url** — URL that was sent.
+- **request.body** — Request body that was sent (if POST), so you can derive the next page (e.g. offset or cursor from the previous request).
 
 ## Example script (Okta-style)
 
@@ -109,7 +114,7 @@ function parseResponse(ctx, response) {
   });
 }
 
-function getNextPage(ctx, response) {
+function getNextPage(ctx, response, request) {
   const linkHeader = response.headers["link"] || response.headers["Link"];
   if (!linkHeader) return null;
   const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
@@ -180,7 +185,7 @@ function parseResponse(ctx, response) {
 Return the next request body with updated `variables.after`:
 
 ```javascript
-function getNextPage(ctx, response) {
+function getNextPage(ctx, response, request) {
   const body = typeof response.body === "string" ? JSON.parse(response.body) : response.body;
   const pageInfo = body.data && body.data.auditLog && body.data.auditLog.pageInfo;
   if (!pageInfo || !pageInfo.hasNextPage || !pageInfo.endCursor) return null;
@@ -224,6 +229,7 @@ When using hooks, the **hook** is responsible for auth (e.g. in `buildRequest` h
 - **Timeout:** Each hook call is limited to `hooks.timeout_secs` (default 5). Exceeding it fails the call and the poll tick.
 - **No network:** Boa does not expose `fetch` or `XMLHttpRequest` by default; hooks cannot make HTTP calls.
 - **No file system:** No `require` or Node-style `fs`; hooks cannot read or write files.
+- **Console:** `console.log`, `console.warn`, and `console.error` are available for debugging; they are forwarded to Hel's logger (tracing), so output is JSON with field `hook_console`.
 
 ## When to use hooks vs declarative config
 

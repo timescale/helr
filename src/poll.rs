@@ -372,8 +372,8 @@ async fn poll_with_hooks(
 ) -> anyhow::Result<()> {
     use crate::config::HttpMethod;
     use crate::hooks::{
-        HookContext, HookEvent, HookResponse, call_build_request, call_commit_state,
-        call_get_next_page, call_parse_response,
+        call_build_request, call_commit_state, call_get_next_page, call_parse_response,
+        HookContext, HookEvent, HookRequest, HookResponse,
     };
 
     let client = build_client(source.resilience.as_ref())?;
@@ -473,8 +473,11 @@ async fn poll_with_hooks(
                     req = req.json(b);
                 }
             } else if matches!(method, HttpMethod::Post) {
-                req = req
-                    .json(&final_body.unwrap_or(serde_json::Value::Object(serde_json::Map::new())));
+                req = req.json(
+                    &final_body
+                        .clone()
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                );
             }
             let req = req.build().context("build request")?;
             client.execute(req).await.context("http request")?
@@ -574,7 +577,11 @@ async fn poll_with_hooks(
         }
         all_events.extend(events);
 
-        let next = call_get_next_page(script, &ctx, &hook_response, hooks_config).await?;
+        let hook_request = HookRequest {
+            url: final_url.clone(),
+            body: final_body.clone(),
+        };
+        let next = call_get_next_page(script, &ctx, &hook_response, &hook_request, hooks_config).await?;
         match next {
             Some(n) if n.url.is_some() || n.body.is_some() => {
                 if let Some(u) = n.url {
