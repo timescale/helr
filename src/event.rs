@@ -82,6 +82,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn emitted_event_to_ndjson_line_snapshot() {
+        let e = EmittedEvent::new(
+            "2024-01-15T12:00:00Z".to_string(),
+            "test-source".to_string(),
+            "https://api.example.com/logs".to_string(),
+            serde_json::json!({"id": 1, "msg": "hello"}),
+        );
+        let line = e.to_ndjson_line().unwrap();
+        insta::assert_snapshot!(line, @r#"{"endpoint":"https://api.example.com/logs","event":{"id":1,"msg":"hello"},"meta":{},"source":"test-source","ts":"2024-01-15T12:00:00Z"}"#);
+    }
+
+    #[test]
     fn emitted_event_new_and_to_ndjson_line() {
         let e = EmittedEvent::new(
             "2024-01-15T12:00:00Z".to_string(),
