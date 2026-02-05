@@ -4,7 +4,7 @@
 #![cfg(feature = "hooks")]
 
 use crate::config::HooksConfig;
-use anyhow::{bail, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, bail};
 use boa_engine::{Context, JsError, JsValue, Source};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -15,7 +15,9 @@ use tokio::task;
 /// Resolved path to the hook script (absolute or relative to cwd). Use when loading from file; pass the `script` path string.
 pub fn script_path(global: &HooksConfig, script: &str) -> anyhow::Result<std::path::PathBuf> {
     let script = script.trim();
-    if script.starts_with('/') || (script.len() > 1 && (script.starts_with(".\\") || script.starts_with("./"))) {
+    if script.starts_with('/')
+        || (script.len() > 1 && (script.starts_with(".\\") || script.starts_with("./")))
+    {
         return Ok(Path::new(script).to_path_buf());
     }
     let base = global
@@ -92,7 +94,9 @@ async fn run_hook(
     let fn_name = fn_name.to_string();
     let join_handle = task::spawn_blocking(move || {
         let mut context = Context::default();
-        context.eval(Source::from_bytes(script.as_bytes())).map_err(|e: JsError| e.to_string())?;
+        context
+            .eval(Source::from_bytes(script.as_bytes()))
+            .map_err(|e: JsError| e.to_string())?;
         let global = context.global_object();
         let func_val = global
             .get(boa_engine::js_string!(fn_name.as_str()), &mut context)
@@ -108,7 +112,9 @@ async fn run_hook(
         let result = func
             .call(&JsValue::null(), &args, &mut context)
             .map_err(|e: JsError| e.to_string())?;
-        let json = result.to_json(&mut context).map_err(|e: JsError| e.to_string())?;
+        let json = result
+            .to_json(&mut context)
+            .map_err(|e: JsError| e.to_string())?;
         Ok::<_, String>(json)
     });
     let guard = tokio::time::timeout(timeout, join_handle);
@@ -177,7 +183,9 @@ pub async fn call_parse_response(
     };
     let mut events = Vec::new();
     for item in arr {
-        let obj = item.as_object().ok_or_else(|| anyhow::anyhow!("parseResponse element must be object"))?;
+        let obj = item
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("parseResponse element must be object"))?;
         let ts = obj
             .get("ts")
             .and_then(|v| v.as_str())
@@ -219,7 +227,10 @@ pub async fn call_get_next_page(
     let Some(obj) = result.and_then(|v| v.as_object().cloned()) else {
         return Ok(None);
     };
-    let url = obj.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let url = obj
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let body = obj.get("body").cloned();
     Ok(Some(GetNextPageResult { url, body }))
 }
@@ -292,8 +303,14 @@ mod tests {
         let result = call_build_request(script, &ctx, &cfg).await.unwrap();
         let r = result.expect("buildRequest should return object");
         assert_eq!(r.url.as_deref(), Some("https://example.com"));
-        assert_eq!(r.query.as_ref().and_then(|q| q.get("limit")), Some(&"10".to_string()));
-        assert_eq!(r.headers.as_ref().and_then(|h| h.get("X-Foo")), Some(&"bar".to_string()));
+        assert_eq!(
+            r.query.as_ref().and_then(|q| q.get("limit")),
+            Some(&"10".to_string())
+        );
+        assert_eq!(
+            r.headers.as_ref().and_then(|h| h.get("X-Foo")),
+            Some(&"bar".to_string())
+        );
     }
 
     #[tokio::test]
@@ -335,7 +352,9 @@ mod tests {
             body: serde_json::json!({ "items": [] }),
         };
         let cfg = default_hooks_config();
-        let events = call_parse_response(script, &ctx, &response, &cfg).await.unwrap();
+        let events = call_parse_response(script, &ctx, &response, &cfg)
+            .await
+            .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].ts, "2024-01-01T00:00:00Z");
         assert_eq!(events[0].source, "test");
@@ -359,7 +378,9 @@ mod tests {
             body: serde_json::json!({}),
         };
         let cfg = default_hooks_config();
-        let next = call_get_next_page(script, &ctx, &response, &cfg).await.unwrap();
+        let next = call_get_next_page(script, &ctx, &response, &cfg)
+            .await
+            .unwrap();
         assert!(next.is_none());
     }
 
@@ -380,9 +401,14 @@ mod tests {
         };
         let events: Vec<HookEvent> = vec![];
         let cfg = default_hooks_config();
-        let state = call_commit_state(script, &ctx, &events, &cfg).await.unwrap();
+        let state = call_commit_state(script, &ctx, &events, &cfg)
+            .await
+            .unwrap();
         assert_eq!(state.get("cursor"), Some(&"next-abc".to_string()));
-        assert_eq!(state.get("watermark"), Some(&"2024-01-01T00:00:00Z".to_string()));
+        assert_eq!(
+            state.get("watermark"),
+            Some(&"2024-01-01T00:00:00Z".to_string())
+        );
     }
 
     #[tokio::test]

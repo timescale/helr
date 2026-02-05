@@ -441,6 +441,14 @@ pub struct SourceConfig {
     #[serde(default)]
     pub dedupe: Option<DedupeConfig>,
 
+    /// Optional dotted JSON path to the array of events (e.g. "data.AndromedaEvents.edges"). When set, used instead of top-level "items"/"data"/"events"/"logs"/"entries".
+    #[serde(default)]
+    pub response_events_path: Option<String>,
+
+    /// Optional dotted path within each array element to use as the event (e.g. "node" for GraphQL edges). When set, each emitted event is element[path]; otherwise the element itself.
+    #[serde(default)]
+    pub response_event_object_path: Option<String>,
+
     /// Optional transform: which raw-event fields map to envelope ts and meta.id.
     #[serde(default)]
     pub transform: Option<TransformConfig>,
@@ -1093,14 +1101,22 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         .with_context(|| {
                             format!("source {}: oauth2 client_private_key (PEM)", source_id)
                         })?;
-                        crate::audit::log_credential_access(audit, source_id, "oauth2_client_private_key");
+                        crate::audit::log_credential_access(
+                            audit,
+                            source_id,
+                            "oauth2_client_private_key",
+                        );
                     } else {
                         read_secret(
                             client_secret_file.as_deref(),
                             client_secret_env.as_deref().unwrap_or(""),
                         )
                         .with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
-                        crate::audit::log_credential_access(audit, source_id, "oauth2_client_secret");
+                        crate::audit::log_credential_access(
+                            audit,
+                            source_id,
+                            "oauth2_client_secret",
+                        );
                     }
                     let has_refresh = refresh_token_env.as_deref().is_some_and(|e| !e.is_empty())
                         || refresh_token_file.as_deref().is_some_and(|p| !p.is_empty());
@@ -1109,7 +1125,11 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         read_secret(refresh_token_file.as_deref(), rt_env).with_context(|| {
                             format!("source {}: oauth2 refresh_token", source_id)
                         })?;
-                        crate::audit::log_credential_access(audit, source_id, "oauth2_refresh_token");
+                        crate::audit::log_credential_access(
+                            audit,
+                            source_id,
+                            "oauth2_refresh_token",
+                        );
                     }
                 }
                 AuthConfig::GoogleServiceAccount {
@@ -1140,7 +1160,11 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     });
                     let json_str = json_str
                         .with_context(|| format!("source {}: google_service_account credentials (set credentials_file or credentials_env)", source_id))?;
-                    crate::audit::log_credential_access(audit, source_id, "google_service_account_credentials");
+                    crate::audit::log_credential_access(
+                        audit,
+                        source_id,
+                        "google_service_account_credentials",
+                    );
                     let creds: serde_json::Value =
                         serde_json::from_str(&json_str).with_context(|| {
                             format!(
@@ -1157,14 +1181,22 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     if let Some(env) = subject_env.as_deref() {
                         read_secret(subject_file.as_deref(), env)
                             .with_context(|| format!("source {}: google_service_account subject (domain-wide delegation)", source_id))?;
-                        crate::audit::log_credential_access(audit, source_id, "google_service_account_subject");
+                        crate::audit::log_credential_access(
+                            audit,
+                            source_id,
+                            "google_service_account_subject",
+                        );
                     } else if let Some(path) = subject_file.as_deref()
                         && !path.is_empty()
                     {
                         std::fs::read_to_string(Path::new(path)).with_context(|| {
                             format!("source {}: google_service_account subject file", source_id)
                         })?;
-                        crate::audit::log_credential_access(audit, source_id, "google_service_account_subject");
+                        crate::audit::log_credential_access(
+                            audit,
+                            source_id,
+                            "google_service_account_subject",
+                        );
                     }
                 }
             }

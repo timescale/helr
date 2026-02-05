@@ -101,10 +101,7 @@ pub async fn get_oauth_token(
     let client_secret = if use_private_key_jwt {
         None
     } else {
-        let secret = config::read_secret(
-            client_secret_file,
-            client_secret_env.unwrap_or(""),
-        )?;
+        let secret = config::read_secret(client_secret_file, client_secret_env.unwrap_or(""))?;
         crate::audit::log_credential_access(audit, source_id, "oauth2_client_secret");
         Some(secret)
     };

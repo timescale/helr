@@ -3,7 +3,7 @@
 
 use crate::client::build_request;
 use crate::config::{
-    AuthConfig, AuditConfig, HttpMethod, RateLimitConfig, RateLimitHeaderMapping, RetryConfig,
+    AuditConfig, AuthConfig, HttpMethod, RateLimitConfig, RateLimitHeaderMapping, RetryConfig,
     SourceConfig,
 };
 use crate::dpop::{DPoPKeyCache, build_dpop_proof, get_or_create_dpop_key};

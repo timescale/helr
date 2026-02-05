@@ -229,7 +229,10 @@ async fn poll_one_source(
                 let path_buf = crate::hooks::script_path(global_hooks, path)?;
                 crate::hooks::load_script(&path_buf)?
             }
-            (None, None) => anyhow::bail!("hooks: set either script or script_inline for source {}", source_id),
+            (None, None) => anyhow::bail!(
+                "hooks: set either script or script_inline for source {}",
+                source_id
+            ),
         };
         return poll_with_hooks(
             store,
@@ -369,8 +372,8 @@ async fn poll_with_hooks(
 ) -> anyhow::Result<()> {
     use crate::config::HttpMethod;
     use crate::hooks::{
-        call_build_request, call_commit_state, call_get_next_page, call_parse_response,
-        HookContext, HookEvent, HookResponse,
+        HookContext, HookEvent, HookResponse, call_build_request, call_commit_state,
+        call_get_next_page, call_parse_response,
     };
 
     let client = build_client(source.resilience.as_ref())?;
@@ -432,7 +435,10 @@ async fn poll_with_hooks(
         };
 
         let response = if build_result.as_ref().and_then(|r| r.url.as_ref()).is_some()
-            || build_result.as_ref().and_then(|r| r.headers.as_ref()).is_some()
+            || build_result
+                .as_ref()
+                .and_then(|r| r.headers.as_ref())
+                .is_some()
         {
             let method = source.method;
             let request_url = if let Some(ref br) = build_result {
@@ -467,7 +473,8 @@ async fn poll_with_hooks(
                     req = req.json(b);
                 }
             } else if matches!(method, HttpMethod::Post) {
-                req = req.json(&final_body.unwrap_or(serde_json::Value::Object(serde_json::Map::new())));
+                req = req
+                    .json(&final_body.unwrap_or(serde_json::Value::Object(serde_json::Map::new())));
             }
             let req = req.build().context("build request")?;
             client.execute(req).await.context("http request")?
@@ -479,7 +486,10 @@ async fn poll_with_hooks(
                 &final_url,
                 final_body.as_ref(),
                 source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
-                source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
+                source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.rate_limit.as_ref()),
                 Some(&token_cache),
                 dpop_key_cache.as_ref(),
                 global.audit.as_ref(),
@@ -491,9 +501,7 @@ async fn poll_with_hooks(
         let headers_map: HashMap<String, String> = response
             .headers()
             .iter()
-            .filter_map(|(k, v)| {
-                Some((k.as_str().to_string(), v.to_str().ok()?.to_string()))
-            })
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
             .collect();
         let body_bytes = response.bytes().await.context("read body")?;
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
@@ -505,36 +513,52 @@ async fn poll_with_hooks(
             body: body_json,
         };
 
-        let events: Vec<HookEvent> = match call_parse_response(script, &ctx, &hook_response, hooks_config).await? {
-            ev if !ev.is_empty() => ev,
-            _ => {
-                let parsed = parse_events_from_body(&body_str)?;
-                parsed
-                    .into_iter()
-                    .map(|event_value| {
-                        let ts = event_ts_with_field(
-                            &event_value,
-                            source.transform.as_ref().and_then(|t| t.timestamp_field.as_deref()),
-                        );
-                        HookEvent {
-                            ts,
-                            source: label.clone(),
-                            event: event_value,
-                            meta: None,
-                        }
-                    })
-                    .collect()
-            }
-        };
+        let events: Vec<HookEvent> =
+            match call_parse_response(script, &ctx, &hook_response, hooks_config).await? {
+                ev if !ev.is_empty() => ev,
+                _ => {
+                    let parsed = parse_events_from_body_for_source(&body_str, source)?;
+                    parsed
+                        .into_iter()
+                        .map(|event_value| {
+                            let ts = event_ts_with_field(
+                                &event_value,
+                                source
+                                    .transform
+                                    .as_ref()
+                                    .and_then(|t| t.timestamp_field.as_deref()),
+                            );
+                            HookEvent {
+                                ts,
+                                source: label.clone(),
+                                event: event_value,
+                                meta: None,
+                            }
+                        })
+                        .collect()
+                }
+            };
 
         for he in &events {
             if let Some(d) = &source.dedupe {
-                let id = he.meta.as_ref().and_then(|m| m.get("id")).and_then(|v| v.as_str()).unwrap_or("");
-                if !id.is_empty() && dedupe::seen_and_add(&dedupe_store, source_id, id.to_string(), d.capacity).await {
+                let id = he
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if !id.is_empty()
+                    && dedupe::seen_and_add(&dedupe_store, source_id, id.to_string(), d.capacity)
+                        .await
+                {
                     continue;
                 }
             }
-            let meta_cursor = he.meta.as_ref().and_then(|m| m.get("cursor")).and_then(|v| v.as_str());
+            let meta_cursor = he
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("cursor"))
+                .and_then(|v| v.as_str());
             let mut emitted = EmittedEvent::new(
                 he.ts.clone(),
                 he.source.clone(),
@@ -795,7 +819,7 @@ async fn poll_link_header(
             );
         }
         total_bytes += body.len() as u64;
-        let events = match parse_events_from_body(&body) {
+        let events = match parse_events_from_body_for_source(&body, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -1091,7 +1115,7 @@ async fn poll_cursor_pagination(
                 return Err(e).context("parse response json");
             }
         };
-        let events = match parse_events_from_value(&value) {
+        let events = match parse_events_from_value_for_source(&value, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -1321,7 +1345,7 @@ async fn poll_page_offset_pagination(
                 limit
             );
         }
-        let events = match parse_events_from_body(&body) {
+        let events = match parse_events_from_body_for_source(&body, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -1498,7 +1522,7 @@ async fn poll_single_page(
             limit
         );
     }
-    let events = match parse_events_from_body(&body) {
+    let events = match parse_events_from_body_for_source(&body, source) {
         Ok(ev) => ev,
         Err(e) => {
             if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -1804,10 +1828,85 @@ async fn store_watermark_after_poll(
     }
 }
 
-/// Parse response body: top-level array, or object with "items"/"data"/"events" array.
-fn parse_events_from_body(body: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+/// Parse response body using source's response_events_path / response_event_object_path when set.
+pub(super) fn parse_events_from_body_for_source(
+    body: &str,
+    source: &SourceConfig,
+) -> anyhow::Result<Vec<serde_json::Value>> {
     let value: serde_json::Value = serde_json::from_str(body).context("parse response json")?;
-    parse_events_from_value(&value)
+    parse_events_from_value_for_source(&value, source)
+}
+
+/// Extract events from parsed JSON using source's optional paths or default keys.
+pub(super) fn parse_events_from_value_for_source(
+    value: &serde_json::Value,
+    source: &SourceConfig,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let path = source.response_events_path.as_deref();
+    let obj_path = source.response_event_object_path.as_deref();
+    if path.is_some() || obj_path.is_some() {
+        parse_events_from_value_with_path(value, path, obj_path)
+    } else {
+        parse_events_from_value(value)
+    }
+}
+
+/// Extract events array at dotted path, optionally unwrapping each element (e.g. edge.node).
+fn parse_events_from_value_with_path(
+    value: &serde_json::Value,
+    events_path: Option<&str>,
+    event_object_path: Option<&str>,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let arr = match events_path {
+        Some(p) => json_path_array(value, p).ok_or_else(|| {
+            anyhow::anyhow!("response_events_path {:?} did not resolve to an array", p)
+        })?,
+        None => {
+            if let Some(arr) = value.as_array() {
+                arr.clone()
+            } else if let Some(obj) = value.as_object() {
+                for key in &["items", "data", "events", "logs", "entries"] {
+                    if let Some(v) = obj.get(*key).and_then(|v| v.as_array()) {
+                        return Ok(unwrap_event_objects(v, event_object_path));
+                    }
+                }
+                anyhow::bail!(
+                    "response has no top-level array or known events key (items/data/events/logs/entries)"
+                );
+            } else {
+                anyhow::bail!("response root is not an object or array");
+            }
+        }
+    };
+    Ok(unwrap_event_objects(&arr, event_object_path))
+}
+
+/// Get array at dotted path (e.g. "data.AndromedaEvents.edges").
+fn json_path_array(value: &serde_json::Value, path: &str) -> Option<Vec<serde_json::Value>> {
+    let mut v = value;
+    for segment in path.split('.') {
+        v = v.get(segment)?;
+    }
+    v.as_array().cloned()
+}
+
+/// For each element, optionally take the value at dotted path (e.g. "node"); otherwise use element.
+fn unwrap_event_objects(
+    arr: &[serde_json::Value],
+    object_path: Option<&str>,
+) -> Vec<serde_json::Value> {
+    let Some(path) = object_path else {
+        return arr.to_vec();
+    };
+    arr.iter()
+        .filter_map(|el| {
+            let mut v = el;
+            for segment in path.split('.') {
+                v = v.get(segment)?;
+            }
+            Some(v.clone())
+        })
+        .collect()
 }
 
 /// Extract events array from parsed JSON (same keys as parse_events_from_body).

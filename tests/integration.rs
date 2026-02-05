@@ -336,8 +336,15 @@ sources:
 
     let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
     // Under drop strategy we only assert at least one line; snapshot the first line's structure.
-    let lines: Vec<&str> = snapshot_output.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(!lines.is_empty(), "expected at least 1 NDJSON line: {}", stdout);
+    let lines: Vec<&str> = snapshot_output
+        .lines()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    assert!(
+        !lines.is_empty(),
+        "expected at least 1 NDJSON line: {}",
+        stdout
+    );
     assert_snapshot!(lines[0], @r#"{"endpoint":"/","event":{"id":"d1","msg":"drop-one","published":"2024-01-15T12:00:00Z"},"meta":{},"source":"drop-source","ts":"REDACTED_TS"}"#);
 }
 
@@ -773,11 +780,7 @@ fn redact_stdout_for_snapshot(stdout: &str, server_uri: Option<&str>) -> String 
     let mut i = 0;
     while let Some(pos) = out[i..].find("\"ts\":\"") {
         let start = i + pos + "\"ts\":\"".len();
-        let end = start
-            + out[start..]
-                .bytes()
-                .take_while(|b| *b != b'"')
-                .count();
+        let end = start + out[start..].bytes().take_while(|b| *b != b'"').count();
         if end > start {
             out.replace_range(start..end, "REDACTED_TS");
             i = start + 11; // "REDACTED_TS".len()
@@ -1950,14 +1953,12 @@ async fn integration_hooks_inline_script_emits_ndjson() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "items": [
-                    {"id": "h1", "published": "2024-06-01T10:00:00Z", "action": "login"},
-                    {"id": "h2", "published": "2024-06-01T10:00:01Z", "action": "logout"}
-                ]
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [
+                {"id": "h1", "published": "2024-06-01T10:00:00Z", "action": "login"},
+                {"id": "h2", "published": "2024-06-01T10:00:01Z", "action": "logout"}
+            ]
+        })))
         .mount(&server)
         .await;
 
