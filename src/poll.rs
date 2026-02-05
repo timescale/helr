@@ -458,6 +458,16 @@ async fn poll_with_hooks(
                 HttpMethod::Get => client.get(&request_url),
                 HttpMethod::Post => client.post(&request_url),
             };
+            if let Some(headers) = &source.headers {
+                for (k, v) in headers {
+                    if let (Ok(name), Ok(val)) = (
+                        reqwest::header::HeaderName::try_from(k.as_str()),
+                        reqwest::header::HeaderValue::try_from(v.as_str()),
+                    ) {
+                        req = req.header(name, val);
+                    }
+                }
+            }
             if let Some(ref br) = build_result {
                 if let Some(ref h) = br.headers {
                     for (k, v) in h {
