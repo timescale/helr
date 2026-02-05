@@ -33,7 +33,13 @@ governor = "0.10"
 redis = { version = "1.0", features = ["tokio-comp", "connection-manager"] }
 tokio-postgres = "0.7"
 
+# Optional JS hooks (Boa engine). When disabled, sources with hooks config are ignored.
+boa_engine = { version = "0.21", optional = true }
+
 [features]
+default = []
+# Enable optional JS hooks: buildRequest, parseResponse, getNextPage, commitState (sandboxed, no network/fs).
+hooks = ["dep:boa_engine"]
 # Run integration tests that spin up Redis/Postgres via testcontainers (requires Docker).
 # Usage: cargo test --features testcontainers --test integration_testcontainers
 testcontainers = []

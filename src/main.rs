@@ -23,6 +23,9 @@ mod replay;
 mod retry;
 mod state;
 
+#[cfg(feature = "hooks")]
+mod hooks;
+
 use axum::routing::get;
 use circuit::new_circuit_store;
 use config::{Config, DumpOnSigusr1Config};

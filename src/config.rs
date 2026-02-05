@@ -71,6 +71,51 @@ pub struct GlobalConfig {
     /// Load shedding: when backpressure is active (queue full or memory over threshold), optionally skip polling low-priority sources. Uses backpressure.detection (max pending events, memory threshold).
     #[serde(default)]
     pub load_shedding: Option<LoadSheddingConfig>,
+
+    /// Optional JS hooks (Boa): buildRequest, parseResponse, getNextPage, commitState. Sandbox: timeout, no network/fs.
+    #[serde(default)]
+    pub hooks: Option<HooksConfig>,
+}
+
+/// Global hooks config: script path, timeout, sandbox (no network/fs).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HooksConfig {
+    /// Enable JS hooks for sources that specify a script.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Directory (or base path) for hook scripts. Per-source script is path/script or absolute if script starts with /.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Max execution time per hook call (seconds). Default 5.
+    #[serde(default = "default_hooks_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Boa heap limit in MB (optional; not all Boa builds support it).
+    #[serde(default)]
+    pub memory_limit_mb: Option<u64>,
+    /// Allow fetch() in hooks (default false; sandbox).
+    #[serde(default)]
+    pub allow_network: bool,
+    /// Allow file system access in hooks (default false; sandbox).
+    #[serde(default)]
+    pub allow_fs: bool,
+}
+
+fn default_hooks_timeout_secs() -> u64 {
+    5
+}
+
+/// Per-source hooks: script from file path and/or inline string.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceHooksConfig {
+    /// Script filename (e.g. "okta.js") under global hooks.path, or absolute path. Omit if using script_inline.
+    #[serde(default)]
+    pub script: Option<String>,
+
+    /// Inline JavaScript for hooks (alternative to script path). Use YAML block scalar (e.g. `|`) for multi-line. One of script or script_inline must be set.
+    #[serde(default)]
+    pub script_inline: Option<String>,
 }
 
 /// Load shedding: skip low-priority sources when under load (backpressure active).
@@ -429,6 +474,10 @@ pub struct SourceConfig {
     /// When state store write fails (e.g. disk full): "fail" (default) or "skip_checkpoint" (log and continue).
     #[serde(default)]
     pub on_state_write_error: Option<OnStateWriteErrorBehavior>,
+
+    /// Optional JS hooks script for this source (buildRequest, parseResponse, getNextPage, commitState). Requires global hooks.enabled.
+    #[serde(default)]
+    pub hooks: Option<SourceHooksConfig>,
 }
 
 /// Config for time-based incremental ingestion: use state for "from" param and store latest event timestamp after each poll.
@@ -1957,5 +2006,32 @@ sources:
             st_pg.url.as_deref(),
             Some("postgres://user:pass@localhost/hel")
         );
+    }
+
+    #[test]
+    fn config_load_source_hooks_script_path() {
+        let yaml = r#"
+url: "https://example.com/"
+hooks:
+  script: "okta.js"
+"#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let h = source.hooks.as_ref().unwrap();
+        assert_eq!(h.script.as_deref(), Some("okta.js"));
+        assert!(h.script_inline.is_none());
+    }
+
+    #[test]
+    fn config_load_source_hooks_script_inline() {
+        let yaml = r#"
+url: "https://example.com/"
+hooks:
+  script_inline: |
+    function buildRequest(ctx) { return {}; }
+"#;
+        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let h = source.hooks.as_ref().unwrap();
+        assert!(h.script.is_none());
+        assert!(h.script_inline.as_ref().unwrap().contains("buildRequest"));
     }
 }

@@ -16,6 +16,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Backpressure:** When the downstream consumer (stdout/file) can’t keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
 - **Graceful degradation:** When the state store fails or is unavailable: optional **state_store_fallback** to memory (state not durable), **emit_without_checkpoint** to continue emitting events when state writes fail, and **reduced_frequency_multiplier** to poll less often when degraded; health JSON reports **state_store_fallback_active**
 - **Session replay:** Record API responses to disk, replay without hitting the live API
+- **Optional JS hooks (Boa):** Per-source scripts for `buildRequest`, `parseResponse`, `getNextPage`, `commitState`; sandbox (timeout, no network/fs). Build with `--features hooks`. See [**docs/hooks.md**](./docs/hooks.md) and the **GraphQL-via-hooks** pattern there.
 
 ## Install
 
