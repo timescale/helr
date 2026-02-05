@@ -1,6 +1,7 @@
 //! Integration tests: replay + wiremock + hel run --once; assert stdout NDJSON and behavior.
 
 use base64::Engine;
+use insta::assert_snapshot;
 use serde_json::json;
 use std::time::Duration;
 use wiremock::matchers::method;
@@ -2061,22 +2062,23 @@ sources:
         stderr
     );
 
-    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
-    assert!(
-        lines.len() >= 2,
-        "expected at least 2 NDJSON lines from hooks parseResponse, got {}: {:?}",
-        lines.len(),
-        stdout
-    );
-
-    for line in &lines {
-        let obj: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("invalid NDJSON line {:?}: {}", line, e));
-        assert_eq!(
-            obj.get("source").and_then(|v| v.as_str()),
-            Some("hooks-inline-source"),
-            "expected source=hooks-inline-source in line: {}",
-            line
-        );
+    // Redact variable parts so the snapshot is stable across runs.
+    let mut snapshot_output = stdout
+        .replace(server.uri().as_str(), "http://mock-server/");
+    // Redact request_id (e.g. "hel-1770292017945225000") so snapshot is stable.
+    let mut i = 0;
+    while let Some(pos) = snapshot_output[i..].find("\"request_id\":\"hel-") {
+        let start = i + pos + "\"request_id\":\"hel-".len();
+        let end = start
+            + snapshot_output[start..]
+                .bytes()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+        snapshot_output.replace_range(start..end, "REDACTED");
+        i = start + 8; // "REDACTED".len()
     }
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"http://mock-server//","event":{"action":"login","id":"h1","published":"2024-06-01T10:00:00Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"2024-06-01T10:00:00Z"}
+{"endpoint":"http://mock-server//","event":{"action":"logout","id":"h2","published":"2024-06-01T10:00:01Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"2024-06-01T10:00:01Z"}
+"#);
 }
