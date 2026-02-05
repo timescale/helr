@@ -1991,3 +1991,92 @@ sources:
         status
     );
 }
+
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn integration_hooks_inline_script_emits_ndjson() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [
+                    {"id": "h1", "published": "2024-06-01T10:00:00Z", "action": "login"},
+                    {"id": "h2", "published": "2024-06-01T10:00:01Z", "action": "logout"}
+                ]
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_hooks_test");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("hel.yaml");
+    // Use script_inline as a single-line string to avoid YAML block-scalar indentation issues.
+    let script_inline = r#"function parseResponse(ctx, response) { var body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; var items = body.items || body.data || []; return items.map(function(e) { return { ts: e.published || '', source: ctx.sourceId, event: e, meta: {} }; }); }"#;
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+  hooks:
+    enabled: true
+    timeout_secs: 5
+sources:
+  hooks-inline-source:
+    url: "{}/"
+    hooks:
+      script_inline: "{}"
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri(),
+        script_inline.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+        format!(
+            "{}/target/debug/hel",
+            std::env::var("CARGO_MANIFEST_DIR").unwrap()
+        )
+    });
+
+    let output = std::process::Command::new(&hel_bin)
+        .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
+        .env("RUST_LOG", "error")
+        .env("HEL_LOG_LEVEL", "error")
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
+        .output()
+        .expect("run hel");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "hel run --once with hooks failed: stdout={} stderr={}",
+        stdout,
+        stderr
+    );
+
+    let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
+    assert!(
+        lines.len() >= 2,
+        "expected at least 2 NDJSON lines from hooks parseResponse, got {}: {:?}",
+        lines.len(),
+        stdout
+    );
+
+    for line in &lines {
+        let obj: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("invalid NDJSON line {:?}: {}", line, e));
+        assert_eq!(
+            obj.get("source").and_then(|v| v.as_str()),
+            Some("hooks-inline-source"),
+            "expected source=hooks-inline-source in line: {}",
+            line
+        );
+    }
+}
