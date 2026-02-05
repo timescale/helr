@@ -243,16 +243,14 @@ pub async fn execute_with_retry(
                 bearer.as_deref(),
             )
             .await?;
-            let req = build_request(
-                client,
-                source,
-                url,
-                bearer.as_deref(),
-                body,
+            let req_ctx = crate::client::BuildRequestContext {
+                bearer_override: bearer.as_deref(),
+                body_override: body,
                 dpop_proof,
                 source_id,
                 audit,
-            )?;
+            };
+            let req = build_request(client, source, url, &req_ctx)?;
             return client.execute(req).await.context("http request");
         }
     };
@@ -278,16 +276,14 @@ pub async fn execute_with_retry(
             bearer.as_deref(),
         )
         .await?;
-        let req = build_request(
-            client,
-            source,
-            url,
-            bearer.as_deref(),
-            body,
+        let req_ctx = crate::client::BuildRequestContext {
+            bearer_override: bearer.as_deref(),
+            body_override: body,
             dpop_proof,
             source_id,
             audit,
-        )?;
+        };
+        let req = build_request(client, source, url, &req_ctx)?;
         match client.execute(req).await {
             Ok(response) => {
                 if response.status().is_success() {
@@ -342,16 +338,14 @@ pub async fn execute_with_retry(
                                 bearer.as_deref(),
                             )
                             .await?;
-                            let retry_req = build_request(
-                                client,
-                                source,
-                                url,
-                                bearer.as_deref(),
-                                body,
-                                dpop_proof_with_nonce,
+                            let retry_req_ctx = crate::client::BuildRequestContext {
+                                bearer_override: bearer.as_deref(),
+                                body_override: body,
+                                dpop_proof: dpop_proof_with_nonce,
                                 source_id,
                                 audit,
-                            )?;
+                            };
+                            let retry_req = build_request(client, source, url, &retry_req_ctx)?;
                             match client.execute(retry_req).await {
                                 Ok(retry_response) if retry_response.status().is_success() => {
                                     return Ok(retry_response);

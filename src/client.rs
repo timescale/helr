@@ -122,23 +122,29 @@ pub fn build_client(resilience: Option<&ResilienceConfig>) -> anyhow::Result<Cli
     Ok(client)
 }
 
+/// Context passed to build_request: overrides and audit for auth.
+#[derive(Default)]
+pub struct BuildRequestContext<'a> {
+    pub bearer_override: Option<&'a str>,
+    pub body_override: Option<&'a serde_json::Value>,
+    pub dpop_proof: Option<String>,
+    pub source_id: &'a str,
+    pub audit: Option<&'a crate::config::AuditConfig>,
+}
+
 /// Build GET or POST request with auth and optional headers. bearer_override/dpop_proof used when set (e.g. OAuth2).
 pub fn build_request(
     client: &Client,
     source: &SourceConfig,
     url: &str,
-    bearer_override: Option<&str>,
-    body_override: Option<&serde_json::Value>,
-    dpop_proof: Option<String>,
-    source_id: &str,
-    audit: Option<&crate::config::AuditConfig>,
+    ctx: &BuildRequestContext<'_>,
 ) -> anyhow::Result<reqwest::Request> {
     use crate::config::HttpMethod;
     let mut req = match source.method {
         HttpMethod::Get => client.get(url),
         HttpMethod::Post => {
             let empty: serde_json::Value = serde_json::Value::Object(serde_json::Map::new());
-            let body_value = body_override.or(source.body.as_ref()).unwrap_or(&empty);
+            let body_value = ctx.body_override.or(source.body.as_ref()).unwrap_or(&empty);
             let body_bytes = serde_json::to_vec(body_value).context("serialize POST body")?;
             client
                 .post(url)
@@ -146,8 +152,8 @@ pub fn build_request(
                 .body(body_bytes)
         }
     };
-    if let Some(token) = bearer_override {
-        let scheme = if dpop_proof.is_some() {
+    if let Some(token) = ctx.bearer_override {
+        let scheme = if ctx.dpop_proof.is_some() {
             "DPoP"
         } else {
             "Bearer"
@@ -156,14 +162,14 @@ pub fn build_request(
         let hv = HeaderValue::try_from(value).context("invalid bearer token")?;
         req = req.header(AUTHORIZATION, hv);
     }
-    if let Some(proof) = dpop_proof {
-        let hv = HeaderValue::try_from(proof).context("invalid DPoP proof")?;
+    if let Some(proof) = &ctx.dpop_proof {
+        let hv = HeaderValue::try_from(proof.as_str()).context("invalid DPoP proof")?;
         req = req.header("DPoP", hv);
     }
-    if bearer_override.is_none()
+    if ctx.bearer_override.is_none()
         && let Some(auth) = &source.auth
     {
-        req = add_auth(req, auth, source_id, audit)?;
+        req = add_auth(req, auth, ctx.source_id, ctx.audit)?;
     }
     if let Some(headers) = &source.headers {
         for (k, v) in headers {
