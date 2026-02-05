@@ -75,6 +75,32 @@ pub struct GlobalConfig {
     /// Optional JS hooks (Boa): buildRequest, parseResponse, getNextPage, commitState. Sandbox: timeout, no network/fs.
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
+
+    /// Optional audit: log credential access, config reloads; redact secrets in logs.
+    #[serde(default)]
+    pub audit: Option<AuditConfig>,
+}
+
+/// Audit config: log credential access and config changes; never log secret values when redact_secrets is true.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditConfig {
+    /// Enable audit logging (credential access, config load/reload).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Log when secrets are read (env/file). Logs event only, never the value.
+    #[serde(default = "default_true")]
+    pub log_credential_access: bool,
+    /// Log when config is loaded or reloaded (e.g. on SIGHUP).
+    #[serde(default = "default_true")]
+    pub log_config_changes: bool,
+    /// Redact secret values in all log output (use [REDACTED] instead of value).
+    #[serde(default = "default_true")]
+    pub redact_secrets: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Global hooks config: script path, timeout, sandbox (no network/fs).
@@ -936,6 +962,7 @@ impl Config {
 
 /// Validate TLS config: client cert and key both set when either is set; resolve CA/cert/key so startup fails if missing.
 pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
+    let audit = config.global.audit.as_ref();
     for (source_id, source) in &config.sources {
         let Some(tls) = source.resilience.as_ref().and_then(|r| r.tls.as_ref()) else {
             continue;
@@ -965,17 +992,20 @@ pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
                 tls.client_cert_env.as_deref().unwrap_or(""),
             )
             .with_context(|| format!("source {}: tls client_cert", source_id))?;
+            crate::audit::log_credential_access(audit, source_id, "tls_client_cert");
             read_secret(
                 tls.client_key_file.as_deref(),
                 tls.client_key_env.as_deref().unwrap_or(""),
             )
             .with_context(|| format!("source {}: tls client_key", source_id))?;
+            crate::audit::log_credential_access(audit, source_id, "tls_client_key");
         }
         let has_ca = tls.ca_file.as_deref().is_some_and(|p| !p.is_empty())
             || tls.ca_env.as_deref().is_some_and(|e| !e.is_empty());
         if has_ca {
             read_secret(tls.ca_file.as_deref(), tls.ca_env.as_deref().unwrap_or(""))
                 .with_context(|| format!("source {}: tls ca", source_id))?;
+            crate::audit::log_credential_access(audit, source_id, "tls_ca");
         }
         if let Some(v) = tls.min_version.as_deref()
             && v != "1.2"
@@ -993,6 +1023,7 @@ pub fn validate_tls(config: &Config) -> anyhow::Result<()> {
 
 /// Validate that all auth secrets (env or file) can be resolved. Fail at startup so health reflects "not ready".
 pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
+    let audit = config.global.audit.as_ref();
     for (source_id, source) in &config.sources {
         if let Some(auth) = &source.auth {
             match auth {
@@ -1003,12 +1034,14 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                 } => {
                     read_secret(token_file.as_deref(), token_env)
                         .with_context(|| format!("source {}: bearer token", source_id))?;
+                    crate::audit::log_credential_access(audit, source_id, "bearer_token");
                 }
                 AuthConfig::ApiKey {
                     key_env, key_file, ..
                 } => {
                     read_secret(key_file.as_deref(), key_env)
                         .with_context(|| format!("source {}: api key", source_id))?;
+                    crate::audit::log_credential_access(audit, source_id, "api_key");
                 }
                 AuthConfig::Basic {
                     user_env,
@@ -1018,8 +1051,10 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                 } => {
                     read_secret(user_file.as_deref(), user_env)
                         .with_context(|| format!("source {}: basic user", source_id))?;
+                    crate::audit::log_credential_access(audit, source_id, "basic_user");
                     read_secret(password_file.as_deref(), password_env)
                         .with_context(|| format!("source {}: basic password", source_id))?;
+                    crate::audit::log_credential_access(audit, source_id, "basic_password");
                 }
                 AuthConfig::OAuth2 {
                     client_id_env,
@@ -1034,6 +1069,7 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                 } => {
                     read_secret(client_id_file.as_deref(), client_id_env)
                         .with_context(|| format!("source {}: oauth2 client_id", source_id))?;
+                    crate::audit::log_credential_access(audit, source_id, "oauth2_client_id");
                     let has_private_key = client_private_key_env
                         .as_deref()
                         .is_some_and(|e| !e.is_empty())
@@ -1057,12 +1093,14 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         .with_context(|| {
                             format!("source {}: oauth2 client_private_key (PEM)", source_id)
                         })?;
+                        crate::audit::log_credential_access(audit, source_id, "oauth2_client_private_key");
                     } else {
                         read_secret(
                             client_secret_file.as_deref(),
                             client_secret_env.as_deref().unwrap_or(""),
                         )
                         .with_context(|| format!("source {}: oauth2 client_secret", source_id))?;
+                        crate::audit::log_credential_access(audit, source_id, "oauth2_client_secret");
                     }
                     let has_refresh = refresh_token_env.as_deref().is_some_and(|e| !e.is_empty())
                         || refresh_token_file.as_deref().is_some_and(|p| !p.is_empty());
@@ -1071,6 +1109,7 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                         read_secret(refresh_token_file.as_deref(), rt_env).with_context(|| {
                             format!("source {}: oauth2 refresh_token", source_id)
                         })?;
+                        crate::audit::log_credential_access(audit, source_id, "oauth2_refresh_token");
                     }
                 }
                 AuthConfig::GoogleServiceAccount {
@@ -1101,6 +1140,7 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     });
                     let json_str = json_str
                         .with_context(|| format!("source {}: google_service_account credentials (set credentials_file or credentials_env)", source_id))?;
+                    crate::audit::log_credential_access(audit, source_id, "google_service_account_credentials");
                     let creds: serde_json::Value =
                         serde_json::from_str(&json_str).with_context(|| {
                             format!(
@@ -1117,12 +1157,14 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                     if let Some(env) = subject_env.as_deref() {
                         read_secret(subject_file.as_deref(), env)
                             .with_context(|| format!("source {}: google_service_account subject (domain-wide delegation)", source_id))?;
+                        crate::audit::log_credential_access(audit, source_id, "google_service_account_subject");
                     } else if let Some(path) = subject_file.as_deref()
                         && !path.is_empty()
                     {
                         std::fs::read_to_string(Path::new(path)).with_context(|| {
                             format!("source {}: google_service_account subject file", source_id)
                         })?;
+                        crate::audit::log_credential_access(audit, source_id, "google_service_account_subject");
                     }
                 }
             }
@@ -2019,6 +2061,29 @@ hooks:
         let h = source.hooks.as_ref().unwrap();
         assert_eq!(h.script.as_deref(), Some("okta.js"));
         assert!(h.script_inline.is_none());
+    }
+
+    #[test]
+    fn config_load_audit() {
+        let yaml = r#"
+global:
+  audit:
+    enabled: true
+    log_credential_access: true
+    log_config_changes: true
+    redact_secrets: true
+sources:
+  x:
+    url: "https://example.com/"
+    pagination:
+      strategy: link_header
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let audit = config.global.audit.as_ref().unwrap();
+        assert!(audit.enabled);
+        assert!(audit.log_credential_access);
+        assert!(audit.log_config_changes);
+        assert!(audit.redact_secrets);
     }
 
     #[test]

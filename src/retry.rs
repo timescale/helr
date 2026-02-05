@@ -3,7 +3,8 @@
 
 use crate::client::build_request;
 use crate::config::{
-    AuthConfig, HttpMethod, RateLimitConfig, RateLimitHeaderMapping, RetryConfig, SourceConfig,
+    AuthConfig, AuditConfig, HttpMethod, RateLimitConfig, RateLimitHeaderMapping, RetryConfig,
+    SourceConfig,
 };
 use crate::dpop::{DPoPKeyCache, build_dpop_proof, get_or_create_dpop_key};
 use crate::oauth2::{OAuth2TokenCache, get_google_sa_token, get_oauth_token, invalidate_token};
@@ -151,10 +152,12 @@ async fn bearer_for_request(
     source_id: &str,
     token_cache: Option<&OAuth2TokenCache>,
     dpop_key_cache: Option<&DPoPKeyCache>,
+    audit: Option<&AuditConfig>,
 ) -> anyhow::Result<Option<String>> {
     match (&source.auth, token_cache) {
         (Some(auth @ AuthConfig::OAuth2 { .. }), Some(cache)) => {
-            let token = get_oauth_token(cache, client, source_id, auth, dpop_key_cache).await?;
+            let token =
+                get_oauth_token(cache, client, source_id, auth, dpop_key_cache, audit).await?;
             Ok(Some(token))
         }
         (Some(auth @ AuthConfig::GoogleServiceAccount { .. }), Some(cache)) => {
@@ -217,12 +220,20 @@ pub async fn execute_with_retry(
     rate_limit: Option<&RateLimitConfig>,
     token_cache: Option<&OAuth2TokenCache>,
     dpop_key_cache: Option<&DPoPKeyCache>,
+    audit: Option<&AuditConfig>,
 ) -> anyhow::Result<Response> {
     let retry = match retry {
         Some(r) if r.max_attempts > 0 => r,
         _ => {
-            let bearer =
-                bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
+            let bearer = bearer_for_request(
+                client,
+                source,
+                source_id,
+                token_cache,
+                dpop_key_cache,
+                audit,
+            )
+            .await?;
             let dpop_proof = dpop_proof_for_request(
                 source_id,
                 source,
@@ -232,7 +243,16 @@ pub async fn execute_with_retry(
                 bearer.as_deref(),
             )
             .await?;
-            let req = build_request(client, source, url, bearer.as_deref(), body, dpop_proof)?;
+            let req = build_request(
+                client,
+                source,
+                url,
+                bearer.as_deref(),
+                body,
+                dpop_proof,
+                source_id,
+                audit,
+            )?;
             return client.execute(req).await.context("http request");
         }
     };
@@ -240,8 +260,15 @@ pub async fn execute_with_retry(
     let mut last_err = None;
     let mut auth_refresh_attempted = false;
     for attempt in 0..retry.max_attempts {
-        let bearer =
-            bearer_for_request(client, source, source_id, token_cache, dpop_key_cache).await?;
+        let bearer = bearer_for_request(
+            client,
+            source,
+            source_id,
+            token_cache,
+            dpop_key_cache,
+            audit,
+        )
+        .await?;
         let dpop_proof = dpop_proof_for_request(
             source_id,
             source,
@@ -251,7 +278,16 @@ pub async fn execute_with_retry(
             bearer.as_deref(),
         )
         .await?;
-        let req = build_request(client, source, url, bearer.as_deref(), body, dpop_proof)?;
+        let req = build_request(
+            client,
+            source,
+            url,
+            bearer.as_deref(),
+            body,
+            dpop_proof,
+            source_id,
+            audit,
+        )?;
         match client.execute(req).await {
             Ok(response) => {
                 if response.status().is_success() {
@@ -313,6 +349,8 @@ pub async fn execute_with_retry(
                                 bearer.as_deref(),
                                 body,
                                 dpop_proof_with_nonce,
+                                source_id,
+                                audit,
                             )?;
                             match client.execute(retry_req).await {
                                 Ok(retry_response) if retry_response.status().is_success() => {

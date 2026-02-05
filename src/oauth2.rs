@@ -37,6 +37,7 @@ pub async fn get_oauth_token(
     source_id: &str,
     auth: &AuthConfig,
     dpop_key_cache: Option<&DPoPKeyCache>,
+    audit: Option<&crate::config::AuditConfig>,
 ) -> anyhow::Result<String> {
     let oauth = match auth {
         AuthConfig::OAuth2 {
@@ -96,19 +97,25 @@ pub async fn get_oauth_token(
     }
 
     let client_id = config::read_secret(client_id_file, client_id_env)?;
+    crate::audit::log_credential_access(audit, source_id, "oauth2_client_id");
     let client_secret = if use_private_key_jwt {
         None
     } else {
-        Some(config::read_secret(
+        let secret = config::read_secret(
             client_secret_file,
             client_secret_env.unwrap_or(""),
-        )?)
+        )?;
+        crate::audit::log_credential_access(audit, source_id, "oauth2_client_secret");
+        Some(secret)
     };
 
     let mut form: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let refresh_token = refresh_token_env
         .and_then(|e| config::read_secret(refresh_token_file, e).ok())
         .or_else(|| refresh_token_file.and_then(|p| config::read_secret(Some(p), "").ok()));
+    if refresh_token.is_some() {
+        crate::audit::log_credential_access(audit, source_id, "oauth2_refresh_token");
+    }
 
     if let Some(rt) = refresh_token {
         form.insert("grant_type".into(), "refresh_token".into());
@@ -133,6 +140,7 @@ pub async fn get_oauth_token(
             client_private_key_file,
             client_private_key_env.unwrap_or(""),
         )?;
+        crate::audit::log_credential_access(audit, source_id, "oauth2_client_private_key");
         let client_assertion =
             build_client_assertion(&client_id, token_url.as_str(), &private_key_pem, source_id)?;
         form.insert(
@@ -201,6 +209,7 @@ pub async fn get_oauth_token(
                     client_private_key_file,
                     client_private_key_env.unwrap_or(""),
                 )?;
+                crate::audit::log_credential_access(audit, source_id, "oauth2_client_private_key");
                 let new_assertion = build_client_assertion(
                     &client_id,
                     token_url.as_str(),

@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+mod audit;
 mod circuit;
 mod client;
 mod config;
@@ -184,7 +185,9 @@ async fn main() -> anyhow::Result<()> {
             run_validate(config)
         }
         other => {
-            let config = Config::load(&hel_config_path(&cli))?;
+            let config_path = hel_config_path(&cli);
+            let config = Config::load(&config_path)?;
+            audit::log_config_change(config.global.audit.as_ref(), &config_path, false);
             init_logging(Some(&config), &cli);
             match other {
                 Some(Commands::Run {
@@ -934,6 +937,7 @@ async fn run_collector(
                 if let Some(path) = config_path_for_reload.as_deref() {
                     match Config::load(path) {
                         Ok(new_config) => {
+                            audit::log_config_change(new_config.global.audit.as_ref(), path, true);
                             {
                                 let mut g = config_arc.write().await;
                                 *g = new_config;

@@ -482,6 +482,7 @@ async fn poll_with_hooks(
                 source.resilience.as_ref().and_then(|r| r.rate_limit.as_ref()),
                 Some(&token_cache),
                 dpop_key_cache.as_ref(),
+                global.audit.as_ref(),
             )
             .await?
         };
@@ -713,6 +714,7 @@ async fn poll_link_header(
                 .and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
             dpop_key_cache.as_ref(),
+            global.audit.as_ref(),
         )
         .await
         {
@@ -980,6 +982,7 @@ async fn poll_cursor_pagination(
                 .and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
             dpop_key_cache.as_ref(),
+            global.audit.as_ref(),
         )
         .await
         {
@@ -1246,6 +1249,7 @@ async fn poll_page_offset_pagination(
                 .and_then(|r| r.rate_limit.as_ref()),
             Some(&token_cache),
             dpop_key_cache.as_ref(),
+            global.audit.as_ref(),
         )
         .await
         {
@@ -1420,6 +1424,7 @@ async fn poll_single_page(
             .and_then(|r| r.rate_limit.as_ref()),
         Some(&token_cache),
         dpop_key_cache.as_ref(),
+        global.audit.as_ref(),
     )
     .await
     {

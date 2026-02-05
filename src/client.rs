@@ -130,6 +130,8 @@ pub fn build_request(
     bearer_override: Option<&str>,
     body_override: Option<&serde_json::Value>,
     dpop_proof: Option<String>,
+    source_id: &str,
+    audit: Option<&crate::config::AuditConfig>,
 ) -> anyhow::Result<reqwest::Request> {
     use crate::config::HttpMethod;
     let mut req = match source.method {
@@ -161,7 +163,7 @@ pub fn build_request(
     if bearer_override.is_none()
         && let Some(auth) = &source.auth
     {
-        req = add_auth(req, auth)?;
+        req = add_auth(req, auth, source_id, audit)?;
     }
     if let Some(headers) = &source.headers {
         for (k, v) in headers {
@@ -178,6 +180,8 @@ pub fn build_request(
 fn add_auth(
     req: reqwest::RequestBuilder,
     auth: &AuthConfig,
+    source_id: &str,
+    audit: Option<&crate::config::AuditConfig>,
 ) -> anyhow::Result<reqwest::RequestBuilder> {
     let req = match auth {
         AuthConfig::Bearer {
@@ -186,6 +190,7 @@ fn add_auth(
             prefix,
         } => {
             let token = config::read_secret(token_file.as_deref(), token_env)?;
+            crate::audit::log_credential_access(audit, source_id, "bearer_token");
             let value = format!("{} {}", prefix, token);
             let hv = HeaderValue::try_from(value).context("invalid bearer token")?;
             req.header(AUTHORIZATION, hv)
@@ -196,6 +201,7 @@ fn add_auth(
             key_file,
         } => {
             let key = config::read_secret(key_file.as_deref(), key_env)?;
+            crate::audit::log_credential_access(audit, source_id, "api_key");
             let name = HeaderName::try_from(header.as_str())
                 .with_context(|| format!("invalid api key header name: {:?}", header))?;
             let hv = HeaderValue::try_from(key.as_str()).context("invalid api key value")?;
@@ -208,7 +214,9 @@ fn add_auth(
             password_file,
         } => {
             let user = config::read_secret(user_file.as_deref(), user_env)?;
+            crate::audit::log_credential_access(audit, source_id, "basic_user");
             let password = config::read_secret(password_file.as_deref(), password_env)?;
+            crate::audit::log_credential_access(audit, source_id, "basic_password");
             let encoded = base64::engine::general_purpose::STANDARD
                 .encode(format!("{}:{}", user, password).as_bytes());
             let value = format!("Basic {}", encoded);
