@@ -353,6 +353,12 @@ Create an **API access token** with **logs:configuration:read** (and optionally 
 
 Full steps and troubleshooting: **[docs/integrations/tailscale.md](docs/integrations/tailscale.md)**.
 
+## How to run with Andromeda Security
+
+Build with the **hooks** feature. Create a **Personal Access Token** in Andromeda and set `ANDROMEDA_PAT` (or copy the full Cookie header from the browser and set `ANDROMEDA_COOKIE` for short-lived runs). Enable `allow_network: true` in `global.hooks` so the hook's **getAuth** can exchange the PAT for a session cookie via **fetch()**. Uncomment the `andromeda-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source andromeda-audit` or `hel run`. The API is **GraphQL** (POST) with offset-based pagination; the hook handles backfill by advancing `skip` each poll.
+
+Full steps and troubleshooting: **[docs/integrations/andromeda.md](docs/integrations/andromeda.md)**.
+
 ## Session replay
 
 Record API responses once, then replay from disk to test the pipeline without hitting the live API: `hel run --once --record-dir ./recordings` to save; `hel run --once --replay-dir ./recordings` to replay.
