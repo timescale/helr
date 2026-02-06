@@ -38,7 +38,7 @@ pub fn load_script(path: &Path) -> anyhow::Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("read hook script: {}", path.display()))
 }
 
-/// Context object passed to hooks: env (env vars), state (state store snapshot), requestId, sourceId, defaultSince, pagination.
+/// Context object passed to hooks: env (env vars), state (state store snapshot), requestId, sourceId, defaultSince, pagination, headers (source-configured headers).
 #[derive(Debug, Clone, Serialize)]
 pub struct HookContext {
     pub env: HashMap<String, String>,
@@ -49,6 +49,9 @@ pub struct HookContext {
     pub default_since: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pagination: Option<HashMap<String, String>>,
+    /// Source-configured headers (e.g. User-Agent, Referer). Hooks can reuse them for fetch() in getAuth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
 }
 
 /// Request override from buildRequest: url (optional), headers, query, body.
@@ -445,6 +448,7 @@ mod tests {
             source_id: "test".to_string(),
             default_since: None,
             pagination: None,
+            headers: None,
         };
         let cfg = default_hooks_config();
         let result = call_build_request(script, &ctx, &cfg).await.unwrap();
@@ -470,6 +474,7 @@ mod tests {
             source_id: "test".to_string(),
             default_since: None,
             pagination: None,
+            headers: None,
         };
         let cfg = default_hooks_config();
         let result = call_build_request(script, &ctx, &cfg).await.unwrap();
@@ -492,6 +497,7 @@ mod tests {
             source_id: "test".to_string(),
             default_since: None,
             pagination: None,
+            headers: None,
         };
         let response = HookResponse {
             status: 200,
@@ -524,6 +530,7 @@ mod tests {
             source_id: "test".to_string(),
             default_since: None,
             pagination: None,
+            headers: None,
         };
         let cfg = default_hooks_config();
         let result = call_get_auth(script, &ctx, &cfg).await.unwrap();
@@ -544,6 +551,7 @@ mod tests {
             source_id: "test".to_string(),
             default_since: None,
             pagination: None,
+            headers: None,
         };
         let cfg = default_hooks_config();
         let result = call_get_auth(script, &ctx, &cfg).await.unwrap();
@@ -560,6 +568,7 @@ mod tests {
             source_id: "test".to_string(),
             default_since: None,
             pagination: None,
+            headers: None,
         };
         let response = HookResponse {
             status: 200,
@@ -591,6 +600,7 @@ mod tests {
             source_id: "test".to_string(),
             default_since: None,
             pagination: None,
+            headers: None,
         };
         let events: Vec<HookEvent> = vec![];
         let cfg = default_hooks_config();

@@ -72,6 +72,7 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 - **ctx.sourceId** — Source key from config.
 - **ctx.defaultSince** — Value of `from` from config (if set).
 - **ctx.pagination** — `{ lastCursor }` when applicable.
+- **ctx.headers** — Source-configured headers from config (e.g. User-Agent, Referer). Use in getAuth for fetch() so login and main request share the same headers.
 
 ### Response (`response`)
 

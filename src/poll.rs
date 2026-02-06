@@ -423,6 +423,7 @@ async fn poll_with_hooks(
             } else {
                 Some(pagination)
             },
+            headers: source.headers.clone(),
         };
 
         // Optional getAuth(ctx): returns headers/cookie/body/query to merge into the request (hook can use ctx.env and fetch()).
@@ -661,6 +662,7 @@ async fn poll_with_hooks(
         } else {
             Some(pagination)
         },
+        headers: source.headers.clone(),
     };
     let to_commit = call_commit_state(script, &commit_ctx, &all_events, hooks_config).await?;
     for (key, value) in to_commit {
