@@ -261,7 +261,7 @@ When using hooks, the **hook** is responsible for auth (e.g. in `buildRequest` h
 ## Sandbox
 
 - **Timeout:** Each hook call is limited to `hooks.timeout_secs` (default 5). Exceeding it fails the call and the poll tick.
-- **No network:** Boa does not expose `fetch` or `XMLHttpRequest` by default; hooks cannot make HTTP calls.
+- **Network:** By default hooks cannot make HTTP calls. Set **`allow_network: true`** in `global.hooks` to enable **`fetch()`** (e.g. for token or cookie exchange in getAuth).
 - **No file system:** No `require` or Node-style `fs`; hooks cannot read or write files.
 - **Console:** `console.log`, `console.warn`, and `console.error` are available for debugging; they are forwarded to Hel's logger (tracing), so output is JSON with field `hook_console`.
 
