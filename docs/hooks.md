@@ -83,6 +83,42 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 - **request.url** — URL that was sent.
 - **request.body** — Request body that was sent (if POST), so you can derive the next page (e.g. offset or cursor from the previous request).
 
+## Login-for-cookie auth
+
+Many APIs (e.g. Andromeda Security, other SaaS) exchange a **token/code for a session cookie**: you POST the credential to a login URL and get back `Set-Cookie`; you then send that cookie on API requests. Hel supports this generically so any integration can reuse the same pattern.
+
+**Config:** Use `auth.type: login_for_cookie` with hooks:
+
+```yaml
+sources:
+  my-api:
+    url: "https://api.example.com/graphql"
+    method: post
+    auth:
+      type: login_for_cookie
+      login_url: "https://api.example.com/login/access-key"
+      credential_env: MY_API_PAT
+      cookie_env: MY_API_COOKIE   # Hel injects the cookie into ctx.env under this key
+      body_key: "code"            # optional; default "code". Request body is { body_key: credential }
+    hooks:
+      script: "my-api.js"
+```
+
+**Flow:** Each poll, Hel POSTs `{ body_key: credential }` to `login_url`, reads `Set-Cookie` from the response, and injects it into `ctx.env[cookie_env]`. Your hook’s **buildRequest** reads `ctx.env[cookie_env]` and sets the `Cookie` header. The same cookie is reused for all pages in that poll.
+
+**Hook pattern:** In `buildRequest`, set the Cookie header from the env key you configured:
+
+```javascript
+function buildRequest(ctx) {
+  var headers = { "Content-Type": "application/json" };
+  var cookie = (ctx.env && ctx.env.MY_API_COOKIE) || "";
+  if (cookie) headers["Cookie"] = cookie;
+  return { headers: headers, body: { ... } };
+}
+```
+
+**Convenience:** For Andromeda Security you can use `auth.type: andromeda_pat` (same flow with Andromeda’s default login URL and `cookie_env: ANDROMEDA_COOKIE`). Other integrations use `login_for_cookie` with their own URL and env names.
+
 ## Example script (Okta-style)
 
 ```javascript

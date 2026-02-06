@@ -8,7 +8,7 @@ use crate::config::{
     RateLimitConfig, SourceConfig,
 };
 #[cfg(feature = "hooks")]
-use crate::config::{HooksConfig, SourceHooksConfig};
+use crate::config::{AuthConfig, HooksConfig, SourceHooksConfig};
 use crate::dedupe::{self, DedupeStore};
 use crate::dpop::DPoPKeyCache;
 use crate::event::EmittedEvent;
@@ -377,6 +377,36 @@ async fn poll_with_hooks(
     };
 
     let client = build_client(source.resilience.as_ref())?;
+    // (env_key to inject cookie into, cookie value) for hook ctx.env
+    let login_cookie: Option<(String, String)> = match &source.auth {
+        Some(AuthConfig::AndromedaPat { pat_env, login_url }) => {
+            let pat = crate::config::read_secret(None, pat_env)?;
+            let cookie = crate::andromeda::exchange_pat_for_cookie(
+                &client,
+                login_url.as_deref(),
+                &pat,
+            )
+            .await?;
+            Some(("ANDROMEDA_COOKIE".to_string(), cookie))
+        }
+        Some(AuthConfig::LoginForCookie {
+            login_url,
+            credential_env,
+            cookie_env,
+            body_key,
+        }) => {
+            let credential = crate::config::read_secret(None, credential_env)?;
+            let cookie = crate::login_cookie::exchange_credential_for_cookie(
+                &client,
+                login_url,
+                &credential,
+                body_key,
+            )
+            .await?;
+            Some((cookie_env.clone(), cookie))
+        }
+        _ => None,
+    };
     let max_pages = 100u32;
     let mut url = store
         .get(source_id, "next_url")
@@ -412,8 +442,12 @@ async fn poll_with_hooks(
         if let Some(c) = state_map.get("cursor") {
             pagination.insert("lastCursor".to_string(), c.clone());
         }
+        let mut env: HashMap<String, String> = std::env::vars().collect();
+        if let Some((ref env_key, ref cookie_value)) = login_cookie {
+            env.insert(env_key.clone(), cookie_value.clone());
+        }
         let ctx = HookContext {
-            env: std::env::vars().collect(),
+            env,
             state: state_map,
             request_id: format!("hel-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             source_id: source_id.to_string(),

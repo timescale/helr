@@ -711,6 +711,32 @@ pub enum AuthConfig {
         subject_file: Option<String>,
         scopes: Vec<String>,
     },
+    /// Andromeda Security: exchange Personal Access Token (PAT) for session cookie. Use with hooks; cookie is injected into ctx.env as ANDROMEDA_COOKIE. Convenience for login_for_cookie with Andromeda defaults.
+    #[serde(rename = "andromeda_pat")]
+    AndromedaPat {
+        /// Env var containing the PAT (e.g. ANDROMEDA_PAT).
+        pat_env: String,
+        /// Login URL (default: https://api.live.andromedasecurity.com/login/access-key).
+        #[serde(default)]
+        login_url: Option<String>,
+    },
+    /// Generic: exchange a credential for a session cookie via POST to login_url. Use with hooks; cookie is injected into ctx.env under cookie_env. Reusable for any API that returns Set-Cookie (e.g. Andromeda, other SaaS).
+    #[serde(rename = "login_for_cookie")]
+    LoginForCookie {
+        /// URL to POST the credential to (e.g. https://api.example.com/login/access-key).
+        login_url: String,
+        /// Env var containing the credential (PAT, API key, etc.).
+        credential_env: String,
+        /// Env key to inject the cookie into so the hook can set the Cookie header (e.g. ANDROMEDA_COOKIE).
+        cookie_env: String,
+        /// JSON body key for the credential (default: "code"). Request body is { body_key: credential }.
+        #[serde(default = "default_login_for_cookie_body_key")]
+        body_key: String,
+    },
+}
+
+fn default_login_for_cookie_body_key() -> String {
+    "code".to_string()
 }
 
 /// Resolve a secret from file path (if set) or environment variable. File takes precedence.
@@ -1198,6 +1224,20 @@ pub fn validate_auth_secrets(config: &Config) -> anyhow::Result<()> {
                             "google_service_account_subject",
                         );
                     }
+                }
+                AuthConfig::AndromedaPat { pat_env, .. } => {
+                    read_secret(None, pat_env)
+                        .with_context(|| format!("source {}: andromeda_pat (PAT)", source_id))?;
+                    crate::audit::log_credential_access(audit, source_id, "andromeda_pat");
+                }
+                AuthConfig::LoginForCookie {
+                    credential_env, ..
+                } => {
+                    read_secret(None, credential_env)
+                        .with_context(|| {
+                            format!("source {}: login_for_cookie (credential)", source_id)
+                        })?;
+                    crate::audit::log_credential_access(audit, source_id, "login_for_cookie");
                 }
             }
         }
