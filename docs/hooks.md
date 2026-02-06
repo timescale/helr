@@ -60,7 +60,7 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 |------|-------------|--------------|
 | **buildRequest(ctx)** | Before each HTTP request | `{ url?, headers?, query?, body? }` or `null` to use default |
 | **parseResponse(ctx, response)** | After each response | Array of `{ ts, source, event, meta? }` |
-| **getNextPage(ctx, response, request)** | After parsing; decide next page | `{ url?, body? }` or `null` when no more pages |
+| **getNextPage(ctx, request, response)** | After parsing; decide next page | `{ url?, body? }` or `null` when no more pages |
 | **commitState(ctx, events)** | After a successful poll tick | Object of key-value pairs to write to the state store |
 
 ### Context (`ctx`)
@@ -114,7 +114,7 @@ function parseResponse(ctx, response) {
   });
 }
 
-function getNextPage(ctx, response, request) {
+function getNextPage(ctx, request, response) {
   const linkHeader = response.headers["link"] || response.headers["Link"];
   if (!linkHeader) return null;
   const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
@@ -185,7 +185,7 @@ function parseResponse(ctx, response) {
 Return the next request body with updated `variables.after`:
 
 ```javascript
-function getNextPage(ctx, response, request) {
+function getNextPage(ctx, request, response) {
   const body = typeof response.body === "string" ? JSON.parse(response.body) : response.body;
   const pageInfo = body.data && body.data.auditLog && body.data.auditLog.pageInfo;
   if (!pageInfo || !pageInfo.hasNextPage || !pageInfo.endCursor) return null;

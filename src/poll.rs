@@ -591,7 +591,7 @@ async fn poll_with_hooks(
             url: final_url.clone(),
             body: final_body.clone(),
         };
-        let next = call_get_next_page(script, &ctx, &hook_response, &hook_request, hooks_config).await?;
+        let next = call_get_next_page(script, &ctx, &hook_request, &hook_response, hooks_config).await?;
         match next {
             Some(n) if n.url.is_some() || n.body.is_some() => {
                 if let Some(u) = n.url {

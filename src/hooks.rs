@@ -253,22 +253,22 @@ pub async fn call_parse_response(
     Ok(events)
 }
 
-/// Call getNextPage(ctx, response, request). Returns null or { url?, body? }. request is the request that was sent (url, body).
+/// Call getNextPage(ctx, request, response). Returns null or { url?, body? }. request is the request that was sent (url, body).
 pub async fn call_get_next_page(
     script: &str,
     ctx: &HookContext,
-    response: &HookResponse,
     request: &HookRequest,
+    response: &HookResponse,
     hooks_config: &HooksConfig,
 ) -> anyhow::Result<Option<GetNextPageResult>> {
     let timeout = Duration::from_secs(hooks_config.timeout_secs);
     let ctx_json = serde_json::to_value(ctx).context("serialize hook ctx")?;
-    let resp_json = serde_json::to_value(response).context("serialize hook response")?;
     let request_json = serde_json::to_value(request).context("serialize hook request")?;
+    let resp_json = serde_json::to_value(response).context("serialize hook response")?;
     let result = run_hook(
         script,
         "getNextPage",
-        vec![ctx_json, resp_json, request_json],
+        vec![ctx_json, request_json, resp_json],
         timeout,
     )
     .await?;
@@ -411,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_hook_get_next_page_returns_null() {
-        let script = r#" function getNextPage(ctx, response, request) { return null; } "#;
+        let script = r#" function getNextPage(ctx, request, response) { return null; } "#;
         let ctx = HookContext {
             env: std::collections::HashMap::new(),
             state: std::collections::HashMap::new(),
@@ -430,7 +430,7 @@ mod tests {
             body: None,
         };
         let cfg = default_hooks_config();
-        let next = call_get_next_page(script, &ctx, &response, &request, &cfg)
+        let next = call_get_next_page(script, &ctx, &request, &response, &cfg)
             .await
             .unwrap();
         assert!(next.is_none());
