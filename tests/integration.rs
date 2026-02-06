@@ -1416,7 +1416,7 @@ sources:
     assert_eq!(obj["event"]["eventType"], "user.session.start");
 }
 
-/// Health endpoints: /healthz, /readyz, /startupz return 200 and detailed JSON (version, uptime, sources).
+/// Health endpoints: /healthz returns full JSON (version, uptime, per-source status); /readyz and /startupz return 200 with version, uptime, and their flags only.
 #[tokio::test]
 async fn integration_health_endpoints_return_200() {
     let server = MockServer::start().await;
@@ -1514,7 +1514,7 @@ sources:
         res_startup.status()
     );
 
-    // All endpoints return JSON with version, uptime_secs, sources
+    // healthz returns full detail including sources; readyz/startupz return version, uptime, and their flags only
     let ct_health = res_health
         .headers()
         .get("content-type")
@@ -1565,14 +1565,12 @@ sources:
             .unwrap_or(false),
         "readyz at_least_one_source_healthy"
     );
-    assert!(body_ready["sources"].is_object(), "readyz sources");
 
     let body_startup: serde_json::Value = res_startup.json().await.expect("startupz JSON");
     assert!(
         body_startup["started"].as_bool().unwrap_or(false),
         "startupz started true"
     );
-    assert!(body_startup["sources"].is_object(), "startupz sources");
 }
 
 /// Health /healthz sources: each source has status, circuit_state.state; circuit_state may have failures or open_until_secs.

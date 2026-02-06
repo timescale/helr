@@ -127,9 +127,9 @@ Reload config from the same file used at startup (same effect as SIGHUP). Option
 
 Same server also serves:
 
-- **GET /healthz** — Liveness; JSON with version, uptime, per-source status.
-- **GET /readyz** — Readiness; JSON with `ready`, `output_writable`, `state_store_connected`, `at_least_one_source_healthy`, and sources.
-- **GET /startupz** — Startup; JSON with `started`, version, uptime, sources.
+- **GET /healthz** — Liveness; JSON with version, uptime, and per-source status (circuit state, last_error). Use this for full diagnostic detail.
+- **GET /readyz** — Readiness; JSON with `ready`, `output_writable`, `state_store_connected`, `at_least_one_source_healthy` (no per-source detail).
+- **GET /startupz** — Startup; JSON with `started`, version, uptime (no per-source detail).
 
 See the main docs and `global.api` for address and port.
 

@@ -81,7 +81,7 @@ pub struct HealthBody {
     pub state_store_fallback_active: bool,
 }
 
-/// Ready body: ready flag plus per-condition flags (output_writable, state_store_connected, at_least_one_source_healthy).
+/// Ready body: ready flag plus per-condition flags. Per-source detail is only on /healthz.
 #[derive(Debug, Serialize)]
 pub struct ReadyBody {
     pub version: String,
@@ -93,16 +93,14 @@ pub struct ReadyBody {
     pub at_least_one_source_healthy: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub state_store_fallback_active: bool,
-    pub sources: HashMap<String, SourceStatusDto>,
 }
 
-/// Startup body adds started flag.
+/// Startup body: started flag, version, uptime. Per-source detail is only on /healthz.
 #[derive(Debug, Serialize)]
 pub struct StartupBody {
     pub version: String,
     pub uptime_secs: f64,
     pub started: bool,
-    pub sources: HashMap<String, SourceStatusDto>,
 }
 
 fn circuit_state_to_dto(s: &CircuitState) -> CircuitStateDto {
@@ -201,7 +199,7 @@ pub async fn build_health_body(state: &HealthState) -> HealthBody {
     }
 }
 
-/// Build ready JSON body: same as health plus ready flag and per-condition flags.
+/// Build ready JSON body: ready flag and per-condition flags (no per-source detail; use /healthz).
 /// Ready when: output writable (or stdout), state store connected, and ≥1 source healthy.
 pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
@@ -230,26 +228,17 @@ pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
         output_writable,
         state_store_connected,
         at_least_one_source_healthy,
-        sources,
         state_store_fallback_active: state.state_store_fallback_active,
     }
 }
 
-/// Build startup JSON body: started true, version, uptime, sources.
+/// Build startup JSON body: started true, version, uptime. Per-source detail is only on /healthz.
 pub async fn build_startup_body(state: &HealthState) -> StartupBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
-    let config = state.config.read().await;
-    let sources = build_sources(
-        &config,
-        &state.circuit_store,
-        state.last_errors.as_ref(),
-    )
-    .await;
     StartupBody {
         version: version(),
         uptime_secs,
         started: true,
-        sources,
     }
 }
 
@@ -454,7 +443,6 @@ sources:
         assert!(body.output_writable.is_none());
         assert!(body.state_store_connected); // None -> true
         assert!(body.at_least_one_source_healthy);
-        assert_eq!(body.sources.len(), 2);
     }
 
     #[tokio::test]
@@ -475,7 +463,6 @@ sources:
         assert!(body.started);
         assert!(!body.version.is_empty());
         assert!(body.uptime_secs >= 0.0);
-        assert_eq!(body.sources.len(), 2);
     }
 
     #[tokio::test]
