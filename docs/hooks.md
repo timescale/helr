@@ -1,6 +1,6 @@
 # JS Hooks (Boa)
 
-Optional JavaScript hooks let you customize request building, response parsing, pagination, and state commit per source. Hooks run in a **sandbox**: timeout per call, no network (`fetch`) or file system (`require`) — Boa does not expose them by default. **`console.log`, `console.warn`, and `console.error`** are available; output is forwarded to Hel's logger (tracing), so it appears as JSON like other Hel logs, with field `hook_console`.
+Optional JavaScript hooks let you customize request building, response parsing, pagination, and state commit per source. Hooks run in a **sandbox**: timeout per call; no file system (`require`). **`console.log`, `console.warn`, and `console.error`** are available; output is forwarded to Hel's logger (tracing), so it appears as JSON like other Hel logs, with field `hook_console`. When built with `--features hooks` and **`allow_network: true`** in `global.hooks`, the **`fetch()`** Web API is available so hooks can make HTTP requests (e.g. in `getAuth` or `buildRequest`); the same per-call timeout applies to the whole execution including any `fetch()` calls.
 
 **Requires:** Build with `--features hooks` and enable hooks in config.
 
@@ -11,10 +11,10 @@ global:
   hooks:
     enabled: true
     path: "./hooks"       # directory for scripts (or base path)
-    timeout_secs: 5       # max execution time per hook call
+    timeout_secs: 5       # max execution time per hook call (includes any fetch() calls)
     memory_limit_mb: 64   # optional; not all Boa builds support it
-    allow_network: false # sandbox: no fetch()
-    allow_fs: false      # sandbox: no file access
+    allow_network: true   # if true, fetch() is available in hooks (default false)
+    allow_fs: false       # sandbox: no file access (require not exposed)
 
 sources:
   my-source:
@@ -58,6 +58,7 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 
 | Hook | When called | Return value |
 |------|-------------|--------------|
+| **getAuth(ctx)** | Before buildRequest; optional | `null` or `{ headers?, cookie?, body?, query? }` — see [Auth hook](#auth-hook-getauth) |
 | **buildRequest(ctx)** | Before each HTTP request | `{ url?, headers?, query?, body? }` or `null` to use default |
 | **parseResponse(ctx, response)** | After each response | Array of `{ ts, source, event, meta? }` |
 | **getNextPage(ctx, request, response)** | After parsing; decide next page | `{ url?, body? }` or `null` when no more pages |
@@ -83,41 +84,37 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 - **request.url** — URL that was sent.
 - **request.body** — Request body that was sent (if POST), so you can derive the next page (e.g. offset or cursor from the previous request).
 
-## Login-for-cookie auth
+## Auth hook (getAuth)
 
-Many APIs (e.g. Andromeda Security, other SaaS) exchange a **token/code for a session cookie**: you POST the credential to a login URL and get back `Set-Cookie`; you then send that cookie on API requests. Hel supports this generically so any integration can reuse the same pattern.
+Optional **getAuth(ctx)** runs before **buildRequest**. It returns **concrete auth** only: `{ headers?, cookie?, body?, query? }` merged into the request. All values come from the hook: read **ctx.env** (e.g. `ctx.env.TOKEN`) or use **fetch()** (when `allow_network: true`) to exchange a credential for a token/cookie and return it. No special descriptor; everything is via ctx and the return value.
 
-**Config:** Use `auth.type: login_for_cookie` with hooks:
-
-```yaml
-sources:
-  my-api:
-    url: "https://api.example.com/graphql"
-    method: post
-    auth:
-      type: login_for_cookie
-      login_url: "https://api.example.com/login/access-key"
-      credential_env: MY_API_PAT
-      cookie_env: MY_API_COOKIE   # Hel injects the cookie into ctx.env under this key
-      body_key: "code"            # optional; default "code". Request body is { body_key: credential }
-    hooks:
-      script: "my-api.js"
-```
-
-**Flow:** Each poll, Hel POSTs `{ body_key: credential }` to `login_url`, reads `Set-Cookie` from the response, and injects it into `ctx.env[cookie_env]`. Your hook’s **buildRequest** reads `ctx.env[cookie_env]` and sets the `Cookie` header. The same cookie is reused for all pages in that poll.
-
-**Hook pattern:** In `buildRequest`, set the Cookie header from the env key you configured:
+**getAuth returning headers from ctx.env (e.g. Bearer):**
 
 ```javascript
-function buildRequest(ctx) {
-  var headers = { "Content-Type": "application/json" };
-  var cookie = (ctx.env && ctx.env.MY_API_COOKIE) || "";
-  if (cookie) headers["Cookie"] = cookie;
-  return { headers: headers, body: { ... } };
+function getAuth(ctx) {
+  var token = (ctx.env && ctx.env.MY_TOKEN) || "";
+  if (token) {
+    return { headers: { "Authorization": "Bearer " + token } };
+  }
+  return null;
 }
 ```
 
-**Convenience:** For Andromeda Security you can use `auth.type: andromeda_pat` (same flow with Andromeda’s default login URL and `cookie_env: ANDROMEDA_COOKIE`). Other integrations use `login_for_cookie` with their own URL and env names.
+## Using fetch()
+
+When **`allow_network: true`** is set in `global.hooks`, the standard **`fetch()`** Web API is available inside your script. You can use it in any hook (e.g. to call a token endpoint in `getAuth`). Hooks may return a **Promise**; Hel awaits it before reading the result, so you can use `async`/`await` or return `fetch(...).then(...)`.
+
+```javascript
+// Example: getAuth that fetches a token (allow_network: true required)
+async function getAuth(ctx) {
+  var tokenUrl = (ctx.env && ctx.env.TOKEN_URL) || "https://api.example.com/token";
+  var res = await fetch(tokenUrl, { method: "POST", body: JSON.stringify({ key: ctx.env.API_KEY }) });
+  var data = await res.json();
+  return { headers: { "Authorization": "Bearer " + data.access_token } };
+}
+```
+
+The same **per-call timeout** (`timeout_secs`) applies to the whole hook execution, including any `fetch()` calls.
 
 ## Example script (Okta-style)
 

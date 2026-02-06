@@ -1,5 +1,5 @@
 //! Optional JS hooks (Boa): buildRequest, parseResponse, getNextPage, commitState.
-//! Sandbox: timeout per call, no network (fetch) or file system (require) — Boa does not expose them by default.
+//! Sandbox: timeout per call; no file system (require). When boa_runtime is built with the fetch feature, fetch() is available (subject to hook timeout).
 
 #![cfg(feature = "hooks")]
 
@@ -7,8 +7,10 @@ use crate::config::HooksConfig;
 use anyhow::{Context as AnyhowContext, bail};
 use boa_engine::{Context, JsError, JsResult, JsValue, Source};
 use boa_gc::{Finalize, Trace};
-use boa_runtime::console::{ConsoleState, Logger};
 use boa_runtime::Console;
+use boa_runtime::console::{ConsoleState, Logger};
+use boa_runtime::extensions::FetchExtension;
+use boa_runtime::fetch::BlockingReqwestFetcher;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -90,6 +92,15 @@ pub struct GetNextPageResult {
     pub body: Option<serde_json::Value>,
 }
 
+/// Auth result from getAuth(ctx): headers, cookie, body, and/or query to merge into the request. All values come from the hook (e.g. from ctx.env or from fetch()).
+#[derive(Debug, Clone, Default)]
+pub struct GetAuthResult {
+    pub headers: Option<HashMap<String, String>>,
+    pub cookie: Option<String>,
+    pub body: Option<serde_json::Value>,
+    pub query: Option<HashMap<String, String>>,
+}
+
 /// State to commit from commitState: key-value pairs to write to the state store.
 pub type CommitStateResult = HashMap<String, String>;
 
@@ -118,11 +129,13 @@ impl Logger for TracingLogger {
 
 /// Run script, call fn_name with args (serialized as JSON), return result as JSON. Runs in spawn_blocking with timeout.
 /// Boa types are not Send, so we convert to serde_json/String inside the blocking task.
+/// When enable_fetch is true, the fetch() Web API is registered (subject to timeout).
 async fn run_hook(
     script: &str,
     fn_name: &str,
     args_json: Vec<serde_json::Value>,
     timeout: Duration,
+    enable_fetch: bool,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let script = script.to_string();
     let fn_name_owned = fn_name.to_string();
@@ -130,6 +143,14 @@ async fn run_hook(
         let mut context = Context::default();
         Console::register_with_logger(TracingLogger, &mut context)
             .map_err(|e: JsError| e.to_string())?;
+        if enable_fetch {
+            boa_runtime::register_extensions(
+                (FetchExtension(BlockingReqwestFetcher::default()),),
+                None,
+                &mut context,
+            )
+            .map_err(|e: JsError| e.to_string())?;
+        }
         context
             .eval(Source::from_bytes(script.as_bytes()))
             .map_err(|e: JsError| e.to_string())?;
@@ -148,7 +169,14 @@ async fn run_hook(
         let result = func
             .call(&JsValue::null(), &args, &mut context)
             .map_err(|e: JsError| e.to_string())?;
-        let json = result
+        let value = if let Some(promise) = result.as_promise() {
+            promise
+                .await_blocking(&mut context)
+                .map_err(|e: JsError| e.to_string())?
+        } else {
+            result
+        };
+        let json = value
             .to_json(&mut context)
             .map_err(|e: JsError| e.to_string())?;
         Ok::<_, String>(json)
@@ -166,6 +194,55 @@ async fn run_hook(
     }
 }
 
+/// Call getAuth(ctx). Returns null or { headers?, cookie?, body?, query? }. Hook can use ctx.env and fetch() (when allow_network) and return concrete auth.
+pub async fn call_get_auth(
+    script: &str,
+    ctx: &HookContext,
+    hooks_config: &HooksConfig,
+) -> anyhow::Result<Option<GetAuthResult>> {
+    let timeout = Duration::from_secs(hooks_config.timeout_secs);
+    let ctx_json = serde_json::to_value(ctx).context("serialize hook ctx")?;
+    let result = run_hook(
+        script,
+        "getAuth",
+        vec![ctx_json],
+        timeout,
+        hooks_config.allow_network,
+    )
+    .await?;
+    let Some(obj) = result.and_then(|v| v.as_object().cloned()) else {
+        return Ok(None);
+    };
+    let mut out = GetAuthResult::default();
+    if let Some(m) = obj.get("headers").and_then(|v| v.as_object()) {
+        let mut headers = HashMap::new();
+        for (k, v) in m {
+            if let Some(s) = v.as_str() {
+                headers.insert(k.clone(), s.to_string());
+            }
+        }
+        out.headers = Some(headers);
+    }
+    if let Some(s) = obj.get("cookie").and_then(|v| v.as_str()) {
+        out.cookie = Some(s.to_string());
+    }
+    if let Some(v) = obj.get("body").cloned() {
+        out.body = Some(v);
+    }
+    if let Some(m) = obj.get("query").and_then(|v| v.as_object()) {
+        let mut query = HashMap::new();
+        for (k, v) in m {
+            if let Some(s) = v.as_str() {
+                query.insert(k.clone(), s.to_string());
+            }
+        }
+        out.query = Some(query);
+    }
+    let has_any =
+        out.headers.is_some() || out.cookie.is_some() || out.body.is_some() || out.query.is_some();
+    Ok(if has_any { Some(out) } else { None })
+}
+
 /// Call buildRequest(ctx). Returns object with url?, headers?, query?, body?.
 pub async fn call_build_request(
     script: &str,
@@ -174,7 +251,14 @@ pub async fn call_build_request(
 ) -> anyhow::Result<Option<BuildRequestResult>> {
     let timeout = Duration::from_secs(hooks_config.timeout_secs);
     let ctx_json = serde_json::to_value(ctx).context("serialize hook ctx")?;
-    let result = run_hook(script, "buildRequest", vec![ctx_json], timeout).await?;
+    let result = run_hook(
+        script,
+        "buildRequest",
+        vec![ctx_json],
+        timeout,
+        hooks_config.allow_network,
+    )
+    .await?;
     let Some(obj) = result.and_then(|v| v.as_object().cloned()) else {
         return Ok(None);
     };
@@ -216,7 +300,14 @@ pub async fn call_parse_response(
     let timeout = Duration::from_secs(hooks_config.timeout_secs);
     let ctx_json = serde_json::to_value(ctx).context("serialize hook ctx")?;
     let resp_json = serde_json::to_value(response).context("serialize hook response")?;
-    let result = run_hook(script, "parseResponse", vec![ctx_json, resp_json], timeout).await?;
+    let result = run_hook(
+        script,
+        "parseResponse",
+        vec![ctx_json, resp_json],
+        timeout,
+        hooks_config.allow_network,
+    )
+    .await?;
     let arr = match result.and_then(|v| v.as_array().cloned()) {
         Some(a) => a,
         None => return Ok(vec![]),
@@ -270,6 +361,7 @@ pub async fn call_get_next_page(
         "getNextPage",
         vec![ctx_json, request_json, resp_json],
         timeout,
+        hooks_config.allow_network,
     )
     .await?;
     let Some(obj) = result.and_then(|v| v.as_object().cloned()) else {
@@ -304,7 +396,14 @@ pub async fn call_commit_state(
         })
         .collect::<Vec<_>>()
         .into();
-    let result = run_hook(script, "commitState", vec![ctx_json, events_json], timeout).await?;
+    let result = run_hook(
+        script,
+        "commitState",
+        vec![ctx_json, events_json],
+        timeout,
+        hooks_config.allow_network,
+    )
+    .await?;
     let Some(obj) = result.and_then(|v| v.as_object().cloned()) else {
         return Ok(CommitStateResult::new());
     };
@@ -407,6 +506,48 @@ mod tests {
         assert_eq!(events[0].ts, "2024-01-01T00:00:00Z");
         assert_eq!(events[0].source, "test");
         assert_eq!(events[0].event.get("id"), Some(&serde_json::json!(1)));
+    }
+
+    #[tokio::test]
+    async fn run_hook_get_auth_returns_headers() {
+        let script = r#"
+            function getAuth(ctx) {
+                return { headers: { "Authorization": "Bearer " + (ctx.env.TOKEN || "") } };
+            }
+        "#;
+        let mut env = std::collections::HashMap::new();
+        env.insert("TOKEN".to_string(), "secret".to_string());
+        let ctx = HookContext {
+            env,
+            state: std::collections::HashMap::new(),
+            request_id: "req-1".to_string(),
+            source_id: "test".to_string(),
+            default_since: None,
+            pagination: None,
+        };
+        let cfg = default_hooks_config();
+        let result = call_get_auth(script, &ctx, &cfg).await.unwrap();
+        let ar = result.expect("getAuth should return object");
+        assert_eq!(
+            ar.headers.as_ref().and_then(|h| h.get("Authorization")),
+            Some(&"Bearer secret".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn run_hook_get_auth_undefined_returns_none() {
+        let script = r#" function buildRequest(ctx) { return {}; } "#;
+        let ctx = HookContext {
+            env: std::collections::HashMap::new(),
+            state: std::collections::HashMap::new(),
+            request_id: "req-1".to_string(),
+            source_id: "test".to_string(),
+            default_since: None,
+            pagination: None,
+        };
+        let cfg = default_hooks_config();
+        let result = call_get_auth(script, &ctx, &cfg).await.unwrap();
+        assert!(result.is_none());
     }
 
     #[tokio::test]

@@ -7,9 +7,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-mod andromeda;
 mod audit;
-mod login_cookie;
 mod circuit;
 mod client;
 mod config;

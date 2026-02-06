@@ -235,9 +235,6 @@ fn add_auth(
         AuthConfig::GoogleServiceAccount { .. } => {
             unreachable!("GoogleServiceAccount auth must use bearer_override in build_request")
         }
-        AuthConfig::AndromedaPat { .. } | AuthConfig::LoginForCookie { .. } => {
-            anyhow::bail!("andromeda_pat / login_for_cookie auth must be used with hooks (cookie is injected into hook context)")
-        }
     };
     Ok(req)
 }

@@ -8,7 +8,7 @@ use crate::config::{
     RateLimitConfig, SourceConfig,
 };
 #[cfg(feature = "hooks")]
-use crate::config::{AuthConfig, HooksConfig, SourceHooksConfig};
+use crate::config::{HooksConfig, SourceHooksConfig};
 use crate::dedupe::{self, DedupeStore};
 use crate::dpop::DPoPKeyCache;
 use crate::event::EmittedEvent;
@@ -372,41 +372,11 @@ async fn poll_with_hooks(
 ) -> anyhow::Result<()> {
     use crate::config::HttpMethod;
     use crate::hooks::{
-        call_build_request, call_commit_state, call_get_next_page, call_parse_response,
-        HookContext, HookEvent, HookRequest, HookResponse,
+        GetAuthResult, HookContext, HookEvent, HookRequest, HookResponse, call_build_request,
+        call_commit_state, call_get_auth, call_get_next_page, call_parse_response,
     };
 
     let client = build_client(source.resilience.as_ref())?;
-    // (env_key to inject cookie into, cookie value) for hook ctx.env
-    let login_cookie: Option<(String, String)> = match &source.auth {
-        Some(AuthConfig::AndromedaPat { pat_env, login_url }) => {
-            let pat = crate::config::read_secret(None, pat_env)?;
-            let cookie = crate::andromeda::exchange_pat_for_cookie(
-                &client,
-                login_url.as_deref(),
-                &pat,
-            )
-            .await?;
-            Some(("ANDROMEDA_COOKIE".to_string(), cookie))
-        }
-        Some(AuthConfig::LoginForCookie {
-            login_url,
-            credential_env,
-            cookie_env,
-            body_key,
-        }) => {
-            let credential = crate::config::read_secret(None, credential_env)?;
-            let cookie = crate::login_cookie::exchange_credential_for_cookie(
-                &client,
-                login_url,
-                &credential,
-                body_key,
-            )
-            .await?;
-            Some((cookie_env.clone(), cookie))
-        }
-        _ => None,
-    };
     let max_pages = 100u32;
     let mut url = store
         .get(source_id, "next_url")
@@ -442,12 +412,8 @@ async fn poll_with_hooks(
         if let Some(c) = state_map.get("cursor") {
             pagination.insert("lastCursor".to_string(), c.clone());
         }
-        let mut env: HashMap<String, String> = std::env::vars().collect();
-        if let Some((ref env_key, ref cookie_value)) = login_cookie {
-            env.insert(env_key.clone(), cookie_value.clone());
-        }
         let ctx = HookContext {
-            env,
+            env: std::env::vars().collect(),
             state: state_map,
             request_id: format!("hel-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             source_id: source_id.to_string(),
@@ -459,6 +425,9 @@ async fn poll_with_hooks(
             },
         };
 
+        // Optional getAuth(ctx): returns headers/cookie/body/query to merge into the request (hook can use ctx.env and fetch()).
+        let auth_result: Option<GetAuthResult> = call_get_auth(script, &ctx, hooks_config).await?;
+
         let build_result = call_build_request(script, &ctx, hooks_config).await?;
         let (final_url, final_body) = if let Some(ref br) = build_result {
             let u = br.url.as_deref().unwrap_or(url.as_str());
@@ -468,26 +437,36 @@ async fn poll_with_hooks(
             (url.clone(), body_override.clone())
         };
 
+        let auth_has_concrete = auth_result.as_ref().is_some_and(|ar| {
+            ar.headers.is_some() || ar.cookie.is_some() || ar.body.is_some() || ar.query.is_some()
+        });
         let response = if build_result.as_ref().and_then(|r| r.url.as_ref()).is_some()
             || build_result
                 .as_ref()
                 .and_then(|r| r.headers.as_ref())
                 .is_some()
+            || auth_has_concrete
         {
             let method = source.method;
-            let request_url = if let Some(ref br) = build_result {
-                if let Some(ref q) = br.query {
-                    let mut u = reqwest::Url::parse(&final_url).context("parse url")?;
-                    for (k, v) in q {
-                        u.query_pairs_mut().append_pair(k, v);
+            let mut request_url = final_url.clone();
+            {
+                let mut u = reqwest::Url::parse(&request_url).context("parse url")?;
+                if let Some(ref ar) = auth_result {
+                    if let Some(ref q) = ar.query {
+                        for (k, v) in q {
+                            u.query_pairs_mut().append_pair(k, v);
+                        }
                     }
-                    u.to_string()
-                } else {
-                    final_url.clone()
                 }
-            } else {
-                final_url.clone()
-            };
+                if let Some(ref br) = build_result {
+                    if let Some(ref q) = br.query {
+                        for (k, v) in q {
+                            u.query_pairs_mut().append_pair(k, v);
+                        }
+                    }
+                }
+                request_url = u.to_string();
+            }
             let mut req = match method {
                 HttpMethod::Get => client.get(&request_url),
                 HttpMethod::Post => client.post(&request_url),
@@ -497,6 +476,26 @@ async fn poll_with_hooks(
                     if let (Ok(name), Ok(val)) = (
                         reqwest::header::HeaderName::try_from(k.as_str()),
                         reqwest::header::HeaderValue::try_from(v.as_str()),
+                    ) {
+                        req = req.header(name, val);
+                    }
+                }
+            }
+            if let Some(ref ar) = auth_result {
+                if let Some(ref h) = ar.headers {
+                    for (k, v) in h {
+                        if let (Ok(name), Ok(val)) = (
+                            reqwest::header::HeaderName::try_from(k.as_str()),
+                            reqwest::header::HeaderValue::try_from(v.as_str()),
+                        ) {
+                            req = req.header(name, val);
+                        }
+                    }
+                }
+                if let Some(ref cookie) = ar.cookie {
+                    if let (Ok(name), Ok(val)) = (
+                        reqwest::header::HeaderName::try_from("cookie"),
+                        reqwest::header::HeaderValue::try_from(cookie.as_str()),
                     ) {
                         req = req.header(name, val);
                     }
@@ -513,15 +512,15 @@ async fn poll_with_hooks(
                         }
                     }
                 }
-                if let Some(ref b) = br.body {
-                    req = req.json(b);
-                }
-            } else if matches!(method, HttpMethod::Post) {
-                req = req.json(
-                    &final_body
-                        .clone()
-                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-                );
+            }
+            let body_to_send = build_result
+                .as_ref()
+                .and_then(|br| br.body.clone())
+                .or_else(|| auth_result.as_ref().and_then(|ar| ar.body.clone()))
+                .or_else(|| final_body.clone())
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+            if matches!(method, HttpMethod::Post) {
+                req = req.json(&body_to_send);
             }
             let req = req.build().context("build request")?;
             client.execute(req).await.context("http request")?
@@ -625,7 +624,8 @@ async fn poll_with_hooks(
             url: final_url.clone(),
             body: final_body.clone(),
         };
-        let next = call_get_next_page(script, &ctx, &hook_request, &hook_response, hooks_config).await?;
+        let next =
+            call_get_next_page(script, &ctx, &hook_request, &hook_response, hooks_config).await?;
         match next {
             Some(n) if n.url.is_some() || n.body.is_some() => {
                 if let Some(u) = n.url {
