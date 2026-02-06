@@ -82,7 +82,7 @@ pub struct GlobalConfig {
     pub audit: Option<AuditConfig>,
 }
 
-/// Audit config: log credential access and config changes; never log secret values when redact_secrets is true.
+/// Audit config: log credential access and config changes. Credential-access events never include secret values.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditConfig {
@@ -95,9 +95,6 @@ pub struct AuditConfig {
     /// Log when config is loaded or reloaded (e.g. on SIGHUP).
     #[serde(default = "default_true")]
     pub log_config_changes: bool,
-    /// Redact secret values in all log output (use [REDACTED] instead of value).
-    #[serde(default = "default_true")]
-    pub redact_secrets: bool,
 }
 
 fn default_true() -> bool {
@@ -2106,7 +2103,6 @@ global:
     enabled: true
     log_credential_access: true
     log_config_changes: true
-    redact_secrets: true
 sources:
   x:
     url: "https://example.com/"
@@ -2118,7 +2114,6 @@ sources:
         assert!(audit.enabled);
         assert!(audit.log_credential_access);
         assert!(audit.log_config_changes);
-        assert!(audit.redact_secrets);
     }
 
     #[test]

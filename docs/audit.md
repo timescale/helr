@@ -10,13 +10,11 @@ global:
     enabled: true
     log_credential_access: true   # log when secrets are read (env/file)
     log_config_changes: true      # log config load and reload (e.g. SIGHUP)
-    redact_secrets: true          # never log actual secret values (use [REDACTED])
 ```
 
 - **`enabled`** — Turn audit on. When false or omitted, no audit events are logged. Default: false (audit off).
 - **`log_credential_access`** — When true, log an audit event each time a credential is read (bearer token, API key, basic auth, OAuth2 client_id/client_secret/refresh_token/private_key, TLS cert/key/CA, Google Service Account credentials). Log line includes `source` and `kind` (e.g. `bearer_token`, `oauth2_client_secret`); the value is never logged. Default: true when audit is enabled.
 - **`log_config_changes`** — When true, log when config is loaded at startup and when config is reloaded (e.g. on SIGHUP). Log line includes config file path. Default: true when audit is enabled.
-- **`redact_secrets`** — When true, any future log that might contain a secret should use the audit redaction helper so the value appears as `[REDACTED]`. Credential-access audit events never include values regardless. Default: true when audit is enabled.
 
 ## What gets logged
 

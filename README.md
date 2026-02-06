@@ -17,7 +17,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Graceful degradation:** When the state store fails or is unavailable: optional **state_store_fallback** to memory (state not durable), **emit_without_checkpoint** to continue emitting events when state writes fail, and **reduced_frequency_multiplier** to poll less often when degraded; health JSON reports **state_store_fallback_active**
 - **Session replay:** Record API responses to disk, replay without hitting the live API
 - **Optional JS hooks (Boa):** Per-source scripts for `getAuth`, `buildRequest`, `parseResponse`, `getNextPage`, `commitState`; sandbox (timeout; optional `fetch()` when `allow_network: true`). Build with `--features hooks`. See [**docs/hooks.md**](./docs/hooks.md) and the **GraphQL-via-hooks** pattern there.
-- **Audit:** Optional `global.audit`: log credential access (when secrets are read), log config load/reload (e.g. SIGHUP); never log secret values when `redact_secrets` is true. See [**docs/audit.md**](./docs/audit.md) for config and behavior.
+- **Audit:** Optional `global.audit`: log credential access (when secrets are read), log config load/reload (e.g. SIGHUP). Credential-access events never include secret values. See [**docs/audit.md**](./docs/audit.md) for config and behavior.
 - **REST API:** When the API server is enabled (`global.api.enabled`), HTTP API under `/api/v1`: list sources and status, state and config per source, global config, trigger poll, optional reload. See [**docs/rest-api.md**](./docs/rest-api.md).
 
 ## Install
