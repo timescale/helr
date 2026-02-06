@@ -4,9 +4,9 @@
 
 | Doc | Description |
 |-----|-------------|
-| [hooks.md](hooks.md) | **JS Hooks (Boa)** — Customize request building, response parsing, pagination, and state per source. Optional `fetch()` for auth (e.g. PAT → cookie). |
-| [audit.md](audit.md) | **Audit** — Optional logging for credential access and config changes (no secret values). |
-| [rest-api.md](rest-api.md) | **REST API** — List sources, read state/config, trigger poll, reload config (when `global.api.enabled` is true). |
+| [JS Hooks](hooks.md) | Customize request building, response parsing, pagination, and state per source. Optional `fetch()` for auth (e.g. PAT → cookie). |
+| [Audit](audit.md) | Optional logging for credential access and config changes (no secret values). |
+| [Rest API](rest-api.md) | List sources, read state/config, trigger poll, reload config (when `global.api.enabled` is true). |
 
 ## Integrations
 
@@ -24,4 +24,4 @@ Step-by-step setup and troubleshooting for each supported API:
 
 ## See also
 
-- **[../README.md](../README.md)** — Project overview, quick start, and “How to run with…” summaries.
+- **[Project README](../README.md)** — Project overview, quick start, and “How to run with…” summaries.
