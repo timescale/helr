@@ -267,5 +267,5 @@ When using hooks, the **hook** is responsible for auth (e.g. in `buildRequest` h
 
 ## When to use hooks vs declarative config
 
-- **Declarative (no hooks):** Use built-in pagination (link-header, cursor, page-offset), transform, and auth. Easiest to maintain.
-- **Hooks:** Use for GraphQL, custom response shapes, per-request header mutation, or one-off APIs that don’t fit the declarative model.
+- **Declarative (no hooks):** Use built-in pagination (link-header, cursor, page-offset), transform, and auth. Easiest to maintain. Declarative cursor-in-body merges the cursor at the **top level** of the POST body only (not into `body.variables.*`).
+- **Hooks:** Use for GraphQL, custom response shapes, per-request header mutation, or one-off APIs that don’t fit the declarative model. Hooks **fully cover** GraphQL needs: **getNextPage** can return `{ body: { query, variables: { ...variables, after: cursor } } }` (cursor in variables); **parseResponse** can check `body.errors` and throw (fail) or log and return events (log). See [GraphQL via hooks](#graphql-via-hooks) and Andromeda; no native GraphQL config required.
