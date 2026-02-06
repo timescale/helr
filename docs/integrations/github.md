@@ -24,7 +24,7 @@ You authenticate with a **personal access token (classic)** or a **GitHub App** 
 
 ### Step 2: Configure Hel
 
-In `hel.yaml`, add a GitHub audit log source. Set the **organization name** (login) via environment variable. See [Configuration](../README.md#configuration) for more options.
+In `hel.yaml`, add a GitHub audit log source. Set the **organization name** (login) via environment variable. See [Configuration](../../README.md#configuration) for more options.
 
 ```yaml
   github-audit:

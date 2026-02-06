@@ -27,7 +27,7 @@ Only certain admin roles can create tokens (e.g. Super Admin, Org Admin, Read-on
 
 ### Step 2: Configure Hel
 
-In `hel.yaml`, add or uncomment an Okta source. Set **domain** via environment variables (no `https://`). To know more about configuration options, read [Configuration](../README.md#configuration).
+In `hel.yaml`, add or uncomment an Okta source. Set **domain** via environment variables (no `https://`). To know more about configuration options, read [Configuration](../../README.md#configuration).
 
 ```yaml
   okta-audit:

@@ -1,4 +1,4 @@
-# Hel — minimal config. See README and docs/gws-gcp-manual.md.
+# Hel — minimal config. See README and docs/integrations/gws-gcp.md.
 
 global:
   log_level: info
@@ -29,7 +29,7 @@ global:
     allow_network: true
 
 sources:
-  # --- GWS (Admin SDK): docs/gws-gcp-manual.md. One source per app; duplicate and change URL path for drive, admin, etc.
+  # --- GWS (Admin SDK): docs/integrations/gws-gcp.md. One source per app; duplicate and change URL path for drive, admin, etc.
   # gws-login:
   #   url: "https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/login"
   #   schedule:
@@ -61,7 +61,7 @@ sources:
   #       success_threshold: 2
   #       half_open_timeout_secs: 60
 
-  # --- Okta: set OKTA_DOMAIN and OKTA_API_TOKEN; auth prefix SSWS. See docs/okta.md.
+  # --- Okta: set OKTA_DOMAIN and OKTA_API_TOKEN; auth prefix SSWS. See docs/integrations/okta.md.
   okta-audit:
     url: "https://${OKTA_DOMAIN}/api/v1/logs"
     schedule:
@@ -93,7 +93,7 @@ sources:
 
   # --- Okta via OAuth2 (API service integration): client_credentials, org server.
   # Org AS requires private_key_jwt: set OKTA_DOMAIN, OKTA_CLIENT_ID, OKTA_CLIENT_PRIVATE_KEY (PEM).
-  # See docs/okta.md and https://developer.okta.com/docs/guides/build-api-integration/main/
+  # See docs/integrations/okta.md and https://developer.okta.com/docs/guides/build-api-integration/main/
   # okta-audit-oauth2:
   #   url: "https://${OKTA_DOMAIN}/api/v1/logs"
   #   schedule:
@@ -128,7 +128,7 @@ sources:
   #       page_delay_secs: 1
 
   # --- GitHub audit log. Org endpoint: GET orgs/{org}/audit-log (only for orgs on Enterprise Cloud).
-  # If you get 404, use the enterprise endpoint instead: url "https://${GITHUB_API_HOST}/enterprises/${GITHUB_ENTERPRISE}/audit-log", set GITHUB_ENTERPRISE and GITHUB_API_HOST. See docs/github.md.
+  # If you get 404, use the enterprise endpoint instead: url "https://${GITHUB_API_HOST}/enterprises/${GITHUB_ENTERPRISE}/audit-log", set GITHUB_ENTERPRISE and GITHUB_API_HOST. See docs/integrations/github.md.
   # github-audit:
   #   url: "https://api.github.com/orgs/${GITHUB_ORG}/audit-log"
   #   schedule:
@@ -164,7 +164,7 @@ sources:
   #       respect_headers: true
   #       page_delay_secs: 2
 
-  # --- Slack Audit Logs API. Enterprise only. User token (xoxp) with auditlogs:read, installed by Org Owner. See docs/slack.md.
+  # --- Slack Audit Logs API. Enterprise only. User token (xoxp) with auditlogs:read, installed by Org Owner. See docs/integrations/slack.md.
   # slack-audit:
   #   url: "https://api.slack.com/audit/v1/logs"
   #   schedule:
@@ -198,7 +198,7 @@ sources:
   #       respect_headers: true
   #       page_delay_secs: 2
 
-  # --- 1Password Events API (audit events). Bearer token from Events Reporting integration with auditevents. POST, cursor in body. See docs/1password.md.
+  # --- 1Password Events API (audit events). Bearer token from Events Reporting integration with auditevents. POST, cursor in body. See docs/integrations/1password.md.
   # 1password-audit:
   #   url: "https://events.1password.com/api/v2/auditevents"
   #   method: post
@@ -233,7 +233,7 @@ sources:
   #       respect_headers: true
   #       page_delay_secs: 1
 
-  # --- Tailscale configuration audit logs. API token with logs:configuration:read; Basic auth (token as user, empty password). No pagination; start/end in URL. See docs/tailscale.md.
+  # --- Tailscale configuration audit logs. API token with logs:configuration:read; Basic auth (token as user, empty password). No pagination; start/end in URL. See docs/integrations/tailscale.md.
   # tailscale-audit:
   #   url: "https://api.tailscale.com/api/v2/tailnet/${TAILNET_ID}/logging/configuration?start=${TAILSCALE_START}&end=${TAILSCALE_END}"
   #   schedule:
@@ -258,7 +258,7 @@ sources:
   #       success_threshold: 2
   #       half_open_timeout_secs: 60
 
-  # --- Tailscale network flow logs. Premium/Enterprise only; enable in admin console. API token with logs:network:read. See docs/tailscale.md.
+  # --- Tailscale network flow logs. Premium/Enterprise only; enable in admin console. API token with logs:network:read. See docs/integrations/tailscale.md.
   # tailscale-network:
   #   url: "https://api.tailscale.com/api/v2/tailnet/${TAILNET_ID}/logging/network?start=${TAILSCALE_START}&end=${TAILSCALE_END}"
   #   schedule:
@@ -283,7 +283,7 @@ sources:
   #       success_threshold: 2
   #       half_open_timeout_secs: 60
 
-  # --- Andromeda Security audit trail. GraphQL API; hooks for backfill (skip). Auth via getAuth hook: set ANDROMEDA_PAT (Hel exchanges for cookie) or ANDROMEDA_COOKIE. See docs/andromeda.md.
+  # --- Andromeda Security audit trail. GraphQL API; hooks for backfill (skip). Auth via getAuth hook: set ANDROMEDA_PAT (Hel exchanges for cookie) or ANDROMEDA_COOKIE. See docs/integrations/andromeda.md.
   # andromeda-audit:
   #   url: "https://api.live.andromedasecurity.com/graphql"
   #   method: post

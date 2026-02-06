@@ -2,7 +2,7 @@
 
 **Andromeda Security** provides identity and access management; its **audit trail** records user and system events (logins, access requests, configuration changes, etc.). Hel pulls these events via the **Andromeda GraphQL API**: `POST https://api.live.andromedasecurity.com/graphql`. The API uses the operation **AndromedaEventsList** and returns events in `data.AndromedaEvents.edges[].node`. Pagination is **offset-based** (`pageArgs: { skip, pageSize }`).
 
-Hel supports this API via **hooks** for **cookie auth** (PAT → cookie) and **backfill** by advancing `skip` each poll. See [hooks](hooks.md).
+Hel supports this API via **hooks** for **cookie auth** (PAT → cookie) and **backfill** by advancing `skip` each poll. See [hooks](../hooks.md).
 
 ## Requirements
 
@@ -32,12 +32,12 @@ global:
 ```
 
 2. **Credentials** (one of):
-   - **PAT (recommended):** Create a Personal Access Token in Andromeda and set `ANDROMEDA_PAT`. Enable **`allow_network: true`** in `global.hooks`; the hook’s **getAuth** uses **fetch()** to exchange the PAT for a session cookie and returns `{ cookie }` (same flow as Andromeda’s official Python script). See [hooks.md](hooks.md#using-fetch).
+   - **PAT (recommended):** Create a Personal Access Token in Andromeda and set `ANDROMEDA_PAT`. Enable **`allow_network: true`** in `global.hooks`; the hook's **getAuth** uses **fetch()** to exchange the PAT for a session cookie and returns `{ cookie }` (same flow as Andromeda's official Python script). See [hooks](../hooks.md#using-fetch).
    - **Cookie:** From the browser (e.g. DevTools → Application → Cookies for `app.live.andromedasecurity.com`), copy the full `Cookie` header (e.g. `DS=...; DSR=...`) and set `ANDROMEDA_COOKIE`. **buildRequest** reads it from ctx.env. Session cookies expire; use for testing or short-lived runs.
 
 ## Step 2: Add the Andromeda source (hooks)
 
-In `hel.yaml`, add the source with `method: post`, no body (the hook builds it), and the hook script. Set `ANDROMEDA_PAT` (or `ANDROMEDA_COOKIE` for manual cookie). The hook’s **getAuth** handles PAT → cookie. The API expects browser-like headers (User-Agent, Referer, Origin) to avoid WAF/blocking; set them under the source's **headers**. The hook reuses them for the login fetch via **ctx.headers**.
+In `hel.yaml`, add the source with `method: post`, no body (the hook builds it), and the hook script. Set `ANDROMEDA_PAT` (or `ANDROMEDA_COOKIE` for manual cookie). The hook's **getAuth** handles PAT → cookie. The API expects browser-like headers (User-Agent, Referer, Origin) to avoid WAF/blocking; set them under the source's **headers**. The hook reuses them for the login fetch via **ctx.headers**.
 
 ```yaml
   andromeda-audit:
@@ -73,7 +73,7 @@ In `hel.yaml`, add the source with `method: post`, no body (the hook builds it),
 
 - **`hooks.script`**: Uses `./hooks/andromeda-audit.js` (under `global.hooks.path`). The script builds the GraphQL body with `pageArgs.skip` from state and advances `skip` in `commitState`.
 - **Backfill:** Each poll requests one page at `state.skip` (starts at 0), then saves `skip += events.length`. Run `hel run` (or `hel test --source andromeda-audit` repeatedly) to walk through pages. When a page returns fewer than `pageSize` events, you've reached the end.
-- **Continuous (after backfill):** Reset state so `skip` is 0 (e.g. delete or clear the source’s state key `skip`), then keep running; dedupe by `id` avoids re-emitting old events.
+- **Continuous (after backfill):** Reset state so `skip` is 0 (e.g. delete or clear the source's state key `skip`), then keep running; dedupe by `id` avoids re-emitting old events.
 
 ## Hook script (andromeda-audit.js)
 

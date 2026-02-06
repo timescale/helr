@@ -306,20 +306,20 @@ Secrets can be read from file or env; file takes precedence when set. Client cer
 | Doc | Description |
 |-----|-------------|
 | [hel.yaml](hel.yaml) | Example config with Okta, GWS, GitHub, Slack, 1Password, and Tailscale sources (commented where inactive). |
-| [docs/okta.md](docs/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
-| [docs/gws-gcp.md](docs/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
-| [docs/github.md](docs/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
-| [docs/slack.md](docs/slack.md) | Slack Enterprise audit logs: user token (xoxp) with auditlogs:read; cursor pagination; Enterprise only. |
-| [docs/1password.md](docs/1password.md) | 1Password Events API (audit): bearer token from Events Reporting; POST, cursor in body. |
-| [docs/tailscale.md](docs/tailscale.md) | Tailscale configuration audit logs and network flow logs: API token (Basic auth); time-window GET; no pagination. |
+| [docs/integrations/okta.md](docs/integrations/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
+| [docs/integrations/gws-gcp.md](docs/integrations/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
+| [docs/integrations/github.md](docs/integrations/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
+| [docs/integrations/slack.md](docs/integrations/slack.md) | Slack Enterprise audit logs: user token (xoxp) with auditlogs:read; cursor pagination; Enterprise only. |
+| [docs/integrations/1password.md](docs/integrations/1password.md) | 1Password Events API (audit): bearer token from Events Reporting; POST, cursor in body. |
+| [docs/integrations/tailscale.md](docs/integrations/tailscale.md) | Tailscale configuration audit logs and network flow logs: API token (Basic auth); time-window GET; no pagination. |
 
 ## How to run with Okta
 
 **API token (SSWS):** Create an API token in Okta Admin (**Security** → **API** → **Tokens**). In `hel.yaml`, add an Okta source; set `OKTA_DOMAIN` and `OKTA_API_TOKEN`. Run: `hel validate` then `hel test --source okta-audit` or `hel run`.
 
-**OAuth2 (App Integration):** Use an API Services app with client credentials, private key (JWT), and optional DPoP — see [docs/okta.md](docs/okta.md).
+**OAuth2 (App Integration):** Use an API Services app with client credentials, private key (JWT), and optional DPoP — see [docs/integrations/okta.md](docs/integrations/okta.md).
 
-Full steps and troubleshooting: **[docs/okta.md](docs/okta.md)**.
+Full steps and troubleshooting: **[docs/integrations/okta.md](docs/integrations/okta.md)**.
 
 ## How to run with Google Workspace (GWS)
 
@@ -327,31 +327,31 @@ Full steps and troubleshooting: **[docs/okta.md](docs/okta.md)**.
 
 **Option B (service account):** Create a service account in GCP, enable domain-wide delegation in GWS Admin for the Admin SDK Reports API scope, download the JSON key, then use `auth.type: google_service_account` with `credentials_file` and `subject_env` (admin email).
 
-Full steps: **[docs/gws-gcp.md](docs/gws-gcp.md)**.
+Full steps: **[docs/integrations/gws-gcp.md](docs/integrations/gws-gcp.md)**.
 
 ## How to run with GitHub Enterprise
 
 Create a personal access token (classic) with **read:audit_log**. You must be an **organization owner**. Set `GITHUB_ORG` (your org login) and `GITHUB_TOKEN`. Uncomment the `github-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source github-audit` or `hel run`.
 
-Full steps and troubleshooting: **[docs/github.md](docs/github.md)**.
+Full steps and troubleshooting: **[docs/integrations/github.md](docs/integrations/github.md)**.
 
 ## How to run with Slack Enterprise
 
 Create a Slack app with the **auditlogs:read** user token scope. Install it on your **Enterprise organization** (not a single workspace) as the **Owner**. Copy the user OAuth token (`xoxp-...`) and set `SLACK_AUDIT_TOKEN`. Uncomment the `slack-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source slack-audit` or `hel run`. The Audit Logs API is **only available for Slack Enterprise** workspaces.
 
-Full steps and troubleshooting: **[docs/slack.md](docs/slack.md)**.
+Full steps and troubleshooting: **[docs/integrations/slack.md](docs/integrations/slack.md)**.
 
 ## How to run with 1Password (Business)
 
 Create an **Events Reporting integration** in your 1Password Business account (**Integrations** → **Directory** → Events Reporting). Issue a bearer token with **Audit events** enabled and save it (e.g. as `ONEPASSWORD_EVENTS_TOKEN`). Uncomment the `1password-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source 1password-audit` or `hel run`. The audit endpoint is **POST** with cursor-in-body pagination.
 
-Full steps and troubleshooting: **[docs/1password.md](docs/1password.md)**.
+Full steps and troubleshooting: **[docs/integrations/1password.md](docs/integrations/1password.md)**.
 
 ## How to run with Tailscale
 
 Create an **API access token** with **logs:configuration:read** (and optionally **logs:network:read** for network flow logs) in the Tailscale admin console (**Settings** → **Keys**). Set `TAILNET_ID` (your tailnet name, e.g. `example.com`), `TAILSCALE_START` and `TAILSCALE_END` (RFC3339 time window), `TAILSCALE_API_TOKEN` (the token), and `TAILSCALE_API_TOKEN_PASSWORD=""` (empty password for Basic auth). Uncomment the `tailscale-audit` source (and `tailscale-network` for [network flow logs](https://tailscale.com/kb/1219/network-flow-logs/) — Premium/Enterprise only; enable in admin console) in `hel.yaml` and run: `hel validate` then `hel test --source tailscale-audit` or `hel test --source tailscale-network` or `hel run`. Both APIs return all events in the window in one response (no pagination).
 
-Full steps and troubleshooting: **[docs/tailscale.md](docs/tailscale.md)**.
+Full steps and troubleshooting: **[docs/integrations/tailscale.md](docs/integrations/tailscale.md)**.
 
 ## Session replay
 
