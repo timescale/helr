@@ -165,7 +165,7 @@ pub async fn run_one_tick(
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 metrics::record_error(source_id);
-                let msg = e.to_string();
+                let msg = format!("{:#}", e);
                 last_errors
                     .write()
                     .await
@@ -178,7 +178,7 @@ pub async fn run_one_tick(
             }
             Err(e) => {
                 metrics::record_error(source_id);
-                let msg = e.to_string();
+                let msg = format!("{:#}", e);
                 last_errors
                     .write()
                     .await

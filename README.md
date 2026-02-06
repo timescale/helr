@@ -18,6 +18,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Session replay:** Record API responses to disk, replay without hitting the live API
 - **Optional JS hooks (Boa):** Per-source scripts for `getAuth`, `buildRequest`, `parseResponse`, `getNextPage`, `commitState`; sandbox (timeout; optional `fetch()` when `allow_network: true`). Build with `--features hooks`. See [**docs/hooks.md**](./docs/hooks.md) and the **GraphQL-via-hooks** pattern there.
 - **Audit:** Optional `global.audit`: log credential access (when secrets are read), log config load/reload (e.g. SIGHUP); never log secret values when `redact_secrets` is true. See [**docs/audit.md**](./docs/audit.md) for config and behavior.
+- **REST API:** When the API server is enabled (`global.api.enabled`), HTTP API under `/api/v1`: list sources and status, state and config per source, global config, trigger poll, optional reload. See [**docs/rest-api.md**](./docs/rest-api.md).
 
 ## Install
 
@@ -121,9 +122,9 @@ Configuration is merged in this order (later overrides earlier):
 | `state.backend` | State store backend | `sqlite`, `memory`, `redis`, `postgres` | — |
 | `state.path` | Path to state file (SQLite) | string | `./hel-state.db` (when backend is sqlite) |
 | `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`) | string | — (required when backend is redis or postgres) |
-| `health.enabled` | Enable health HTTP server | boolean | `false` |
-| `health.address` | Health server bind address | string | `0.0.0.0` |
-| `health.port` | Health server port | number | `8080` |
+| `api.enabled` | Enable API and health HTTP server | boolean | `false` |
+| `api.address` | API/health server bind address | string | `0.0.0.0` |
+| `api.port` | API/health server port | number | `8080` |
 | `reload.restart_sources_on_sighup` | On SIGHUP, also clear circuit breaker and OAuth2 token cache so sources re-establish on next tick | boolean | `false` |
 | `dump_on_sigusr1.destination` | Where to write SIGUSR1 dump: `log` (tracing at INFO) or `file` | string | `log` |
 | `dump_on_sigusr1.path` | Path when destination is `file`; required when destination is `file` | string | — |
@@ -131,7 +132,7 @@ Configuration is merged in this order (later overrides earlier):
 | `bulkhead.max_concurrent_requests` | Max concurrent HTTP requests per source (semaphore); overridable per source in `resilience.bulkhead` | number | — (no limit) |
 | `load_shedding.skip_priority_below` | When set and backpressure is active, sources with priority below this (0–10) are not polled. Requires backpressure and per-source `priority`. | number | — (none) |
 
-When `health.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return detailed JSON (version, uptime, per-source status, circuit state, last_error). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.
+When `api.enabled` is true, GET `/healthz`, `/readyz`, and `/startupz` return detailed JSON (version, uptime, per-source status, circuit state, last_error). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.
 
 | `metrics.enabled` | Enable Prometheus metrics server | boolean | `false` |
 | `metrics.address` | Metrics server bind address | string | `0.0.0.0` |

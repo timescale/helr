@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+mod api;
 mod audit;
 mod circuit;
 mod client;
@@ -27,7 +28,9 @@ mod state;
 #[cfg(feature = "hooks")]
 mod hooks;
 
-use axum::routing::get;
+use axum::middleware::{self, Next};
+use axum::routing::{get, post};
+use axum::http::Request;
 use circuit::new_circuit_store;
 use config::{Config, DumpOnSigusr1Config};
 use dpop::new_dpop_key_cache;
@@ -791,6 +794,17 @@ async fn state_import(store: &dyn StateStore) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Log each incoming HTTP request at debug level (method, path). Enable with HEL_LOG_LEVEL=debug or RUST_LOG=hel=trace for more detail.
+async fn log_incoming_http_request(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    tracing::debug!(%method, %uri, "incoming HTTP request");
+    next.run(request).await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_collector(
     config_path: Option<&Path>,
@@ -819,27 +833,11 @@ async fn run_collector(
         .and_then(|b| b.max_concurrent_sources)
         .filter(|&n| n > 0)
         .map(|n| Arc::new(Semaphore::new(n as usize)));
-    poll::run_one_tick(
-        config,
-        store.clone(),
-        source_filter,
-        circuit_store.clone(),
-        token_cache.clone(),
-        dpop_key_cache.clone(),
-        dedupe_store.clone(),
-        event_sink.clone(),
-        record_state.clone(),
-        last_errors.clone(),
-        global_sources_semaphore.clone(),
-        under_load_flag.clone(),
-        skip_priority_below,
-    )
-    .await?;
 
-    if once {
-        return Ok(());
-    }
+    let config_arc = Arc::new(RwLock::new(config.clone()));
+    let config_path_for_reload = config_path.map(std::path::Path::to_path_buf);
 
+    // Start metrics and health/API servers before first tick so they are available immediately
     // Metrics: init and serve GET /metrics when enabled
     if config
         .global
@@ -878,30 +876,55 @@ async fn run_collector(
         }
     }
 
-    // Health server: bind only when enabled and running continuously
-    if let Some(health) = &config.global.health
-        && health.enabled
+    // API and health server: bind only when enabled and running continuously
+    if let Some(api_cfg) = &config.global.api
+        && api_cfg.enabled
     {
-        let addr: SocketAddr = format!("{}:{}", health.address, health.port)
+        let addr: SocketAddr = format!("{}:{}", api_cfg.address, api_cfg.port)
             .parse()
             .map_err(|e| anyhow::anyhow!("health address invalid: {}", e))?;
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let started_at = Instant::now();
+        let poll_deps = if !once && record_state.is_none() {
+            Some(Arc::new(health::PollDeps {
+                event_sink: event_sink.clone(),
+                token_cache: token_cache.clone(),
+                dpop_key_cache: dpop_key_cache.clone(),
+                dedupe_store: dedupe_store.clone(),
+                global_sources_semaphore: global_sources_semaphore.clone(),
+            }))
+        } else {
+            None
+        };
         let health_state = Arc::new(health::HealthState {
-            config: Arc::new(config.clone()),
+            config: config_arc.clone(),
             circuit_store: circuit_store.clone(),
             last_errors: last_errors.clone(),
             started_at,
             output_path: output_path.clone(),
             state_store: Some(store.clone()),
             state_store_fallback_active,
+            config_path: config_path_for_reload.clone(),
+            poll_deps,
         });
-        tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz");
+        tracing::info!(%addr, "health server listening on GET /healthz, /readyz, /startupz and REST API /api/v1/sources, /api/v1/sources/{{id}}/state, /api/v1/sources/{{id}}/config, GET /api/v1/config, POST /api/v1/sources/{{id}}/poll, POST /api/v1/reload");
         tokio::spawn(async move {
             let app = axum::Router::new()
                 .route("/healthz", get(health::healthz_handler))
                 .route("/readyz", get(health::readyz_handler))
                 .route("/startupz", get(health::startupz_handler))
+                .nest(
+                    "/api/v1",
+                    axum::Router::new()
+                        .route("/sources", get(api::list_sources_handler))
+                        .route("/sources/{id}", get(api::get_source_handler))
+                        .route("/sources/{id}/state", get(api::get_source_state_handler))
+                        .route("/sources/{id}/config", get(api::get_source_config_handler))
+                        .route("/config", get(api::get_global_config_handler))
+                        .route("/sources/{id}/poll", post(api::trigger_poll_handler))
+                        .route("/reload", post(api::reload_handler)),
+                )
+                .layer(middleware::from_fn(log_incoming_http_request))
                 .with_state(health_state);
             if let Err(e) = axum::serve(listener, app).await {
                 tracing::error!("health server error: {}", e);
@@ -909,10 +932,28 @@ async fn run_collector(
         });
     }
 
-    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+    poll::run_one_tick(
+        config,
+        store.clone(),
+        source_filter,
+        circuit_store.clone(),
+        token_cache.clone(),
+        dpop_key_cache.clone(),
+        dedupe_store.clone(),
+        event_sink.clone(),
+        record_state.clone(),
+        last_errors.clone(),
+        global_sources_semaphore.clone(),
+        under_load_flag.clone(),
+        skip_priority_below,
+    )
+    .await?;
 
-    let config_arc = Arc::new(RwLock::new(config.clone()));
-    let config_path_for_reload = config_path.map(std::path::Path::to_path_buf);
+    if once {
+        return Ok(());
+    }
+
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
     let mut tick = 0u64;
     'run: loop {

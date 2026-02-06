@@ -7,31 +7,51 @@
 
 use crate::circuit::{CircuitState, CircuitStore};
 use crate::config::Config;
+use crate::dedupe::DedupeStore;
+use crate::dpop::DPoPKeyCache;
+use crate::oauth2::OAuth2TokenCache;
+use crate::output::EventSink;
 use crate::state::StateStore;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
-/// Shared state for health handlers (config, circuits, last errors, start time, output path, state store).
+/// Dependencies required to run a one-off poll from the API (trigger poll).
+/// When None, POST /api/sources/:id/poll returns 503.
+pub struct PollDeps {
+    pub event_sink: Arc<dyn EventSink>,
+    pub token_cache: OAuth2TokenCache,
+    pub dpop_key_cache: Option<DPoPKeyCache>,
+    pub dedupe_store: DedupeStore,
+    pub global_sources_semaphore: Option<Arc<Semaphore>>,
+}
+
+/// Shared state for health and API handlers (config, circuits, last errors, start time, output path, state store).
 pub struct HealthState {
-    pub config: Arc<Config>,
+    /// Current config; wrapped in RwLock so API reload can update it.
+    pub config: Arc<RwLock<Config>>,
     pub circuit_store: CircuitStore,
     pub last_errors: Arc<RwLock<HashMap<String, String>>>,
     pub started_at: Instant,
-    pub output_path: Option<std::path::PathBuf>,
+    pub output_path: Option<PathBuf>,
     /// State store for readyz "connected" check. None in tests or when not configured.
     pub state_store: Option<Arc<dyn StateStore>>,
     /// True when primary state store failed and we fell back to memory (graceful degradation).
     pub state_store_fallback_active: bool,
+    /// Path to config file for API reload. None when running with --once or replay.
+    pub config_path: Option<PathBuf>,
+    /// Dependencies for trigger poll. None when running with --once or replay. Also used for reload (clear token_cache on restart_sources_on_sighup).
+    pub poll_deps: Option<Arc<PollDeps>>,
 }
 
 /// Circuit state as JSON: "closed" | "open" | "half_open" plus optional detail.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CircuitStateDto {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,7 +63,7 @@ pub struct CircuitStateDto {
 }
 
 /// Per-source status in health response.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SourceStatusDto {
     pub status: String,
     pub circuit_state: CircuitStateDto,
@@ -166,8 +186,9 @@ fn version() -> String {
 /// Build health JSON body (version, uptime, per-source status).
 pub async fn build_health_body(state: &HealthState) -> HealthBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
+    let config = state.config.read().await;
     let sources = build_sources(
-        &state.config,
+        &config,
         &state.circuit_store,
         state.last_errors.as_ref(),
     )
@@ -184,8 +205,9 @@ pub async fn build_health_body(state: &HealthState) -> HealthBody {
 /// Ready when: output writable (or stdout), state store connected, and ≥1 source healthy.
 pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
+    let config = state.config.read().await;
     let sources = build_sources(
-        &state.config,
+        &config,
         &state.circuit_store,
         state.last_errors.as_ref(),
     )
@@ -216,8 +238,9 @@ pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
 /// Build startup JSON body: started true, version, uptime, sources.
 pub async fn build_startup_body(state: &HealthState) -> StartupBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
+    let config = state.config.read().await;
     let sources = build_sources(
-        &state.config,
+        &config,
         &state.circuit_store,
         state.last_errors.as_ref(),
     )
@@ -301,7 +324,7 @@ sources:
         output_path: Option<std::path::PathBuf>,
         started_at: Instant,
     ) -> HealthState {
-        let config = Arc::new(minimal_config());
+        let config = Arc::new(RwLock::new(minimal_config()));
         let circuit_store = circuit::new_circuit_store();
         let last_errors = Arc::new(RwLock::new(HashMap::new()));
         HealthState {
@@ -312,6 +335,8 @@ sources:
             output_path,
             state_store: None,
             state_store_fallback_active: false,
+            config_path: None,
+            poll_deps: None,
         }
     }
 
@@ -345,7 +370,7 @@ sources:
     async fn test_build_health_body_source_degraded_when_last_error() {
         let mut errors = HashMap::new();
         errors.insert("s1".to_string(), "connection refused".to_string());
-        let config = Arc::new(minimal_config());
+        let config = Arc::new(RwLock::new(minimal_config()));
         let state = HealthState {
             config,
             circuit_store: circuit::new_circuit_store(),
@@ -354,6 +379,8 @@ sources:
             output_path: None,
             state_store: None,
             state_store_fallback_active: false,
+            config_path: None,
+            poll_deps: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -364,7 +391,7 @@ sources:
 
     #[tokio::test]
     async fn test_build_health_body_source_unhealthy_when_circuit_open() {
-        let config = Arc::new(minimal_config());
+        let config = Arc::new(RwLock::new(minimal_config()));
         let circuit_store = circuit::new_circuit_store();
         {
             let mut g = circuit_store.write().await;
@@ -383,6 +410,8 @@ sources:
             output_path: None,
             state_store: None,
             state_store_fallback_active: false,
+            config_path: None,
+            poll_deps: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -393,7 +422,7 @@ sources:
 
     #[tokio::test]
     async fn test_build_health_body_circuit_half_open_has_successes() {
-        let config = Arc::new(minimal_config());
+        let config = Arc::new(RwLock::new(minimal_config()));
         let circuit_store = circuit::new_circuit_store();
         {
             let mut g = circuit_store.write().await;
@@ -407,6 +436,8 @@ sources:
             output_path: None,
             state_store: None,
             state_store_fallback_active: false,
+            config_path: None,
+            poll_deps: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -452,7 +483,7 @@ sources:
         // When circuit is open, status is unhealthy even if last_error is set
         let mut errors = HashMap::new();
         errors.insert("s1".to_string(), "previous failure".to_string());
-        let config = Arc::new(minimal_config());
+        let config = Arc::new(RwLock::new(minimal_config()));
         let circuit_store = circuit::new_circuit_store();
         {
             let mut g = circuit_store.write().await;
@@ -471,6 +502,8 @@ sources:
             output_path: None,
             state_store: None,
             state_store_fallback_active: false,
+            config_path: None,
+            poll_deps: None,
         };
         let body = build_health_body(&state).await;
         let s1 = body.sources.get("s1").unwrap();
@@ -481,7 +514,7 @@ sources:
 
     #[tokio::test]
     async fn test_build_ready_body_all_sources_unhealthy_not_ready() {
-        let config = Arc::new(minimal_config());
+        let config = Arc::new(RwLock::new(minimal_config()));
         let circuit_store = circuit::new_circuit_store();
         {
             let mut g = circuit_store.write().await;
@@ -506,6 +539,8 @@ sources:
             output_path: None,
             state_store: None,
             state_store_fallback_active: false,
+            config_path: None,
+            poll_deps: None,
         };
         let body = build_ready_body(&state).await;
         assert!(!body.at_least_one_source_healthy);
@@ -516,7 +551,7 @@ sources:
     #[tokio::test]
     async fn test_build_ready_body_state_store_connected() {
         use crate::state::MemoryStateStore;
-        let config = Arc::new(minimal_config());
+        let config = Arc::new(RwLock::new(minimal_config()));
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         let state = HealthState {
             config,
@@ -526,6 +561,8 @@ sources:
             output_path: None,
             state_store: Some(store),
             state_store_fallback_active: false,
+            config_path: None,
+            poll_deps: None,
         };
         let body = build_ready_body(&state).await;
         assert!(body.state_store_connected);

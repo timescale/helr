@@ -14,7 +14,7 @@ global:
   state:
     backend: sqlite
     path: "./hel-state.db"
-  health:
+  api:
     enabled: true
     address: "0.0.0.0"
     port: 8080
@@ -62,34 +62,34 @@ sources:
   #       half_open_timeout_secs: 60
 
   # --- Okta: set OKTA_DOMAIN and OKTA_API_TOKEN; auth prefix SSWS. See docs/okta.md.
-  # okta-audit:
-  #   url: "https://${OKTA_DOMAIN}/api/v1/logs"
-  #   schedule:
-  #     interval_secs: 60
-  #     jitter_secs: 10
-  #   auth:
-  #     type: bearer
-  #     token_env: OKTA_API_TOKEN
-  #     prefix: SSWS
-  #   pagination:
-  #     strategy: link_header
-  #     rel: next
-  #     max_pages: 20
-  #   resilience:
-  #     timeout_secs: 30
-  #     retries:
-  #       max_attempts: 5
-  #       initial_backoff_secs: 2
-  #       max_backoff_secs: 60
-  #       multiplier: 2.0
-  #     circuit_breaker:
-  #       enabled: true
-  #       failure_threshold: 5
-  #       success_threshold: 2
-  #       half_open_timeout_secs: 60
-  #     rate_limit:
-  #       respect_headers: true
-  #       page_delay_secs: 1
+  okta-audit:
+    url: "https://${OKTA_DOMAIN}/api/v1/logs"
+    schedule:
+      interval_secs: 60
+      jitter_secs: 10
+    auth:
+      type: bearer
+      token_env: OKTA_API_TOKEN
+      prefix: SSWS
+    pagination:
+      strategy: link_header
+      rel: next
+      max_pages: 20
+    resilience:
+      timeout_secs: 30
+      retries:
+        max_attempts: 5
+        initial_backoff_secs: 2
+        max_backoff_secs: 60
+        multiplier: 2.0
+      circuit_breaker:
+        enabled: true
+        failure_threshold: 5
+        success_threshold: 2
+        half_open_timeout_secs: 60
+      rate_limit:
+        respect_headers: true
+        page_delay_secs: 1
 
   # --- Okta via OAuth2 (API service integration): client_credentials, org server.
   # Org AS requires private_key_jwt: set OKTA_DOMAIN, OKTA_CLIENT_ID, OKTA_CLIENT_PRIVATE_KEY (PEM).
@@ -284,35 +284,35 @@ sources:
   #       half_open_timeout_secs: 60
 
   # --- Andromeda Security audit trail. GraphQL API; hooks for backfill (skip). Auth via getAuth hook: set ANDROMEDA_PAT (Hel exchanges for cookie) or ANDROMEDA_COOKIE. See docs/andromeda.md.
-  andromeda-audit:
-    url: "https://api.live.andromedasecurity.com/graphql"
-    method: post
-    headers:
-      User-Agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0"
-      Referer: "https://app.live.andromedasecurity.com/"
-      Origin: "https://app.live.andromedasecurity.com"
-      Accept: "*/*"
-      Accept-Language: "en-US,en;q=0.9"
-    schedule:
-      interval_secs: 300
-      jitter_secs: 30
-    hooks:
-      script: "andromeda-audit.js"
-    dedupe:
-      id_path: "id"
-      capacity: 100000
-    resilience:
-      timeout_secs: 30
-      retries:
-        max_attempts: 5
-        initial_backoff_secs: 2
-        max_backoff_secs: 60
-        multiplier: 2.0
-      circuit_breaker:
-        enabled: true
-        failure_threshold: 5
-        success_threshold: 2
-        half_open_timeout_secs: 60
+  # andromeda-audit:
+  #   url: "https://api.live.andromedasecurity.com/graphql"
+  #   method: post
+  #   headers:
+  #     User-Agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0"
+  #     Referer: "https://app.live.andromedasecurity.com/"
+  #     Origin: "https://app.live.andromedasecurity.com"
+  #     Accept: "*/*"
+  #     Accept-Language: "en-US,en;q=0.9"
+  #   schedule:
+  #     interval_secs: 300
+  #     jitter_secs: 30
+  #   hooks:
+  #     script: "andromeda-audit.js"
+  #   dedupe:
+  #     id_path: "id"
+  #     capacity: 100000
+  #   resilience:
+  #     timeout_secs: 30
+  #     retries:
+  #       max_attempts: 5
+  #       initial_backoff_secs: 2
+  #       max_backoff_secs: 60
+  #       multiplier: 2.0
+  #     circuit_breaker:
+  #       enabled: true
+  #       failure_threshold: 5
+  #       success_threshold: 2
+  #       half_open_timeout_secs: 60
 
   # --- GWS via Cloud Logging (LogEntry format): POST entries:list, auth oauth2, scope logging.read.
   # gws-audit-cloud-logging:

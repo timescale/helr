@@ -1435,7 +1435,7 @@ global:
   log_level: error
   state:
     backend: memory
-  health:
+  api:
     enabled: true
     address: "127.0.0.1"
     port: {}
@@ -1594,7 +1594,7 @@ global:
   log_level: error
   state:
     backend: memory
-  health:
+  api:
     enabled: true
     address: "127.0.0.1"
     port: {}
@@ -1694,7 +1694,7 @@ global:
   log_level: error
   state:
     backend: memory
-  health:
+  api:
     enabled: true
     address: "127.0.0.1"
     port: {}
@@ -1784,7 +1784,7 @@ global:
     path: "{}"
   degradation:
     state_store_fallback: memory
-  health:
+  api:
     enabled: true
     address: "127.0.0.1"
     port: {}

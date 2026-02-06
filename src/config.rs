@@ -6,12 +6,12 @@
 #![allow(dead_code)] // fields used when implementing poll loop
 
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
 /// Root config (hel.yaml).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
@@ -20,7 +20,7 @@ pub struct Config {
     pub sources: HashMap<String, SourceConfig>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
     /// Log level (e.g. "info", "debug"). Env HEL_LOG_LEVEL overrides when set.
@@ -42,8 +42,9 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub state: Option<GlobalStateConfig>,
 
+    /// API and health server: REST API (/api/v1/*) plus health endpoints (/healthz, /readyz, /startupz).
     #[serde(default)]
-    pub health: Option<HealthConfig>,
+    pub api: Option<ApiConfig>,
 
     #[serde(default)]
     pub metrics: Option<MetricsConfig>,
@@ -82,7 +83,7 @@ pub struct GlobalConfig {
 }
 
 /// Audit config: log credential access and config changes; never log secret values when redact_secrets is true.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditConfig {
     /// Enable audit logging (credential access, config load/reload).
@@ -104,7 +105,7 @@ fn default_true() -> bool {
 }
 
 /// Global hooks config: script path, timeout, sandbox (no network/fs).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HooksConfig {
     /// Enable JS hooks for sources that specify a script.
@@ -132,7 +133,7 @@ fn default_hooks_timeout_secs() -> u64 {
 }
 
 /// Per-source hooks: script from file path and/or inline string.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceHooksConfig {
     /// Script filename (e.g. "okta.js") under global hooks.path, or absolute path. Omit if using script_inline.
@@ -145,7 +146,7 @@ pub struct SourceHooksConfig {
 }
 
 /// Load shedding: skip low-priority sources when under load (backpressure active).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoadSheddingConfig {
     /// When set, sources with priority below this (0–10) are not polled while under load. Requires per-source priority (default 10).
@@ -154,7 +155,7 @@ pub struct LoadSheddingConfig {
 }
 
 /// Bulkhead (concurrency) limits.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BulkheadConfig {
     /// Max number of sources that may poll concurrently. When set, sources beyond this wait for a permit.
@@ -167,7 +168,7 @@ pub struct BulkheadConfig {
 }
 
 /// Config reload on SIGHUP.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReloadConfig {
     /// When true, on SIGHUP also clear circuit breaker and OAuth2 token cache so sources re-establish on next tick.
@@ -176,7 +177,7 @@ pub struct ReloadConfig {
 }
 
 /// Dump state and metrics on SIGUSR1.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DumpOnSigusr1Config {
     /// Where to write the dump: "log" (tracing at INFO) or "file".
@@ -193,7 +194,7 @@ fn default_dump_destination() -> String {
 }
 
 /// Graceful degradation when state store fails or is unavailable.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DegradationConfig {
     /// When primary state store (e.g. SQLite) fails to open or becomes unavailable, fall back to this backend (e.g. "memory").
@@ -214,7 +215,7 @@ fn default_reduced_frequency_multiplier() -> f64 {
 }
 
 /// Backpressure detection and strategy when the output queue is full or memory is high.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackpressureConfig {
     #[serde(default)]
@@ -240,7 +241,7 @@ pub struct BackpressureConfig {
     pub max_queue_age_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BackpressureStrategyConfig {
     /// Pause poll ticks until stdout/queue drains (no data loss).
@@ -252,7 +253,7 @@ pub enum BackpressureStrategyConfig {
     Drop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DropPolicyConfig {
     /// When full, drop the oldest queued event and enqueue the new one.
@@ -272,7 +273,7 @@ fn default_drop_policy() -> DropPolicyConfig {
     DropPolicyConfig::OldestFirst
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackpressureDetectionConfig {
     /// Stdout (or output) buffer size in bytes before we consider backpressure; used as optional byte cap for queue.
@@ -296,7 +297,7 @@ fn default_event_queue_size() -> usize {
     10_000
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackpressureDiskBufferConfig {
     pub path: String,
@@ -322,7 +323,7 @@ fn default_bearer_prefix() -> String {
     "Bearer".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalStateConfig {
     /// Backend: "memory", "sqlite", "redis", or "postgres".
@@ -335,25 +336,27 @@ pub struct GlobalStateConfig {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HealthConfig {
+pub struct ApiConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_health_address")]
+    /// Bind address for the API and health server (e.g. "0.0.0.0" or "127.0.0.1").
+    #[serde(default = "default_api_address")]
     pub address: String,
-    #[serde(default = "default_health_port")]
+    /// Port for the API and health server.
+    #[serde(default = "default_api_port")]
     pub port: u16,
 }
 
-fn default_health_address() -> String {
+fn default_api_address() -> String {
     "0.0.0.0".to_string()
 }
-fn default_health_port() -> u16 {
+fn default_api_port() -> u16 {
     8080
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     #[serde(default)]
@@ -372,7 +375,7 @@ fn default_metrics_port() -> u16 {
 }
 
 /// Query param value: string or number in YAML (e.g. limit: 20 or limit: "20").
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum QueryParamValue {
     String(String),
@@ -388,7 +391,7 @@ impl QueryParamValue {
 }
 
 /// HTTP method for the source request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HttpMethod {
     #[default]
@@ -397,7 +400,7 @@ pub enum HttpMethod {
 }
 
 /// Per-source config (one entry under sources:).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceConfig {
     pub url: String,
@@ -515,7 +518,7 @@ pub struct SourceConfig {
 }
 
 /// Config for time-based incremental ingestion: use state for "from" param and store latest event timestamp after each poll.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IncrementalFromConfig {
     /// State key to read for first-request param value and to write max timestamp after each poll.
@@ -527,7 +530,7 @@ pub struct IncrementalFromConfig {
 }
 
 /// Per-source state: which event field to use as watermark and which API param receives it (e.g. GWS startTime).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceStateConfig {
     /// Dotted JSON path in each event for the watermark value (e.g. "id.time"). Max value (string) is stored after each poll.
@@ -540,7 +543,7 @@ pub struct SourceStateConfig {
 }
 
 /// Behavior when state store write fails (e.g. disk full).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnStateWriteErrorBehavior {
     /// Return error and fail the tick.
@@ -550,7 +553,7 @@ pub enum OnStateWriteErrorBehavior {
 }
 
 /// Behavior when response body contains invalid UTF-8.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvalidUtf8Behavior {
     /// Replace invalid sequences with U+FFFD.
@@ -562,7 +565,7 @@ pub enum InvalidUtf8Behavior {
 }
 
 /// Behavior when a single output line exceeds max_line_bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MaxEventBytesBehavior {
     /// Truncate line and emit; increment metric.
@@ -574,7 +577,7 @@ pub enum MaxEventBytesBehavior {
 }
 
 /// When to persist state (cursor/next_url).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckpointTiming {
     /// Commit only after full poll tick (all pages). Fewer DB writes; on crash, re-ingest from previous tick.
@@ -584,7 +587,7 @@ pub enum CheckpointTiming {
 }
 
 /// Behavior when cursor is expired (4xx from API).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorExpiredBehavior {
     /// Clear saved cursor; next poll starts from first page.
@@ -594,7 +597,7 @@ pub enum CursorExpiredBehavior {
 }
 
 /// Behavior when parsing response or extracting events fails.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnParseErrorBehavior {
     /// Log warning and stop pagination for this tick (emit nothing for this response).
@@ -603,7 +606,7 @@ pub enum OnParseErrorBehavior {
     Fail,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DedupeConfig {
     /// JSON key or dotted path for record unique ID (e.g. "uuid", "id", "event.id"). Reusable across APIs.
@@ -618,7 +621,7 @@ fn default_dedupe_capacity() -> u64 {
 }
 
 /// Per-source transform: which fields in the raw event map to envelope ts and id.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransformConfig {
     /// Dotted path to the event timestamp (e.g. "published", "event.created_at"). Used for envelope `ts`. When unset, fallback: published, timestamp, ts, created_at, then now.
@@ -629,7 +632,7 @@ pub struct TransformConfig {
     pub id_field: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScheduleConfig {
     #[serde(default = "default_interval_secs")]
@@ -642,7 +645,7 @@ fn default_interval_secs() -> u64 {
     60
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub enum AuthConfig {
@@ -725,7 +728,7 @@ pub fn read_secret(file_path: Option<&str>, env_var: &str) -> anyhow::Result<Str
     std::env::var(env_var).with_context(|| format!("env {} not set", env_var))
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "strategy", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub enum PaginationConfig {
@@ -756,7 +759,7 @@ fn default_rel() -> String {
 
 /// Split timeouts: connect, request, read, idle (client), poll_tick (entire poll cycle).
 /// When set, these override or supplement the legacy `timeout_secs` (used for request when timeouts.request is unset).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimeoutsConfig {
     /// TCP connection establishment (seconds).
@@ -777,7 +780,7 @@ pub struct TimeoutsConfig {
 }
 
 /// TLS options: custom CA, client cert/key, min TLS version. Applied to the reqwest client for this source.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     /// Path to PEM file (single cert or bundle) for custom CA. Merged with system roots unless `ca_only` is true.
@@ -806,7 +809,7 @@ pub struct TlsConfig {
     pub min_version: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResilienceConfig {
     #[serde(default = "default_timeout_secs")]
@@ -828,7 +831,7 @@ pub struct ResilienceConfig {
 }
 
 /// Per-source bulkhead (overrides global when set).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceBulkheadConfig {
     /// Max concurrent HTTP requests for this source.
@@ -837,7 +840,7 @@ pub struct SourceBulkheadConfig {
 }
 
 /// Header names for rate limit info (limit, remaining, reset). When unset, defaults are used.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitHeaderMapping {
     /// Header for rate limit ceiling (e.g. "X-RateLimit-Limit").
@@ -851,7 +854,7 @@ pub struct RateLimitHeaderMapping {
     pub reset_header: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// When true, use Retry-After or reset header from response on 429 instead of generic backoff.
@@ -883,7 +886,7 @@ fn default_respect_headers() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CircuitBreakerConfig {
     #[serde(default = "default_cb_enabled")]
@@ -922,7 +925,7 @@ fn default_timeout_secs() -> u64 {
     30
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetryConfig {
     #[serde(default = "default_max_attempts")]
