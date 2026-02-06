@@ -1,7 +1,5 @@
 # Hel documentation
 
-Table of contents for Hel docs.
-
 ## Core & features
 
 | Doc | Description |
