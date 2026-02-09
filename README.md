@@ -1,8 +1,10 @@
 # Hel
 
-Hel is a generic HTTP API log collector. It polls audit-log and event APIs (Okta, Google Workspace, GitHub, Cloud Logging, and others), handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout or to a file for downstream collectors (Grafana Alloy, Vector, Fluent Bit, Loki).
+Hel is a generic HTTP API log collector. It polls audit-log and event APIs, such as Okta, Google Workspace, GitHub, Slack, 1Password, Tailscale, and others, handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout or to a file for downstream collectors (like Grafana Alloy, Vector, Fluent Bit, Loki).
 
-You configure one or more **sources** in YAML (URL, auth, pagination, schedule). Hel runs on an interval, fetches pages, checkpoints cursors, and writes one JSON object per event per line. Single binary, no runtime dependencies beyond the config and secrets.
+Most sources work **declaratively**: define a URL, auth, pagination strategy, and schedule in YAML and Hel does the rest. For APIs that need custom logic (GraphQL, non-standard auth flows, bespoke pagination), **optional JS hooks** let you script any stage of the request lifecycle, like auth, request building, response parsing, pagination, and state, without forking the binary. Build with `--features hooks`; see [docs/hooks.md](./docs/hooks.md).
+
+Single binary, no runtime dependencies beyond the config, secrets and optional scripts.
 
 ## Supported features
 
@@ -16,7 +18,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **Backpressure:** When the downstream consumer (stdout/file) can't keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
 - **Graceful degradation:** When the state store fails or is unavailable: optional **state_store_fallback** to memory (state not durable), **emit_without_checkpoint** to continue emitting events when state writes fail, and **reduced_frequency_multiplier** to poll less often when degraded; health JSON reports **state_store_fallback_active**
 - **Session replay:** Record API responses to disk, replay without hitting the live API
-- **Optional JS hooks (Boa):** Per-source scripts for `getAuth`, `buildRequest`, `parseResponse`, `getNextPage`, `commitState`; sandbox (timeout; optional `fetch()` when `allow_network: true`). Build with `--features hooks`. See [**docs/hooks.md**](./docs/hooks.md) and the **GraphQL-via-hooks** pattern there.
+- **Optional JS hooks:** Per-source scripts for `getAuth`, `buildRequest`, `parseResponse`, `getNextPage`, `commitState`; sandbox (timeout; optional `fetch()` when `allow_network: true`). Build with `--features hooks`. See [**docs/hooks.md**](./docs/hooks.md) and the **GraphQL-via-hooks** pattern there.
 - **Audit:** Optional `global.audit`: log credential access (when secrets are read), log config load/reload (e.g. SIGHUP). Credential-access events never include secret values. See [**docs/audit.md**](./docs/audit.md) for config and behavior.
 - **REST API:** When the API server is enabled (`global.api.enabled`), HTTP API under `/api/v1`: list sources and status, state and config per source, global config, trigger poll, optional reload. See [**docs/rest-api.md**](./docs/rest-api.md).
 
@@ -67,6 +69,7 @@ hel test --source slack-audit
 hel test --source 1password-audit
 hel test --source tailscale-audit
 hel test --source tailscale-network
+hel test --source andromeda-audit
 
 # State (inspect, reset, set cursor, export/import)
 hel state show okta-audit
