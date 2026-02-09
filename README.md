@@ -13,7 +13,7 @@ You configure one or more **sources** in YAML (URL, auth, pagination, schedule).
 - **TLS:** Custom CA (file or env, merge or replace system roots), client certificate and key (mutual TLS), minimum TLS version (1.2 or 1.3)
 - **State:** SQLite, Redis, or Postgres (or in-memory) for cursor/next_url; single-writer per SQLite file; Redis/Postgres for multi-instance
 - **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
-- **Backpressure:** When the downstream consumer (stdout/file) can’t keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
+- **Backpressure:** When the downstream consumer (stdout/file) can't keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
 - **Graceful degradation:** When the state store fails or is unavailable: optional **state_store_fallback** to memory (state not durable), **emit_without_checkpoint** to continue emitting events when state writes fail, and **reduced_frequency_multiplier** to poll less often when degraded; health JSON reports **state_store_fallback_active**
 - **Session replay:** Record API responses to disk, replay without hitting the live API
 - **Optional JS hooks (Boa):** Per-source scripts for `getAuth`, `buildRequest`, `parseResponse`, `getNextPage`, `commitState`; sandbox (timeout; optional `fetch()` when `allow_network: true`). Build with `--features hooks`. See [**docs/hooks.md**](./docs/hooks.md) and the **GraphQL-via-hooks** pattern there.
@@ -91,22 +91,9 @@ Configuration is merged in this order (later overrides earlier):
 3. **Environment variables** — `HEL_LOG_LEVEL` and `HEL_LOG_FORMAT` override global log settings when set; placeholders like `${OKTA_DOMAIN}` are expanded from the environment at load time (no default; unset = error)
 4. **CLI flags** — e.g. `--config` to choose the config file (no other config overrides via CLI today)
 
-- **Auth:** `bearer` (with optional `prefix: SSWS` for Okta), `api_key`, `basic`, `oauth2` (refresh token or client credentials, e.g. Okta App Integration), `google_service_account` (GWS).
-- **Pagination:** `link_header`, `cursor` (query or body), or `page_offset`. Cursor is merged into the request body for POST APIs (e.g. Cloud Logging `entries.list`).
-- **Response array:** Hel looks for event arrays under `items`, `data`, `events`, `logs`, or `entries`.
-- **Options:** `from` / `from_param`, `query_params`, `incremental_from` (store latest event timestamp in state, send as query param on first request — e.g. Slack `oldest`), `dedupe.id_path`, `resilience.rate_limit` (header mapping, `max_requests_per_second`, `burst_size`, `adaptive`, `page_delay_secs`), `resilience.timeouts` (split: connect, request, read, idle, poll_tick), `resilience.tls` (custom CA, client cert/key, min TLS version), `resilience.retries.jitter` and `retryable_status_codes`, `transform.timestamp_field` and `transform.id_field`, `max_pages`, and others - see `hel.yaml` comments and the manuals below.
-
-**Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel’s own logs (stderr) use the same label key and value `hel`.
+**Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel's own logs (stderr) use the same label key and value `hel`.
 
 **Broken pipe (SIGPIPE):** When stdout is a pipe and the consumer (e.g. Alloy, `hel run | alloy ...`) exits, writes return EPIPE. Hel treats this as **fatal**: the error is logged, `hel_output_errors_total` is incremented, and the process exits with a non-zero code so an orchestrator can restart. Keep the downstream process running, or use file output (`--output /path`) and have the collector tail the file instead.
-
-**Backpressure:** When the downstream consumer (stdout or file) can’t keep up, enable `global.backpressure.enabled` so Hel uses a bounded queue and a writer thread. You can **block** (pause poll until the queue drains; no data loss), **disk_buffer** (spill to a file when the queue is full; requires `disk_buffer.path`), or **drop** (drop events with a policy: oldest_first, newest_first, random; tracked in `hel_events_dropped_total`). Optionally set `memory_threshold_mb` to apply the same strategy when process RSS exceeds the limit, and `max_queue_age_secs` to drop events that sit in the queue too long.
-
-**Graceful degradation** (`global.degradation:`): When the primary state store (e.g. SQLite) fails to open or becomes unwritable, you can set `state_store_fallback: memory` so Hel falls back to an in-memory store (state is not durable across restarts). When degraded, set `reduced_frequency_multiplier` (e.g. `2.0`) to poll less often and reduce load. Set `emit_without_checkpoint: true` to continue emitting events when state writes fail (e.g. disk full); otherwise state write errors fail the tick. Health and readyz JSON include `state_store_fallback_active: true` when the fallback is in use.
-
-**Rate limit** (`resilience.rate_limit:`): Rate limit headers are not standardized — APIs use different names (e.g. GitHub/Okta use `X-RateLimit-*`; others use `RateLimit-*` or custom names). You can map limit/remaining/reset via `headers` (defaults: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`). Set `max_requests_per_second` and optional `burst_size` to cap client-side request rate (token bucket) so you don’t exceed the API’s limit. Set `adaptive: true` to throttle proactively: when the response reports remaining ≤ 1, Hel waits until the reset window before the next request. On 429, Hel uses Retry-After or the configured reset header when `respect_headers` is true.
-
-**State:** One writer per state store (e.g. one SQLite file). For multiple instances, use Redis or Postgres (`global.state.backend: redis` or `postgres` with `global.state.url`).
 
 <details>
 <summary><strong>Config reference (all options)</strong></summary>
@@ -118,7 +105,7 @@ Configuration is merged in this order (later overrides earlier):
 | `log_level` | Logging level | `trace`, `debug`, `info`, `warn`, `error` | `info` |
 | `log_format` | Hel log format (stderr) | `json`, `pretty` | — (none) |
 | `source_label_key` | Key for producer label in NDJSON and Hel logs | string | — (effective: `source`) |
-| `source_label_value` | Value for producer label in Hel’s own logs | string | — (effective: `hel`) |
+| `source_label_value` | Value for producer label in Hel's own logs | string | — (effective: `hel`) |
 | `state.backend` | State store backend | `sqlite`, `memory`, `redis`, `postgres` | — |
 | `state.path` | Path to state file (SQLite) | string | `./hel-state.db` (when backend is sqlite) |
 | `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`) | string | — (required when backend is redis or postgres) |
@@ -138,7 +125,7 @@ When `api.enabled` is true, GET `/healthz` returns full JSON (version, uptime, p
 | `metrics.address` | Metrics server bind address | string | `0.0.0.0` |
 | `metrics.port` | Metrics server port | number | `9090` |
 
-**Backpressure** (`global.backpressure:`): When the output queue is full or process RSS exceeds a threshold, apply a strategy so the poll loop doesn’t block indefinitely or OOM.
+**Backpressure** (`global.backpressure:`):
 
 | Option | Description | Possible values | Default |
 |--------|-------------|-----------------|---------|
@@ -162,19 +149,15 @@ Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"
 
 **Bulkhead** (`global.bulkhead:`): Per-source and global concurrency caps using semaphores. Set `max_concurrent_sources` to limit how many sources poll at once (e.g. avoid overloading a shared API). Set `max_concurrent_requests` to limit concurrent HTTP requests per source (default no limit). Override per source with `resilience.bulkhead.max_concurrent_requests`.
 
-**Load shedding** (`global.load_shedding:`): When backpressure is active (queue full or memory over `backpressure.detection` threshold), optionally skip polling low-priority sources. Set `skip_priority_below` (0–10); sources with `priority` below that value are not polled until the queue drains below 75% of cap. Per-source `priority` (0–10, default 10) tags sources for load shedding. Strategies: **drop oldest** and **pause polling** are already in backpressure (strategy **drop** with `drop_policy: oldest_first`, or **block**); **skip low-priority sources** is enabled when `load_shedding.skip_priority_below` is set.
+**Load shedding** (`global.load_shedding:`): When backpressure is active (queue full or memory over `backpressure.detection` threshold), optionally skip polling low-priority sources. Set `skip_priority_below` (0–10); sources with `priority` below that value are not polled until the queue drains below 75% of cap. Per-source `priority` (0–10, default 10) tags sources for load shedding.
 
-**Graceful degradation** (`global.degradation:`): State store fallback, emit without checkpoint on state write failure, and reduced poll frequency when degraded.
+**Graceful degradation** (`global.degradation:`):
 
 | Option | Description | Possible values | Default |
 |--------|-------------|-----------------|---------|
 | `degradation.state_store_fallback` | When primary state store (SQLite, Redis, or Postgres) fails to open, fall back to this backend | `memory` | — (none; fail on error) |
 | `degradation.emit_without_checkpoint` | When state store write fails, skip checkpoint and continue (log warning); same effect as per-source `on_state_write_error: skip_checkpoint` but global | boolean | — (none) |
 | `degradation.reduced_frequency_multiplier` | When degraded (e.g. using state_store_fallback), multiply poll interval by this factor (e.g. `2.0` = double the delay) | number | `2.0` |
-
-When `state_store_fallback: memory` is set and SQLite fails, Hel logs a warning and uses an in-memory store; health and readyz JSON include `state_store_fallback_active: true`.
-
-Env overrides: `HEL_LOG_LEVEL`, `HEL_LOG_FORMAT` (or `RUST_LOG_JSON=1`) override global log settings when set.
 
 ---
 
@@ -306,58 +289,13 @@ Secrets can be read from file or env; file takes precedence when set. Client cer
 | Doc | Description |
 |-----|-------------|
 | [hel.yaml](hel.yaml) | Example config with Okta, GWS, GitHub, Slack, 1Password, and Tailscale sources (commented where inactive). |
-| [docs/integrations/okta.md](docs/integrations/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
-| [docs/integrations/gws-gcp.md](docs/integrations/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
-| [docs/integrations/github.md](docs/integrations/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
-| [docs/integrations/slack.md](docs/integrations/slack.md) | Slack Enterprise audit logs: user token (xoxp) with auditlogs:read; cursor pagination; Enterprise only. |
-| [docs/integrations/1password.md](docs/integrations/1password.md) | 1Password Events API (audit): bearer token from Events Reporting; POST, cursor in body. |
-| [docs/integrations/tailscale.md](docs/integrations/tailscale.md) | Tailscale configuration audit logs and network flow logs: API token (Basic auth); time-window GET; no pagination. |
-
-## How to run with Okta
-
-**API token (SSWS):** Create an API token in Okta Admin (**Security** → **API** → **Tokens**). In `hel.yaml`, add an Okta source; set `OKTA_DOMAIN` and `OKTA_API_TOKEN`. Run: `hel validate` then `hel test --source okta-audit` or `hel run`.
-
-**OAuth2 (App Integration):** Use an API Services app with client credentials, private key (JWT), and optional DPoP — see [docs/integrations/okta.md](docs/integrations/okta.md).
-
-Full steps and troubleshooting: **[docs/integrations/okta.md](docs/integrations/okta.md)**.
-
-## How to run with Google Workspace (GWS)
-
-**Option A (no service account):** Create an OAuth 2.0 Client ID in Google Cloud Console, get a refresh token once via [OAuth Playground](https://developers.google.com/oauthplayground/) (signed in as a Workspace admin), then use `auth.type: oauth2` with that token.
-
-**Option B (service account):** Create a service account in GCP, enable domain-wide delegation in GWS Admin for the Admin SDK Reports API scope, download the JSON key, then use `auth.type: google_service_account` with `credentials_file` and `subject_env` (admin email).
-
-Full steps: **[docs/integrations/gws-gcp.md](docs/integrations/gws-gcp.md)**.
-
-## How to run with GitHub Enterprise
-
-Create a personal access token (classic) with **read:audit_log**. You must be an **organization owner**. Set `GITHUB_ORG` (your org login) and `GITHUB_TOKEN`. Uncomment the `github-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source github-audit` or `hel run`.
-
-Full steps and troubleshooting: **[docs/integrations/github.md](docs/integrations/github.md)**.
-
-## How to run with Slack Enterprise
-
-Create a Slack app with the **auditlogs:read** user token scope. Install it on your **Enterprise organization** (not a single workspace) as the **Owner**. Copy the user OAuth token (`xoxp-...`) and set `SLACK_AUDIT_TOKEN`. Uncomment the `slack-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source slack-audit` or `hel run`. The Audit Logs API is **only available for Slack Enterprise** workspaces.
-
-Full steps and troubleshooting: **[docs/integrations/slack.md](docs/integrations/slack.md)**.
-
-## How to run with 1Password (Business)
-
-Create an **Events Reporting integration** in your 1Password Business account (**Integrations** → **Directory** → Events Reporting). Issue a bearer token with **Audit events** enabled and save it (e.g. as `ONEPASSWORD_EVENTS_TOKEN`). Uncomment the `1password-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source 1password-audit` or `hel run`. The audit endpoint is **POST** with cursor-in-body pagination.
-
-Full steps and troubleshooting: **[docs/integrations/1password.md](docs/integrations/1password.md)**.
-
-## How to run with Tailscale
-
-Create an **API access token** with **logs:configuration:read** (and optionally **logs:network:read** for network flow logs) in the Tailscale admin console (**Settings** → **Keys**). Set `TAILNET_ID` (your tailnet name, e.g. `example.com`), `TAILSCALE_START` and `TAILSCALE_END` (RFC3339 time window), `TAILSCALE_API_TOKEN` (the token), and `TAILSCALE_API_TOKEN_PASSWORD=""` (empty password for Basic auth). Uncomment the `tailscale-audit` source (and `tailscale-network` for [network flow logs](https://tailscale.com/kb/1219/network-flow-logs/) — Premium/Enterprise only; enable in admin console) in `hel.yaml` and run: `hel validate` then `hel test --source tailscale-audit` or `hel test --source tailscale-network` or `hel run`. Both APIs return all events in the window in one response (no pagination).
-
-Full steps and troubleshooting: **[docs/integrations/tailscale.md](docs/integrations/tailscale.md)**.
-
-## How to run with Andromeda Security
-
-Build with the **hooks** feature. Create a **Personal Access Token** in Andromeda and set `ANDROMEDA_PAT` (or copy the full Cookie header from the browser and set `ANDROMEDA_COOKIE` for short-lived runs). Enable `allow_network: true` in `global.hooks` so the hook's **getAuth** can exchange the PAT for a session cookie via **fetch()**. Uncomment the `andromeda-audit` source in `hel.yaml` and run: `hel validate` then `hel test --source andromeda-audit` or `hel run`. The API is **GraphQL** (POST) with offset-based pagination; the hook handles backfill by advancing `skip` each poll.
-
-Full steps and troubleshooting: **[docs/integrations/andromeda.md](docs/integrations/andromeda.md)**.
+| [Okta](docs/integrations/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
+| [GWS/GCP](docs/integrations/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
+| [GitHub](docs/integrations/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
+| [Slack](docs/integrations/slack.md) | Slack Enterprise audit logs: user token (xoxp) with auditlogs:read; cursor pagination; Enterprise only. |
+| [1Password](docs/integrations/1password.md) | 1Password Events API (audit): bearer token from Events Reporting; POST, cursor in body. |
+| [Tailscale](docs/integrations/tailscale.md) | Tailscale configuration audit logs and network flow logs: API token (Basic auth); time-window GET; no pagination. |
+| [Andromeda](docs/integrations/andromeda.md) | Andromeda Security audit logs: GraphQL API with JS hooks; PAT or cookie auth; offset-based pagination. |
 
 ## Session replay
 
