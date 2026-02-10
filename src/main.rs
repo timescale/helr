@@ -28,9 +28,9 @@ mod state;
 #[cfg(feature = "hooks")]
 mod hooks;
 
+use axum::http::Request;
 use axum::middleware::{self, Next};
 use axum::routing::{get, post};
-use axum::http::Request;
 use circuit::new_circuit_store;
 use config::{Config, DumpOnSigusr1Config};
 use dpop::new_dpop_key_cache;

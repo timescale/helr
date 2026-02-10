@@ -9,11 +9,11 @@ use crate::audit;
 use crate::config::Config;
 use crate::health::{self, HealthState, SourceStatusDto};
 use crate::poll;
+use axum::Json;
 use axum::extract::Path;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,9 +51,7 @@ pub struct ReloadResponse {
 }
 
 /// GET /api/v1/sources — list all sources and their status (circuit, last_error).
-pub async fn list_sources_handler(
-    State(state): State<Arc<HealthState>>,
-) -> impl IntoResponse {
+pub async fn list_sources_handler(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
     let body = health::build_health_body(state.as_ref()).await;
     let response = ListSourcesResponse {
         version: body.version,
@@ -166,9 +164,7 @@ pub async fn get_source_config_handler(
 }
 
 /// GET /api/v1/config — global config (log_level, health, metrics, state, etc.).
-pub async fn get_global_config_handler(
-    State(state): State<Arc<HealthState>>,
-) -> impl IntoResponse {
+pub async fn get_global_config_handler(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
     let config = state.config.read().await;
     match serde_json::to_value(&config.global) {
         Ok(v) => (StatusCode::OK, Json(v)),
@@ -271,9 +267,7 @@ pub async fn trigger_poll_handler(
 }
 
 /// POST /api/v1/reload — reload config from file (same as SIGHUP). 503 if reload not configured.
-pub async fn reload_handler(
-    State(state): State<Arc<HealthState>>,
-) -> impl IntoResponse {
+pub async fn reload_handler(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
     let config_path = match &state.config_path {
         Some(p) => p.clone(),
         None => {
@@ -442,7 +436,9 @@ sources:
     #[tokio::test]
     async fn get_global_config_returns_200() {
         let state = api_state_no_poll_deps();
-        let response = get_global_config_handler(State(state)).await.into_response();
+        let response = get_global_config_handler(State(state))
+            .await
+            .into_response();
         let (parts, body) = response.into_parts();
         assert_eq!(parts.status, StatusCode::OK);
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
@@ -453,10 +449,9 @@ sources:
     #[tokio::test]
     async fn get_source_state_not_found_returns_404() {
         let state = api_state_no_poll_deps();
-        let response =
-            get_source_state_handler(State(state), Path("nonexistent".to_string()))
-                .await
-                .into_response();
+        let response = get_source_state_handler(State(state), Path("nonexistent".to_string()))
+            .await
+            .into_response();
         let (parts, _) = response.into_parts();
         assert_eq!(parts.status, StatusCode::NOT_FOUND);
     }
@@ -486,7 +481,12 @@ sources:
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"], false);
-        assert!(json["error"].as_str().unwrap().contains("trigger poll not available"));
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("trigger poll not available")
+        );
     }
 
     #[tokio::test]

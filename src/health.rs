@@ -185,12 +185,7 @@ fn version() -> String {
 pub async fn build_health_body(state: &HealthState) -> HealthBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
     let config = state.config.read().await;
-    let sources = build_sources(
-        &config,
-        &state.circuit_store,
-        state.last_errors.as_ref(),
-    )
-    .await;
+    let sources = build_sources(&config, &state.circuit_store, state.last_errors.as_ref()).await;
     HealthBody {
         version: version(),
         uptime_secs,
@@ -204,12 +199,7 @@ pub async fn build_health_body(state: &HealthState) -> HealthBody {
 pub async fn build_ready_body(state: &HealthState) -> ReadyBody {
     let uptime_secs = state.started_at.elapsed().as_secs_f64();
     let config = state.config.read().await;
-    let sources = build_sources(
-        &config,
-        &state.circuit_store,
-        state.last_errors.as_ref(),
-    )
-    .await;
+    let sources = build_sources(&config, &state.circuit_store, state.last_errors.as_ref()).await;
     let output_writable = state
         .output_path
         .as_ref()
