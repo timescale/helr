@@ -328,9 +328,6 @@ fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureI
                 && shared.disk_buffer_mutex.is_some())
             .then(|| guard.disk_buffer_path.clone())
             .flatten();
-            if guard.queue.is_empty() && path_for_drain.is_none() {
-                shared.empty_for_flush.notify_one();
-            }
             let queue_below_threshold = guard.queue.len() < guard.cap.saturating_mul(3) / 4;
             if queue_below_threshold && let Some(ref flag) = shared.under_load {
                 flag.store(false, Ordering::Relaxed);
@@ -352,7 +349,12 @@ fn backpressure_writer_loop(inner: Arc<dyn EventSink>, shared: Arc<BackpressureI
             for l in &lines {
                 let _ = inner.write_line(l);
             }
-            if lines.is_empty() {
+        }
+        // Notify flush *after* the write completes so the last item is
+        // visible in the inner sink before flush() returns.
+        {
+            let guard = shared.state.lock().unwrap();
+            if guard.queue.is_empty() {
                 shared.empty_for_flush.notify_one();
             }
         }
