@@ -753,8 +753,8 @@ mod tests {
         sink.flush().unwrap();
         let lines = inner.lines();
         assert_eq!(lines.len(), 5);
-        for i in 0..5 {
-            assert_eq!(lines[i], format!("line{}", i));
+        for (i, line) in lines.iter().enumerate().take(5) {
+            assert_eq!(*line, format!("line{}", i));
         }
     }
 
@@ -830,7 +830,7 @@ mod tests {
         let rotated = fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .find(|e| e.path() != path && e.path().extension().map_or(false, |x| x == "ndjson"));
+            .find(|e| e.path() != path && e.path().extension().is_some_and(|x| x == "ndjson"));
         assert!(rotated.is_some(), "rotated file should exist");
         let rotated_path = rotated.unwrap().path();
         let rotated_content = fs::read_to_string(&rotated_path).unwrap();

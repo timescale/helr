@@ -421,7 +421,7 @@ sources:
 
     let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
     assert!(
-        lines.len() >= 1,
+        !lines.is_empty(),
         "expected at least 1 NDJSON line after retry, got {}: {:?}",
         lines.len(),
         stdout
@@ -638,11 +638,10 @@ sources:
     let rec: serde_json::Value = serde_json::from_str(&content).expect("parse recording JSON");
     assert_eq!(rec["status"], 200);
     assert!(
-        rec.get("body_base64")
+        !rec.get("body_base64")
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .len()
-            > 0
+            .is_empty()
     );
     let body_b64 = rec["body_base64"].as_str().unwrap();
     let body = base64::engine::general_purpose::STANDARD
@@ -724,7 +723,7 @@ sources:
     let stderr = String::from_utf8_lossy(&out.stderr);
     let lines: Vec<&str> = stdout.lines().filter(|s| !s.trim().is_empty()).collect();
     assert!(
-        lines.len() >= 1,
+        !lines.is_empty(),
         "expected at least 1 NDJSON line from replay, got {}: stdout={} stderr={}",
         lines.len(),
         stdout,
@@ -1497,6 +1496,7 @@ sources:
         .expect("get startupz");
 
     let _ = child.kill();
+    let _ = child.wait();
 
     assert!(
         res_health.status().is_success(),
@@ -1649,6 +1649,7 @@ sources:
         .await
         .expect("get healthz");
     let _ = child.kill();
+    let _ = child.wait();
     assert!(res.status().is_success());
     let body: serde_json::Value = res.json().await.expect("JSON");
     let sources = body["sources"].as_object().expect("sources");
@@ -1747,6 +1748,7 @@ sources:
         .await
         .expect("get readyz");
     let _ = child.kill();
+    let _ = child.wait();
     assert!(
         res.status().is_success(),
         "readyz 200 when output file writable"
@@ -1860,6 +1862,7 @@ sources:
     );
 
     let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// SIGTERM mid-poll: send SIGTERM while hel is waiting on a slow response; process exits (graceful shutdown).

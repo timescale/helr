@@ -452,18 +452,18 @@ async fn poll_with_hooks(
             let mut request_url = final_url.clone();
             {
                 let mut u = reqwest::Url::parse(&request_url).context("parse url")?;
-                if let Some(ref ar) = auth_result {
-                    if let Some(ref q) = ar.query {
-                        for (k, v) in q {
-                            u.query_pairs_mut().append_pair(k, v);
-                        }
+                if let Some(ref ar) = auth_result
+                    && let Some(ref q) = ar.query
+                {
+                    for (k, v) in q {
+                        u.query_pairs_mut().append_pair(k, v);
                     }
                 }
-                if let Some(ref br) = build_result {
-                    if let Some(ref q) = br.query {
-                        for (k, v) in q {
-                            u.query_pairs_mut().append_pair(k, v);
-                        }
+                if let Some(ref br) = build_result
+                    && let Some(ref q) = br.query
+                {
+                    for (k, v) in q {
+                        u.query_pairs_mut().append_pair(k, v);
                     }
                 }
                 request_url = u.to_string();
@@ -493,24 +493,24 @@ async fn poll_with_hooks(
                         }
                     }
                 }
-                if let Some(ref cookie) = ar.cookie {
-                    if let (Ok(name), Ok(val)) = (
+                if let Some(ref cookie) = ar.cookie
+                    && let (Ok(name), Ok(val)) = (
                         reqwest::header::HeaderName::try_from("cookie"),
                         reqwest::header::HeaderValue::try_from(cookie.as_str()),
-                    ) {
-                        req = req.header(name, val);
-                    }
+                    )
+                {
+                    req = req.header(name, val);
                 }
             }
-            if let Some(ref br) = build_result {
-                if let Some(ref h) = br.headers {
-                    for (k, v) in h {
-                        if let (Ok(name), Ok(val)) = (
-                            reqwest::header::HeaderName::try_from(k.as_str()),
-                            reqwest::header::HeaderValue::try_from(v.as_str()),
-                        ) {
-                            req = req.header(name, val);
-                        }
+            if let Some(ref br) = build_result
+                && let Some(ref h) = br.headers
+            {
+                for (k, v) in h {
+                    if let (Ok(name), Ok(val)) = (
+                        reqwest::header::HeaderName::try_from(k.as_str()),
+                        reqwest::header::HeaderValue::try_from(v.as_str()),
+                    ) {
+                        req = req.header(name, val);
                     }
                 }
             }
@@ -1811,11 +1811,12 @@ async fn url_with_first_request_params(
 #[cfg(test)]
 fn url_with_first_request_params_sync(url: &str, source: &SourceConfig) -> anyhow::Result<String> {
     let mut u = reqwest::Url::parse(url).context("parse url for first-request params")?;
-    if source.state.is_none() && source.incremental_from.is_none() {
-        if let Some(ref from_val) = source.from {
-            let param = source.from_param.as_deref().unwrap_or("since");
-            u.query_pairs_mut().append_pair(param, from_val);
-        }
+    if source.state.is_none()
+        && source.incremental_from.is_none()
+        && let Some(ref from_val) = source.from
+    {
+        let param = source.from_param.as_deref().unwrap_or("since");
+        u.query_pairs_mut().append_pair(param, from_val);
     }
     if let Some(ref params) = source.query_params {
         for (k, v) in params {

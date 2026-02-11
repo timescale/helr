@@ -1,8 +1,6 @@
 //! Optional JS hooks (Boa): buildRequest, parseResponse, getNextPage, commitState.
 //! Sandbox: timeout per call; no file system (require). When boa_runtime is built with the fetch feature, fetch() is available (subject to hook timeout).
 
-#![cfg(feature = "hooks")]
-
 use crate::config::HooksConfig;
 use anyhow::{Context as AnyhowContext, bail};
 use boa_engine::{Context, JsError, JsResult, JsValue, Source};
