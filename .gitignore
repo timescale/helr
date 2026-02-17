@@ -1,4 +1,11 @@
 /target
 hel-state.db
 *.pem
+*.key
 recording
+
+# Secrets and credentials
+.env
+.env.*
+credentials.json
+.cargo/credentials.toml

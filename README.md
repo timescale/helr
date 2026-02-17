@@ -29,9 +29,9 @@ Single binary, no runtime dependencies beyond the config, secrets and optional s
 You need Rust (e.g. [rustup](https://rustup.rs/)).
 
 ```bash
+cargo install helr
+# or from source
 cargo install --path .
-# or from a git checkout
-cargo install --git https://github.com/your-org/hel.git
 ```
 
 Binary will be `hel` in `~/.cargo/bin` (or your configured target dir).
@@ -39,7 +39,7 @@ Binary will be `hel` in `~/.cargo/bin` (or your configured target dir).
 ### Build from source
 
 ```bash
-git clone https://github.com/your-org/hel.git && cd hel
+git clone https://github.com/timescale/helr.git && cd helr
 cargo build --release
 ./target/release/hel --help
 ```
@@ -308,6 +308,20 @@ Record API responses once, then replay from disk to test the pipeline without hi
 
 - **Unit and integration tests:** `cargo test` (excludes testcontainers tests).
 - **Testcontainers (Redis/Postgres state backends):** requires Docker. Run with: `cargo test --features testcontainers --test integration_testcontainers`.
+
+## Releasing
+
+### Publishing a new version
+
+1. Bump the version in `Cargo.toml`.
+2. Commit, push to `main`.
+3. Create a GitHub Release (e.g. tag `v0.2.0`). The `publish.yml` workflow triggers
+   automatically and publishes the crate.
+
+### Dry run
+
+Trigger the workflow manually via **Actions → Publish to crates.io → Run workflow**.
+Manual runs automatically pass `--dry-run` to `cargo publish`.
 
 ## License
 
