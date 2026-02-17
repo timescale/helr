@@ -635,6 +635,48 @@ mod tests {
         }
     }
 
+    /// Sink that blocks the writer thread until the gate is opened.
+    /// Signals via a channel when the writer first enters `write_line`,
+    /// so the test can push items while the writer is parked.
+    struct GatedRecordingSink {
+        lines: StdMutex<Vec<String>>,
+        entered_tx: StdMutex<Option<std::sync::mpsc::SyncSender<()>>>,
+        gate_open: StdMutex<bool>,
+        gate_cvar: std::sync::Condvar,
+    }
+
+    impl GatedRecordingSink {
+        fn new(entered_tx: std::sync::mpsc::SyncSender<()>) -> Self {
+            Self {
+                lines: StdMutex::new(Vec::new()),
+                entered_tx: StdMutex::new(Some(entered_tx)),
+                gate_open: StdMutex::new(false),
+                gate_cvar: std::sync::Condvar::new(),
+            }
+        }
+        fn open_gate(&self) {
+            *self.gate_open.lock().unwrap() = true;
+            self.gate_cvar.notify_all();
+        }
+        fn lines(&self) -> Vec<String> {
+            self.lines.lock().unwrap().clone()
+        }
+    }
+
+    impl EventSink for GatedRecordingSink {
+        fn write_line(&self, line: &str) -> anyhow::Result<()> {
+            if let Some(tx) = self.entered_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            let mut open = self.gate_open.lock().unwrap();
+            while !*open {
+                open = self.gate_cvar.wait(open).unwrap();
+            }
+            self.lines.lock().unwrap().push(line.to_string());
+            Ok(())
+        }
+    }
+
     fn backpressure_config(
         event_queue_size: usize,
         strategy: BackpressureStrategyConfig,
@@ -673,36 +715,50 @@ mod tests {
 
     #[test]
     fn backpressure_drop_oldest_first() {
-        let inner = Arc::new(RecordingSink::new());
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        let inner = Arc::new(GatedRecordingSink::new(tx));
         let cfg = backpressure_config(
             2,
             BackpressureStrategyConfig::Drop,
             DropPolicyConfig::OldestFirst,
         );
         let sink = BackpressureSink::new(inner.clone(), &cfg, None).unwrap();
+        // Push one item and wait for the writer to pop it and block in write_line.
         sink.write_line_from_source(Some("s"), "first").unwrap();
+        rx.recv().unwrap();
+        // Writer is parked; queue is empty. Fill it to capacity.
         sink.write_line_from_source(Some("s"), "second").unwrap();
-        sink.write_line_from_source(Some("s"), "third").unwrap(); // drops "first"
+        sink.write_line_from_source(Some("s"), "third").unwrap();
+        // Queue full: ["second", "third"]. Next push drops oldest ("second").
+        sink.write_line_from_source(Some("s"), "fourth").unwrap();
+        inner.open_gate();
         sink.flush().unwrap();
         let lines = inner.lines();
-        assert_eq!(lines, ["second", "third"]);
+        assert_eq!(lines, ["first", "third", "fourth"]);
     }
 
     #[test]
     fn backpressure_drop_newest_first() {
-        let inner = Arc::new(RecordingSink::new());
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        let inner = Arc::new(GatedRecordingSink::new(tx));
         let cfg = backpressure_config(
             2,
             BackpressureStrategyConfig::Drop,
             DropPolicyConfig::NewestFirst,
         );
         let sink = BackpressureSink::new(inner.clone(), &cfg, None).unwrap();
+        // Push one item and wait for the writer to pop it and block in write_line.
         sink.write_line_from_source(Some("s"), "first").unwrap();
+        rx.recv().unwrap();
+        // Writer is parked; queue is empty. Fill it to capacity.
         sink.write_line_from_source(Some("s"), "second").unwrap();
-        sink.write_line_from_source(Some("s"), "third").unwrap(); // drops "third"
+        sink.write_line_from_source(Some("s"), "third").unwrap();
+        // Queue full: ["second", "third"]. Next push is discarded (newest first).
+        sink.write_line_from_source(Some("s"), "fourth").unwrap();
+        inner.open_gate();
         sink.flush().unwrap();
         let lines = inner.lines();
-        assert_eq!(lines, ["first", "second"]);
+        assert_eq!(lines, ["first", "second", "third"]);
     }
 
     #[test]
