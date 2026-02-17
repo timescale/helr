@@ -1,12 +1,12 @@
-# Hel REST API
+# Helr REST API
 
-When `global.api.enabled` is true, Hel serves health endpoints and a **REST API** on the same HTTP server (bind address and port from `global.api`). The API lets you list sources, read per-source state and config, read global config, trigger a one-off poll, and optionally reload config — suitable for scripts, operators, and a minimal web UI.
+When `global.api.enabled` is true, Helr serves health endpoints and a **REST API** on the same HTTP server (bind address and port from `global.api`). The API lets you list sources, read per-source state and config, read global config, trigger a one-off poll, and optionally reload config — suitable for scripts, operators, and a minimal web UI.
 
 ## Base path
 
 All API routes are under **`/api/v1`**. Example base URL: `http://127.0.0.1:8080/api/v1`.
 
-**Request logging:** Incoming HTTP requests (method, path) are logged at **debug** level. Set `HEL_LOG_LEVEL=debug` (or `RUST_LOG=hel=debug`) to see them in the log output.
+**Request logging:** Incoming HTTP requests (method, path) are logged at **debug** level. Set `HELR_LOG_LEVEL=debug` (or `RUST_LOG=helr=debug`) to see them in the log output.
 
 ## Endpoints
 
@@ -76,7 +76,7 @@ Returns `404` if the source is not in config. If no state store is configured, `
 
 ### GET /api/v1/sources/:id/config
 
-Config for a single source (URL, schedule, auth, pagination, resilience, etc.). Same shape as one entry under `sources` in `hel.yaml`. Auth fields expose env var names (e.g. `token_env`) and paths, not secret values.
+Config for a single source (URL, schedule, auth, pagination, resilience, etc.). Same shape as one entry under `sources` in `helr.yaml`. Auth fields expose env var names (e.g. `token_env`) and paths, not secret values.
 
 **Response:** `200 OK` with source config JSON, or `404 Not Found` if the source id is not in config.
 
@@ -84,7 +84,7 @@ Config for a single source (URL, schedule, auth, pagination, resilience, etc.). 
 
 ### GET /api/v1/config
 
-Global config (log_level, log_format, state, health, metrics, backpressure, degradation, reload, bulkhead, load_shedding, hooks, audit, etc.). Same shape as `global` in `hel.yaml`.
+Global config (log_level, log_format, state, health, metrics, backpressure, degradation, reload, bulkhead, load_shedding, hooks, audit, etc.). Same shape as `global` in `helr.yaml`.
 
 **Response:** `200 OK` with global config JSON.
 
@@ -92,7 +92,7 @@ Global config (log_level, log_format, state, health, metrics, backpressure, degr
 
 ### POST /api/v1/sources/:id/poll
 
-Run **one poll tick** for the given source (same as `hel test --source <id> --once` but via HTTP). The call blocks until the tick completes.
+Run **one poll tick** for the given source (same as `helr test --source <id> --once` but via HTTP). The call blocks until the tick completes.
 
 **Response:** `200 OK` (body describes outcome)
 
@@ -102,7 +102,7 @@ Run **one poll tick** for the given source (same as `hel test --source <id> --on
 **Errors:**
 
 - **404 Not Found** — Source id not in config.
-- **503 Service Unavailable** — Trigger poll not available (e.g. Hel was started with `--once` or replay mode; poll dependencies are not attached).
+- **503 Service Unavailable** — Trigger poll not available (e.g. Helr was started with `--once` or replay mode; poll dependencies are not attached).
 
 ---
 
@@ -149,7 +149,7 @@ When `api.enabled` is false, the API and health endpoints are not served.
 
 ## Use with a minimal web UI
 
-The API is designed to feed a minimal web UI (e.g. Alloy-style): use `GET /api/v1/sources` for the source list and status, `GET /api/v1/sources/:id/state` for state, `GET /api/v1/sources/:id/config` and `GET /api/v1/config` for config, and `POST /api/v1/sources/:id/poll` to trigger a poll from the UI. No auth in v1; put Hel behind a reverse proxy or restrict access by network.
+The API is designed to feed a minimal web UI (e.g. Alloy-style): use `GET /api/v1/sources` for the source list and status, `GET /api/v1/sources/:id/state` for state, `GET /api/v1/sources/:id/config` and `GET /api/v1/config` for config, and `POST /api/v1/sources/:id/poll` to trigger a poll from the UI. No auth in v1; put Helr behind a reverse proxy or restrict access by network.
 
 ## Examples
 

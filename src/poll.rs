@@ -415,7 +415,7 @@ async fn poll_with_hooks(
         let ctx = HookContext {
             env: std::env::vars().collect(),
             state: state_map,
-            request_id: format!("hel-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+            request_id: format!("helr-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             source_id: source_id.to_string(),
             default_since: source.from.clone(),
             pagination: if pagination.is_empty() {
@@ -654,7 +654,7 @@ async fn poll_with_hooks(
     let commit_ctx = HookContext {
         env: std::env::vars().collect(),
         state: state_map,
-        request_id: format!("hel-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+        request_id: format!("helr-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
         source_id: source_id.to_string(),
         default_since: source.from.clone(),
         pagination: if pagination.is_empty() {

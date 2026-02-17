@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/target \
     touch src/main.rs && cargo build --release && \
-    cp /target/release/hel /build/hel
+    cp /target/release/helr /build/helr
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime (distroless: no shell, no package manager, minimal libs)
@@ -37,6 +37,6 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 # Mount config and state at runtime; do not bake secrets into the image.
 WORKDIR /app
 
-COPY --from=builder /build/hel /app/hel
+COPY --from=builder /build/helr /app/helr
 
-ENTRYPOINT ["/app/hel"]
+ENTRYPOINT ["/app/helr"]

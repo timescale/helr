@@ -1,4 +1,4 @@
-//! Integration tests: replay + wiremock + hel run --once; assert stdout NDJSON and behavior.
+//! Integration tests: replay + wiremock + helr run --once; assert stdout NDJSON and behavior.
 
 use base64::Engine;
 use insta::assert_snapshot;
@@ -21,7 +21,7 @@ async fn integration_run_once_emits_ndjson() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_test");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -41,9 +41,9 @@ sources:
     );
     std::fs::write(&config_path, yaml).expect("write config");
 
-    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+    let hel_bin = std::env::var("CARGO_BIN_EXE_helr").unwrap_or_else(|_| {
         format!(
-            "{}/target/debug/hel",
+            "{}/target/debug/helr",
             std::env::var("CARGO_MANIFEST_DIR").unwrap()
         )
     });
@@ -51,17 +51,17 @@ sources:
     let output = std::process::Command::new(&hel_bin)
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "hel run --once failed: stdout={} stderr={}",
+        "helr run --once failed: stdout={} stderr={}",
         stdout,
         stderr
     );
@@ -73,7 +73,7 @@ sources:
 "#);
 }
 
-/// Client-side rate limit (max_requests_per_second): hel throttles requests and still emits NDJSON.
+/// Client-side rate limit (max_requests_per_second): helr throttles requests and still emits NDJSON.
 #[tokio::test]
 async fn integration_rate_limit_rps_emits_ndjson() {
     let server = MockServer::start().await;
@@ -87,7 +87,7 @@ async fn integration_rate_limit_rps_emits_ndjson() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_rate_limit");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -114,17 +114,17 @@ sources:
     let output = std::process::Command::new(&hel_bin)
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "hel run --once with rate_limit failed: stdout={} stderr={}",
+        "helr run --once with rate_limit failed: stdout={} stderr={}",
         stdout,
         stderr
     );
@@ -135,7 +135,7 @@ sources:
 "#);
 }
 
-/// TLS config (min_version only): hel builds client and emits NDJSON (mock is HTTP; TLS applies to HTTPS sources).
+/// TLS config (min_version only): helr builds client and emits NDJSON (mock is HTTP; TLS applies to HTTPS sources).
 #[tokio::test]
 async fn integration_tls_min_version_emits_ndjson() {
     let server = MockServer::start().await;
@@ -149,7 +149,7 @@ async fn integration_tls_min_version_emits_ndjson() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_tls");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -175,17 +175,17 @@ sources:
     let output = std::process::Command::new(&hel_bin)
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "hel run --once with tls min_version failed: stdout={} stderr={}",
+        "helr run --once with tls min_version failed: stdout={} stderr={}",
         stdout,
         stderr
     );
@@ -196,7 +196,7 @@ sources:
 "#);
 }
 
-/// Backpressure enabled (strategy block): hel still emits NDJSON to stdout.
+/// Backpressure enabled (strategy block): helr still emits NDJSON to stdout.
 #[tokio::test]
 async fn integration_backpressure_block_emits_ndjson() {
     let server = MockServer::start().await;
@@ -211,7 +211,7 @@ async fn integration_backpressure_block_emits_ndjson() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_backpressure_test");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -236,9 +236,9 @@ sources:
     );
     std::fs::write(&config_path, yaml).expect("write config");
 
-    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+    let hel_bin = std::env::var("CARGO_BIN_EXE_helr").unwrap_or_else(|_| {
         format!(
-            "{}/target/debug/hel",
+            "{}/target/debug/helr",
             std::env::var("CARGO_MANIFEST_DIR").unwrap()
         )
     });
@@ -246,17 +246,17 @@ sources:
     let output = std::process::Command::new(&hel_bin)
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "hel run --once with backpressure failed: stdout={} stderr={}",
+        "helr run --once with backpressure failed: stdout={} stderr={}",
         stdout,
         stderr
     );
@@ -268,7 +268,7 @@ sources:
 "#);
 }
 
-/// Backpressure enabled (strategy drop): hel emits NDJSON; under load some events may be dropped (metrics).
+/// Backpressure enabled (strategy drop): helr emits NDJSON; under load some events may be dropped (metrics).
 #[tokio::test]
 async fn integration_backpressure_drop_emits_ndjson() {
     let server = MockServer::start().await;
@@ -283,7 +283,7 @@ async fn integration_backpressure_drop_emits_ndjson() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_backpressure_drop_test");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -309,9 +309,9 @@ sources:
     );
     std::fs::write(&config_path, yaml).expect("write config");
 
-    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+    let hel_bin = std::env::var("CARGO_BIN_EXE_helr").unwrap_or_else(|_| {
         format!(
-            "{}/target/debug/hel",
+            "{}/target/debug/helr",
             std::env::var("CARGO_MANIFEST_DIR").unwrap()
         )
     });
@@ -319,17 +319,17 @@ sources:
     let output = std::process::Command::new(&hel_bin)
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "hel run --once with backpressure drop failed: stdout={} stderr={}",
+        "helr run --once with backpressure drop failed: stdout={} stderr={}",
         stdout,
         stderr
     );
@@ -368,7 +368,7 @@ async fn integration_429_then_200_retries_and_emits() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_429_test");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -394,9 +394,9 @@ sources:
     );
     std::fs::write(&config_path, yaml).expect("write config");
 
-    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+    let hel_bin = std::env::var("CARGO_BIN_EXE_helr").unwrap_or_else(|_| {
         format!(
-            "{}/target/debug/hel",
+            "{}/target/debug/helr",
             std::env::var("CARGO_MANIFEST_DIR").unwrap()
         )
     });
@@ -404,17 +404,17 @@ sources:
     let output = std::process::Command::new(&hel_bin)
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "hel run --once failed after 429: stdout={} stderr={}",
+        "helr run --once failed after 429: stdout={} stderr={}",
         stdout,
         stderr
     );
@@ -447,7 +447,7 @@ async fn integration_file_output_ndjson() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_file_out");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let output_path = config_dir.join("events.ndjson");
     let _ = std::fs::remove_file(&output_path);
 
@@ -480,14 +480,14 @@ sources:
             output_path.to_str().unwrap(),
         ])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out.status.success(),
-        "hel run --once --output failed: stdout={} stderr={}",
+        "helr run --once --output failed: stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -526,7 +526,7 @@ async fn integration_on_parse_error_skip() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_parse_skip");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -550,10 +550,10 @@ sources:
     let out = std::process::Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out.status.success(),
@@ -585,7 +585,7 @@ async fn integration_record_dir_writes_recordings() {
     let _ = std::fs::create_dir_all(&config_dir);
     let record_dir = config_dir.join("recordings");
     let _ = std::fs::remove_dir_all(&record_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -615,14 +615,14 @@ sources:
             record_dir.to_str().unwrap(),
         ])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out.status.success(),
-        "hel run --once --record-dir failed: stdout={} stderr={}",
+        "helr run --once --record-dir failed: stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -653,7 +653,7 @@ sources:
     assert_eq!(arr[0]["msg"], "recorded");
 }
 
-/// Session replay --replay-dir: use pre-created recordings; run hel and assert NDJSON matches.
+/// Session replay --replay-dir: use pre-created recordings; run helr and assert NDJSON matches.
 #[tokio::test]
 async fn integration_replay_dir_emits_from_recordings() {
     let config_dir = std::env::temp_dir().join("hel_integration_replay");
@@ -677,7 +677,7 @@ async fn integration_replay_dir_emits_from_recordings() {
     )
     .expect("write 000.json");
 
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     std::fs::write(
         &config_path,
         r#"
@@ -707,14 +707,14 @@ sources:
             replay_dir.to_str().unwrap(),
         ])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out.status.success(),
-        "hel run --once --replay-dir failed: stdout={} stderr={}",
+        "helr run --once --replay-dir failed: stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -736,9 +736,9 @@ sources:
 }
 
 fn hel_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+    std::env::var("CARGO_BIN_EXE_helr").unwrap_or_else(|_| {
         format!(
-            "{}/target/debug/hel",
+            "{}/target/debug/helr",
             std::env::var("CARGO_MANIFEST_DIR").unwrap()
         )
     })
@@ -750,23 +750,23 @@ fn run_hel(args: &[&str], config_path: &str) -> std::process::Output {
     std::process::Command::new(hel_bin())
         .args(&args_vec)
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel")
+        .expect("run helr")
 }
 
-/// Redact variable parts of hel stdout so inline snapshots are stable across runs.
+/// Redact variable parts of helr stdout so inline snapshots are stable across runs.
 fn redact_stdout_for_snapshot(stdout: &str, server_uri: Option<&str>) -> String {
     let mut out = if let Some(uri) = server_uri {
         stdout.replace(uri, "http://mock-server/")
     } else {
         stdout.to_string()
     };
-    // Redact request_id (e.g. "hel-1770292017945225000").
+    // Redact request_id (e.g. "helr-1770292017945225000").
     let mut i = 0;
-    while let Some(pos) = out[i..].find("\"request_id\":\"hel-") {
-        let start = i + pos + "\"request_id\":\"hel-".len();
+    while let Some(pos) = out[i..].find("\"request_id\":\"helr-") {
+        let start = i + pos + "\"request_id\":\"helr-".len();
         let end = start
             + out[start..]
                 .bytes()
@@ -805,7 +805,7 @@ async fn integration_dedupe_skips_duplicate_ids() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_dedupe");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -861,7 +861,7 @@ async fn integration_circuit_breaker_opens_after_failures() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_circuit");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -905,13 +905,13 @@ sources:
     );
 }
 
-/// hel state set: set a single key, then show confirms it.
+/// helr state set: set a single key, then show confirms it.
 #[tokio::test]
 async fn integration_state_set_then_show() {
     let config_dir = std::env::temp_dir().join("hel_integration_state_set");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
-    let state_path = config_dir.join("hel-state.db");
+    let config_path = config_dir.join("helr.yaml");
+    let state_path = config_dir.join("helr-state.db");
     let _ = std::fs::remove_file(&state_path);
 
     std::fs::write(
@@ -948,11 +948,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel state set");
+        .expect("run helr state set");
 
     assert!(
         out_set.status.success(),
-        "hel state set failed: stderr={}",
+        "helr state set failed: stderr={}",
         String::from_utf8_lossy(&out_set.stderr)
     );
 
@@ -967,11 +967,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel state show");
+        .expect("run helr state show");
 
     assert!(
         out_show.status.success(),
-        "hel state show failed: stderr={}",
+        "helr state show failed: stderr={}",
         String::from_utf8_lossy(&out_show.stderr)
     );
 
@@ -1009,8 +1009,8 @@ async fn integration_watermark_state_stored_after_poll() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_watermark");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
-    let state_path = config_dir.join("hel-watermark-state.db");
+    let config_path = config_dir.join("helr.yaml");
+    let state_path = config_dir.join("helr-watermark-state.db");
     let _ = std::fs::remove_file(&state_path);
 
     let yaml = format!(
@@ -1043,11 +1043,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out_run.status.success(),
-        "hel run --once failed: stderr={}",
+        "helr run --once failed: stderr={}",
         String::from_utf8_lossy(&out_run.stderr)
     );
 
@@ -1062,11 +1062,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel state show");
+        .expect("run helr state show");
 
     assert!(
         out_show.status.success(),
-        "hel state show failed: stderr={}",
+        "helr state show failed: stderr={}",
         String::from_utf8_lossy(&out_show.stderr)
     );
 
@@ -1096,7 +1096,7 @@ async fn integration_state_backend_redis() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_redis");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1123,11 +1123,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out_run.status.success(),
-        "hel run --once failed: stderr={}",
+        "helr run --once failed: stderr={}",
         String::from_utf8_lossy(&out_run.stderr)
     );
 
@@ -1142,11 +1142,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel state show");
+        .expect("run helr state show");
 
     assert!(
         out_show.status.success(),
-        "hel state show failed: stderr={}",
+        "helr state show failed: stderr={}",
         String::from_utf8_lossy(&out_show.stderr)
     );
 
@@ -1158,12 +1158,12 @@ sources:
     );
 }
 
-/// hel validate rejects invalid config.
+/// helr validate rejects invalid config.
 #[tokio::test]
 async fn integration_validate_rejects_invalid_config() {
     let config_dir = std::env::temp_dir().join("hel_integration_validate");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     std::fs::write(
         &config_path,
         r#"
@@ -1178,7 +1178,7 @@ sources: {}
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(!output.status.success());
 }
@@ -1207,7 +1207,7 @@ async fn integration_cursor_pagination_two_pages() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_cursor");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1263,7 +1263,7 @@ async fn integration_page_offset_pagination_two_pages() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_page_offset");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1318,7 +1318,7 @@ async fn integration_link_header_respects_max_pages() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_max_pages");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1379,7 +1379,7 @@ async fn integration_fixture_okta_shaped_events() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_fixture");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1427,7 +1427,7 @@ async fn integration_health_endpoints_return_200() {
     let health_port = 19283u16;
     let config_dir = std::env::temp_dir().join("hel_integration_health");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1457,12 +1457,12 @@ sources:
     let mut child = std::process::Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn hel");
+        .expect("spawn helr");
 
     let base = format!("http://127.0.0.1:{}", health_port);
     let client = reqwest::Client::new();
@@ -1585,7 +1585,7 @@ async fn integration_health_sources_structure() {
     let health_port = 19284u16;
     let config_dir = std::env::temp_dir().join("hel_integration_health_sources");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1621,12 +1621,12 @@ sources:
     let mut child = std::process::Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn hel");
+        .expect("spawn helr");
 
     let base = format!("http://127.0.0.1:{}", health_port);
     let client = reqwest::Client::new();
@@ -1686,7 +1686,7 @@ async fn integration_health_readyz_file_output_200() {
     let config_dir = std::env::temp_dir().join("hel_integration_health_readyz");
     let _ = std::fs::create_dir_all(&config_dir);
     let output_file = config_dir.join("out.ndjson");
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1720,12 +1720,12 @@ sources:
             output_file.to_str().unwrap(),
         ])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn hel");
+        .expect("spawn helr");
 
     let base = format!("http://127.0.0.1:{}", health_port);
     let client = reqwest::Client::new();
@@ -1772,9 +1772,9 @@ async fn integration_state_store_fallback_health_reports_fallback_active() {
     let health_port = 19286u16;
     let config_dir = std::env::temp_dir().join("hel_integration_fallback");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     // SQLite path that will fail to open (parent dir does not exist), so we fall back to memory.
-    let state_path = config_dir.join("nonexistent_subdir").join("hel-state.db");
+    let state_path = config_dir.join("nonexistent_subdir").join("helr-state.db");
     let yaml = format!(
         r#"
 global:
@@ -1808,12 +1808,12 @@ sources:
     let mut child = std::process::Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn hel");
+        .expect("spawn helr");
 
     let base = format!("http://127.0.0.1:{}", health_port);
     let client = reqwest::Client::new();
@@ -1865,7 +1865,7 @@ sources:
     let _ = child.wait();
 }
 
-/// SIGTERM mid-poll: send SIGTERM while hel is waiting on a slow response; process exits (graceful shutdown).
+/// SIGTERM mid-poll: send SIGTERM while helr is waiting on a slow response; process exits (graceful shutdown).
 #[cfg(unix)]
 #[tokio::test]
 async fn integration_sigterm_mid_poll_graceful_shutdown() {
@@ -1886,7 +1886,7 @@ async fn integration_sigterm_mid_poll_graceful_shutdown() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_sigterm");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -1911,12 +1911,12 @@ sources:
     let mut child = std::process::Command::new(hel_bin())
         .args(["run", "--config", config_path.to_str().unwrap()])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn hel");
+        .expect("spawn helr");
 
     std::thread::sleep(Duration::from_millis(1500));
 
@@ -1931,7 +1931,7 @@ sources:
             Ok(None) => {
                 if start.elapsed() > wait_timeout {
                     let _ = child.kill();
-                    panic!("hel did not exit within {:?}", wait_timeout);
+                    panic!("helr did not exit within {:?}", wait_timeout);
                 }
             }
             Err(e) => panic!("try_wait failed: {}", e),
@@ -1965,7 +1965,7 @@ async fn integration_hooks_inline_script_emits_ndjson() {
 
     let config_dir = std::env::temp_dir().join("hel_integration_hooks_test");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     // Use script_inline as a single-line string to avoid YAML block-scalar indentation issues.
     let script_inline = r#"function parseResponse(ctx, response) { var body = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; var items = body.items || body.data || []; return items.map(function(e) { return { ts: e.published || '', source: ctx.sourceId, event: e, meta: {} }; }); }"#;
     let yaml = format!(
@@ -1990,9 +1990,9 @@ sources:
     );
     std::fs::write(&config_path, yaml).expect("write config");
 
-    let hel_bin = std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+    let hel_bin = std::env::var("CARGO_BIN_EXE_helr").unwrap_or_else(|_| {
         format!(
-            "{}/target/debug/hel",
+            "{}/target/debug/helr",
             std::env::var("CARGO_MANIFEST_DIR").unwrap()
         )
     });
@@ -2000,24 +2000,24 @@ sources:
     let output = std::process::Command::new(&hel_bin)
         .args(["run", "--config", config_path.to_str().unwrap(), "--once"])
         .env("RUST_LOG", "error")
-        .env("HEL_LOG_LEVEL", "error")
+        .env("HELR_LOG_LEVEL", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "hel run --once with hooks failed: stdout={} stderr={}",
+        "helr run --once with hooks failed: stdout={} stderr={}",
         stdout,
         stderr
     );
 
     let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
     assert_snapshot!(snapshot_output, @r#"
-{"endpoint":"http://mock-server//","event":{"action":"login","id":"h1","published":"2024-06-01T10:00:00Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"REDACTED_TS"}
-{"endpoint":"http://mock-server//","event":{"action":"logout","id":"h2","published":"2024-06-01T10:00:01Z"},"meta":{"request_id":"hel-REDACTED"},"source":"hooks-inline-source","ts":"REDACTED_TS"}
+{"endpoint":"http://mock-server//","event":{"action":"login","id":"h1","published":"2024-06-01T10:00:00Z"},"meta":{"request_id":"helr-REDACTED"},"source":"hooks-inline-source","ts":"REDACTED_TS"}
+{"endpoint":"http://mock-server//","event":{"action":"logout","id":"h2","published":"2024-06-01T10:00:01Z"},"meta":{"request_id":"helr-REDACTED"},"source":"hooks-inline-source","ts":"REDACTED_TS"}
 "#);
 }

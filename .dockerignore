@@ -11,7 +11,7 @@ target/
 
 # Local state and secrets (never bake into image)
 *.db
-hel-state.db
+helr-state.db
 credentials.json
 *.pem
 .env
@@ -24,4 +24,4 @@ README.md
 *.md
 
 # Config is mounted at runtime
-hel.yaml
+helr.yaml

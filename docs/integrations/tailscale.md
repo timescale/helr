@@ -1,6 +1,6 @@
 # Tailscale
 
-Tailscale exposes two logging APIs that Hel can poll. Both use the same **HTTP Basic auth** (API token as username, empty password) and **time-window** query params (`start` / `end`, RFC3339); neither uses pagination.
+Tailscale exposes two logging APIs that Helr can poll. Both use the same **HTTP Basic auth** (API token as username, empty password) and **time-window** query params (`start` / `end`, RFC3339); neither uses pagination.
 
 1. **Configuration audit logs** - who did what (policy, users, nodes, API keys). [Configuration audit logging](https://tailscale.com/kb/1203/audit-logging/).
 2. **Network flow logs** - how and when nodes connect (traffic flow, not contents). [Network flow logs](https://tailscale.com/kb/1219/network-flow-logs/). Premium/Enterprise only; 30-day retention; must be enabled in the admin console.
@@ -28,11 +28,11 @@ You need an **API access token** with the `logs:configuration:read` scope.
 
 See [Tailscale API](https://tailscale.com/kb/1243/tailscale-api/) for details.
 
-### Step 2: Configure Hel (configuration audit)
+### Step 2: Configure Helr (configuration audit)
 
-The configuration audit endpoint is **GET** with **required** query parameters **start** and **end** (RFC3339 timestamps, inclusive). There is **no pagination**; all events in the time window are returned in one response. Hel uses a single request per poll (no pagination config).
+The configuration audit endpoint is **GET** with **required** query parameters **start** and **end** (RFC3339 timestamps, inclusive). There is **no pagination**; all events in the time window are returned in one response. Helr uses a single request per poll (no pagination config).
 
-In `hel.yaml`, add a Tailscale audit source. The URL must include the tailnet ID and the time range; use environment variables so you can set the window per run or via a wrapper script.
+In `helr.yaml`, add a Tailscale audit source. The URL must include the tailnet ID and the time range; use environment variables so you can set the window per run or via a wrapper script.
 
 ```yaml
   tailscale-audit:
@@ -64,7 +64,7 @@ In `hel.yaml`, add a Tailscale audit source. The URL must include the tailnet ID
 - **`TAILSCALE_START`**, **`TAILSCALE_END`**: RFC3339 timestamps for the window (e.g. `2025-01-01T00:00:00Z`, `2025-01-01T23:59:59Z`). Start and end are inclusive (nanosecond resolution).
 - **`TAILSCALE_API_TOKEN`**: Your API access token with `logs:configuration:read`.
 - **`TAILSCALE_API_TOKEN_PASSWORD`**: For Tailscale Basic auth, the password is **empty**. Set this env var to an empty string, e.g. `export TAILSCALE_API_TOKEN_PASSWORD=""`.
-- **No pagination**: Omit `pagination` so Hel performs one GET per poll and emits events from the `logs` array.
+- **No pagination**: Omit `pagination` so Helr performs one GET per poll and emits events from the `logs` array.
 
 ### Run (configuration audit)
 
@@ -75,18 +75,18 @@ export TAILSCALE_END="2025-01-01T23:59:59Z"
 export TAILSCALE_API_TOKEN="tskey-api-k..."
 export TAILSCALE_API_TOKEN_PASSWORD=""
 
-hel validate
-hel test --source tailscale-audit   # or: hel run --once
+helr validate
+helr test --source tailscale-audit   # or: helr run --once
 ```
 
-You should see NDJSON lines (one per audit event). Then run `hel run` for continuous collection.
+You should see NDJSON lines (one per audit event). Then run `helr run` for continuous collection.
 
 ### Time window and continuous ingestion (configuration audit)
 
 The API returns **all** events in the [start, end] window in a single response; there is no cursor or page token. For **continuous ingestion** you must advance the time window yourself:
 
-- **Option A (fixed window):** Set `TAILSCALE_START` and `TAILSCALE_END` to a fixed range (e.g. last 24 hours) and run Hel on a schedule. You may see overlapping events; use dedupe if needed.
-- **Option B (sliding window):** Use a wrapper script or cron that sets `TAILSCALE_START` and `TAILSCALE_END` (e.g. end=now, start=now-1h) before each `hel run --once`, so each run fetches a new window.
+- **Option A (fixed window):** Set `TAILSCALE_START` and `TAILSCALE_END` to a fixed range (e.g. last 24 hours) and run Helr on a schedule. You may see overlapping events; use dedupe if needed.
+- **Option B (sliding window):** Use a wrapper script or cron that sets `TAILSCALE_START` and `TAILSCALE_END` (e.g. end=now, start=now-1h) before each `helr run --once`, so each run fetches a new window.
 - **Option C (one-off export):** Run once with a specific window to export a slice of logs.
 
 Logs are kept for **90 days**; older events are not available.
@@ -118,7 +118,7 @@ You need an **API access token** with the `logs:network:read` scope. You can use
 - **Nodes** must use Tailscale v1.34 or later to send flow telemetry.
 - Logs are retained for **30 days** (not configurable).
 
-### Configure Hel (network flow)
+### Configure Helr (network flow)
 
 Add a second source for network flow. Same URL pattern and auth as configuration audit; only the path and scope differ (`/logging/network`, `logs:network:read`). Use the same env vars if your token has both scopes, or a separate token env for network-only.
 
@@ -162,8 +162,8 @@ export TAILSCALE_END="2025-01-01T23:59:59Z"
 export TAILSCALE_API_TOKEN="tskey-api-k..."
 export TAILSCALE_API_TOKEN_PASSWORD=""
 
-hel validate
-hel test --source tailscale-network   # or: hel run --once
+helr validate
+helr test --source tailscale-network   # or: helr run --once
 ```
 
 ### Time window (network flow)
@@ -181,11 +181,11 @@ Same as configuration audit: advance `TAILSCALE_START` / `TAILSCALE_END` yoursel
 
 ## Other Tailscale logging and events
 
-Tailscale has other logging/event features that **do not** expose a pull API Hel can use:
+Tailscale has other logging/event features that **do not** expose a pull API Helr can use:
 
-| Feature | Description | Why Hel doesn’t poll it |
+| Feature | Description | Why Helr doesn’t poll it |
 |--------|-------------|--------------------------|
-| **[Log streaming](https://tailscale.com/kb/1255/log-streaming)** | Tailscale **pushes** configuration audit and/or network flow logs to your SIEM, S3, or Vector endpoint (Splunk HEC, Elasticsearch, Datadog, etc.). | Push-only; you configure a destination URL and Tailscale sends logs there. No “list logs” API to poll. Use Hel’s **pull** APIs above, or use log streaming for push. |
+| **[Log streaming](https://tailscale.com/kb/1255/log-streaming)** | Tailscale **pushes** configuration audit and/or network flow logs to your SIEM, S3, or Vector endpoint (Splunk HEC, Elasticsearch, Datadog, etc.). | Push-only; you configure a destination URL and Tailscale sends logs there. No “list logs” API to poll. Use Helr’s **pull** APIs above, or use log streaming for push. |
 | **[SSH session recording](https://tailscale.com/kb/1246/tailscale-ssh-session-recording)** | Tailscale SSH sessions are recorded (asciinema) and **streamed** to a recorder node in your tailnet (or to S3). | Recordings go to a node you run (tsrecorder) or S3; there is no central Tailscale API to fetch a list of recordings. |
 | **[Client metrics](https://tailscale.com/kb/1482/client-metrics)** | Prometheus-style metrics (throughput, health, DERP, etc.) exposed **per client** at `http://100.100.100.100/metrics` or over Tailscale on port 5252. | Per-device scrape; not a single “list events” API. Use Prometheus/Grafana (or similar) to scrape each client. |
 | **[Webhooks](https://tailscale.com/kb/1213/webhooks)** | Tailscale **pushes** HTTP requests to a URL you configure when certain events occur (e.g. device approved). | Push-only; no API to poll for webhook payloads. |
@@ -196,7 +196,7 @@ For **pull-based** log collection (poll an API, get a batch of events), the only
 
 ## Testing with replay
 
-Run once with `--record-dir ./recordings` (with valid credentials and a small time window) to save the response, then use `hel run --once --replay-dir ./recordings` to replay without calling the API. Works for both configuration audit and network flow sources.
+Run once with `--record-dir ./recordings` (with valid credentials and a small time window) to save the response, then use `helr run --once --replay-dir ./recordings` to replay without calling the API. Works for both configuration audit and network flow sources.
 
 ## Troubleshooting
 

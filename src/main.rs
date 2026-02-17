@@ -1,4 +1,4 @@
-//! Hel — generic HTTP API log collector.
+//! Helr — generic HTTP API log collector.
 //!
 //! Polls HTTP APIs (Okta, GitHub, etc.), handles pagination and state management,
 //! emits NDJSON to stdout for downstream collectors (Alloy, Vector, etc.).
@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 
 #[derive(Parser)]
-#[command(name = "hel")]
+#[command(name = "helr")]
 #[command(author, version, about = "Generic HTTP API log collector")]
 struct Cli {
     #[arg(short, long, global = true)]
@@ -67,7 +67,7 @@ enum Commands {
     /// Start the collector (default)
     Run {
         /// Config file path (sources, schedule, auth, etc.)
-        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        #[arg(short, long, default_value = "helr.yaml", value_name = "PATH")]
         config: PathBuf,
 
         /// Run one poll cycle and exit
@@ -98,14 +98,14 @@ enum Commands {
     /// Validate configuration file
     Validate {
         /// Config file path
-        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        #[arg(short, long, default_value = "helr.yaml", value_name = "PATH")]
         config: PathBuf,
     },
 
     /// Test a source configuration (one poll tick for the given source)
     Test {
         /// Config file path
-        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        #[arg(short, long, default_value = "helr.yaml", value_name = "PATH")]
         config: PathBuf,
 
         #[arg(long, value_name = "NAME")]
@@ -118,7 +118,7 @@ enum Commands {
     /// Inspect or manage state store
     State {
         /// Config file path (for global.state backend/path)
-        #[arg(short, long, default_value = "hel.yaml", value_name = "PATH")]
+        #[arg(short, long, default_value = "helr.yaml", value_name = "PATH")]
         config: PathBuf,
 
         #[command(subcommand)]
@@ -145,10 +145,10 @@ enum StateSubcommand {
     Import,
 }
 
-/// Path to hel config (sources, state, etc.) for commands that use it. Default "hel.yaml" when no subcommand (implicit run).
-fn hel_config_path(cli: &Cli) -> PathBuf {
+/// Path to helr config (sources, state, etc.) for commands that use it. Default "helr.yaml" when no subcommand (implicit run).
+fn helr_config_path(cli: &Cli) -> PathBuf {
     match &cli.command {
-        None => PathBuf::from("hel.yaml"),
+        None => PathBuf::from("helr.yaml"),
         Some(Commands::Run { config, .. }) => config.clone(),
         Some(Commands::Validate { config }) => config.clone(),
         Some(Commands::Test { config, .. }) => config.clone(),
@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     if cli.dry_run {
         tracing::info!(
             "dry-run: would load config from {:?}",
-            hel_config_path(&cli)
+            helr_config_path(&cli)
         );
         return Ok(());
     }
@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
             run_validate(config)
         }
         other => {
-            let config_path = hel_config_path(&cli);
+            let config_path = helr_config_path(&cli);
             let config = Config::load(&config_path)?;
             audit::log_config_change(config.global.audit.as_ref(), &config_path, false);
             init_logging(Some(&config), &cli);
@@ -288,7 +288,7 @@ async fn main() -> anyhow::Result<()> {
                     run_state(&config, subcommand.as_ref()).await
                 }
                 None => {
-                    let path = hel_config_path(&cli);
+                    let path = helr_config_path(&cli);
                     let skip_priority_below = config
                         .global
                         .load_shedding
@@ -313,9 +313,9 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Key/value for the producer label in Hel's JSON log lines (set in init_logging).
-static HEL_LOG_LABEL_KEY: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
-static HEL_LOG_LABEL_VALUE: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+/// Key/value for the producer label in Helr's JSON log lines (set in init_logging).
+static HELR_LOG_LABEL_KEY: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+static HELR_LOG_LABEL_VALUE: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
 
 /// Post-process a JSON log line: add configurable producer label (key/value), rename "target" to "module" so "source" (or configured key) is the sole producer field.
 fn add_source_to_json_log_line(line: &str) -> String {
@@ -326,14 +326,14 @@ fn add_source_to_json_log_line(line: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(trimmed) {
         Ok(mut v) => {
             if let Some(obj) = v.as_object_mut() {
-                let key = HEL_LOG_LABEL_KEY
+                let key = HELR_LOG_LABEL_KEY
                     .get()
                     .map(|s| s.as_str())
                     .unwrap_or("source");
-                let value = HEL_LOG_LABEL_VALUE
+                let value = HELR_LOG_LABEL_VALUE
                     .get()
                     .map(|s| s.as_str())
-                    .unwrap_or("hel");
+                    .unwrap_or("helr");
                 obj.insert(
                     key.to_string(),
                     serde_json::Value::String(value.to_string()),
@@ -354,7 +354,7 @@ fn add_source_to_json_log_line(line: &str) -> String {
     }
 }
 
-/// Writer that buffers stderr until newline, then adds "source":"hel" to JSON lines before writing.
+/// Writer that buffers stderr until newline, then adds "source":"helr" to JSON lines before writing.
 struct JsonSourceLabelWriter {
     buffer: Vec<u8>,
 }
@@ -390,15 +390,15 @@ impl Write for JsonSourceLabelWriter {
     }
 }
 
-/// MakeWriter that returns a writer adding "source":"hel" to JSON log lines (for consistent labeling with NDJSON events).
+/// MakeWriter that returns a writer adding "source":"helr" to JSON log lines (for consistent labeling with NDJSON events).
 struct HelJsonStderr;
 
 impl Write for HelJsonStderr {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        HEL_JSON_WRITER.lock().unwrap().write(buf)
+        HELR_JSON_WRITER.lock().unwrap().write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        HEL_JSON_WRITER.lock().unwrap().flush()
+        HELR_JSON_WRITER.lock().unwrap().flush()
     }
 }
 
@@ -408,7 +408,7 @@ impl Clone for HelJsonStderr {
     }
 }
 
-static HEL_JSON_WRITER: once_cell::sync::Lazy<Mutex<JsonSourceLabelWriter>> =
+static HELR_JSON_WRITER: once_cell::sync::Lazy<Mutex<JsonSourceLabelWriter>> =
     once_cell::sync::Lazy::new(|| Mutex::new(JsonSourceLabelWriter::new()));
 
 impl tracing_subscriber::fmt::MakeWriter<'_> for HelJsonStderr {
@@ -418,12 +418,12 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for HelJsonStderr {
     }
 }
 
-/// Init tracing from config (log_format, log_level) or env. Config takes precedence; env HEL_LOG_FORMAT, HEL_LOG_LEVEL (or RUST_LOG when no config) override.
+/// Init tracing from config (log_format, log_level) or env. Config takes precedence; env HELR_LOG_FORMAT, HELR_LOG_LEVEL (or RUST_LOG when no config) override.
 fn init_logging(config: Option<&Config>, cli: &Cli) {
     let use_json = match config.and_then(|c| c.global.log_format.as_deref()) {
         Some("json") => true,
         _ => {
-            std::env::var("HEL_LOG_FORMAT").as_deref() == Ok("json")
+            std::env::var("HELR_LOG_FORMAT").as_deref() == Ok("json")
                 || std::env::var("RUST_LOG_JSON").as_deref() == Ok("1")
         }
     };
@@ -435,17 +435,17 @@ fn init_logging(config: Option<&Config>, cli: &Cli) {
         let value = config
             .and_then(|c| c.global.source_label_value.as_ref())
             .cloned()
-            .unwrap_or_else(|| "hel".to_string());
-        let _ = HEL_LOG_LABEL_KEY.set(key);
-        let _ = HEL_LOG_LABEL_VALUE.set(value);
+            .unwrap_or_else(|| "helr".to_string());
+        let _ = HELR_LOG_LABEL_KEY.set(key);
+        let _ = HELR_LOG_LABEL_VALUE.set(value);
     }
     let filter = if cli.quiet {
         EnvFilter::new("error")
     } else if cli.verbose {
-        EnvFilter::new("hel=debug,tower_http=debug")
+        EnvFilter::new("helr=debug,tower_http=debug")
     } else {
         let level = match config {
-            Some(c) => std::env::var("HEL_LOG_LEVEL")
+            Some(c) => std::env::var("HELR_LOG_LEVEL")
                 .ok()
                 .and_then(|s| {
                     let s = s.trim();
@@ -461,7 +461,7 @@ fn init_logging(config: Option<&Config>, cli: &Cli) {
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "info".to_string()),
         };
-        let filter_str = format!("hel={}", level);
+        let filter_str = format!("helr={}", level);
         if config.is_some() {
             EnvFilter::new(filter_str)
         } else {
@@ -470,7 +470,7 @@ fn init_logging(config: Option<&Config>, cli: &Cli) {
     };
     if use_json {
         // Omit current_span and span_list so we don't parse span fields as JSON (they're key=value, not JSON).
-        // Use HelJsonStderr so each line gets "source":"hel" for consistent labeling with NDJSON events (stdout).
+        // Use HelJsonStderr so each line gets "source":"helr" for consistent labeling with NDJSON events (stdout).
         let json_fmt = tracing_subscriber::fmt::format()
             .json()
             .with_current_span(false)
@@ -515,7 +515,7 @@ fn run_validate(config_path: &std::path::Path) -> anyhow::Result<()> {
 async fn open_store_with_fallback(config: &Config) -> anyhow::Result<(Arc<dyn StateStore>, bool)> {
     match &config.global.state {
         Some(state) if state.backend.eq_ignore_ascii_case("sqlite") => {
-            let path = state.path.as_deref().unwrap_or("./hel-state.db");
+            let path = state.path.as_deref().unwrap_or("./helr-state.db");
             match SqliteStateStore::open(Path::new(path)) {
                 Ok(s) => Ok((Arc::new(s) as Arc<dyn StateStore>, false)),
                 Err(e) => {
@@ -662,7 +662,7 @@ async fn run_state(config: &Config, subcommand: Option<&StateSubcommand>) -> any
         Some(StateSubcommand::Export) => state_export(store.as_ref()).await,
         Some(StateSubcommand::Import) => state_import(store.as_ref()).await,
         None => {
-            eprintln!("usage: hel state {{show,reset,set,export,import}}");
+            eprintln!("usage: helr state {{show,reset,set,export,import}}");
             eprintln!("  show <source>   show state keys and values for a source");
             eprintln!("  reset <source>  clear all state for a source");
             eprintln!("  set <source> <key> <value>  set a single state key");
@@ -794,7 +794,7 @@ async fn state_import(store: &dyn StateStore) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Log each incoming HTTP request at debug level (method, path). Enable with HEL_LOG_LEVEL=debug or RUST_LOG=hel=trace for more detail.
+/// Log each incoming HTTP request at debug level (method, path). Enable with HELR_LOG_LEVEL=debug or RUST_LOG=helr=trace for more detail.
 async fn log_incoming_http_request(
     request: Request<axum::body::Body>,
     next: Next,
@@ -1169,16 +1169,16 @@ mod tests {
 
     #[test]
     fn test_add_source_to_json_log_line() {
-        let line = r#"{"timestamp":"2024-01-15T12:00:00Z","level":"INFO","target":"hel","message":"started"}"#;
+        let line = r#"{"timestamp":"2024-01-15T12:00:00Z","level":"INFO","target":"helr","message":"started"}"#;
         let out = add_source_to_json_log_line(line);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v.get("source").and_then(|s| s.as_str()), Some("hel"));
+        assert_eq!(v.get("source").and_then(|s| s.as_str()), Some("helr"));
         assert_eq!(v.get("message").and_then(|s| s.as_str()), Some("started"));
         assert!(
             v.get("target").is_none(),
             "target should be renamed to module"
         );
-        assert_eq!(v.get("module").and_then(|s| s.as_str()), Some("hel"));
+        assert_eq!(v.get("module").and_then(|s| s.as_str()), Some("helr"));
     }
 
     #[test]
@@ -1192,7 +1192,7 @@ mod tests {
     fn test_next_delay_reduced_frequency_when_fallback_active() {
         let dir = std::env::temp_dir().join("hel_next_delay_test");
         let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("hel.yaml");
+        let path = dir.join("helr.yaml");
         std::fs::write(
             &path,
             r#"

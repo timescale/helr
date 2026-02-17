@@ -1,4 +1,4 @@
-# Hel — minimal config. See README and docs/integrations/gws-gcp.md.
+# Helr — minimal config. See README and docs/integrations/gws-gcp.md.
 
 global:
   log_level: info
@@ -13,7 +13,7 @@ global:
   #   drop_policy: oldest_first   # when strategy is drop
   state:
     backend: sqlite
-    path: "./hel-state.db"
+    path: "./helr-state.db"
   api:
     enabled: true
     address: "0.0.0.0"
@@ -140,7 +140,7 @@ sources:
   #   headers:
   #     Accept: "application/vnd.github+json"
   #     X-GitHub-Api-Version: "2022-11-28"
-  #     User-Agent: "Hel"
+  #     User-Agent: "Helr"
   #   query_params:
   #     per_page: "100"
   #     order: "asc"
@@ -283,7 +283,7 @@ sources:
   #       success_threshold: 2
   #       half_open_timeout_secs: 60
 
-  # --- Andromeda Security audit trail. GraphQL API; hooks for backfill (skip). Auth via getAuth hook: set ANDROMEDA_PAT (Hel exchanges for cookie) or ANDROMEDA_COOKIE. See docs/integrations/andromeda.md.
+  # --- Andromeda Security audit trail. GraphQL API; hooks for backfill (skip). Auth via getAuth hook: set ANDROMEDA_PAT (Helr exchanges for cookie) or ANDROMEDA_COOKIE. See docs/integrations/andromeda.md.
   # andromeda-audit:
   #   url: "https://api.live.andromedasecurity.com/graphql"
   #   method: post

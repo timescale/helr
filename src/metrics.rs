@@ -21,14 +21,14 @@ struct MetricsInner {
 pub fn init() -> Result<(), prometheus::Error> {
     let requests_total = IntCounterVec::new(
         Opts::new(
-            "hel_requests_total",
+            "helr_requests_total",
             "Total HTTP requests by source and status",
         ),
         &["source", "status"],
     )?;
     let events_emitted_total = IntCounterVec::new(
         Opts::new(
-            "hel_events_emitted_total",
+            "helr_events_emitted_total",
             "Total events emitted to stdout by source",
         ),
         &["source"],
@@ -39,14 +39,14 @@ pub fn init() -> Result<(), prometheus::Error> {
     )?;
     let output_errors_total = IntCounterVec::new(
         Opts::new(
-            "hel_output_errors_total",
+            "helr_output_errors_total",
             "Output write errors (e.g. broken pipe, disk full)",
         ),
         &["source"],
     )?;
     let request_duration_seconds = prometheus::HistogramVec::new(
         prometheus::HistogramOpts::new(
-            "hel_request_duration_seconds",
+            "helr_request_duration_seconds",
             "HTTP request duration in seconds by source",
         )
         .buckets(prometheus::exponential_buckets(0.05, 2.0, 10).unwrap()),
@@ -54,21 +54,21 @@ pub fn init() -> Result<(), prometheus::Error> {
     )?;
     let circuit_breaker_state = IntGaugeVec::new(
         Opts::new(
-            "hel_circuit_breaker_state",
+            "helr_circuit_breaker_state",
             "Circuit breaker state: 0=closed, 1=open, 2=half_open",
         ),
         &["source"],
     )?;
     let events_dropped_total = IntCounterVec::new(
         Opts::new(
-            "hel_events_dropped_total",
+            "helr_events_dropped_total",
             "Events dropped (e.g. due to backpressure) by source and reason",
         ),
         &["source", "reason"],
     )?;
     let pending_events = IntGaugeVec::new(
         Opts::new(
-            "hel_pending_events",
+            "helr_pending_events",
             "Events currently queued for output by source",
         ),
         &["source"],

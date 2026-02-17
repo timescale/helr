@@ -1,6 +1,6 @@
 # GWS & GCP
 
-**Google Workspace (GWS)** (formerly G Suite) is Google's productivity suite for organizations: Gmail, Drive, Calendar, Meet, Chat, Admin, and related services. **GWS audit logs** record who did what across your domain—logins, file access, admin changes, and so on. Hel pulls these logs via the **Admin SDK Reports API** (`activities.list`), one stream per application (login, drive, admin, user_accounts, chat, calendar, token, etc.). You need a **Workspace admin** (or Admin console access) to grant access.
+**Google Workspace (GWS)** (formerly G Suite) is Google's productivity suite for organizations: Gmail, Drive, Calendar, Meet, Chat, Admin, and related services. **GWS audit logs** record who did what across your domain—logins, file access, admin changes, and so on. Helr pulls these logs via the **Admin SDK Reports API** (`activities.list`), one stream per application (login, drive, admin, user_accounts, chat, calendar, token, etc.). You need a **Workspace admin** (or Admin console access) to grant access.
 
 ## Auth options
 
@@ -9,7 +9,7 @@
 | **GCP** | OAuth Client ID only (Cloud Console) | Project, Admin SDK API, service account + JSON key |
 | **GWS Admin** | Not needed | Domain-wide delegation required |
 | **Setup** | One-time browser sign-in to get refresh token | No interactive sign-in after setup |
-| **Hel auth** | `type: oauth2` | `type: google_service_account` |
+| **Helr auth** | `type: oauth2` | `type: google_service_account` |
 
 Both options use OAuth credentials from [Google Cloud Console](https://console.cloud.google.com/). Option A avoids service accounts and domain-wide delegation; Option B (like [sansfor509 GWS log collection](https://github.com/dlcowen/sansfor509/tree/main/GWS/gws-log-collection)) is better for unattended automation.
 
@@ -22,7 +22,7 @@ Both options use OAuth credentials from [Google Cloud Console](https://console.c
 1. [Google Cloud Console](https://console.cloud.google.com/) → create or select a project.
 2. **APIs & Services** → **Credentials** → **Create credentials** → **OAuth client ID**.
 3. If prompted, configure the **OAuth consent screen** (Internal or External).
-4. **Application type:** Desktop app. Name it (e.g. `hel-gws`). Create.
+4. **Application type:** Desktop app. Name it (e.g. `helr-gws`). Create.
 5. Note **Client ID** and **Client Secret**.
 
 ### A2. Get a refresh token (one-time, as admin)
@@ -34,9 +34,9 @@ Both options use OAuth credentials from [Google Cloud Console](https://console.c
    → **Authorize APIs** → sign in with a **Workspace admin**.
 4. **Step 2:** **Exchange authorization code for tokens** → copy the **Refresh token**.
 
-### A3. Configure Hel
+### A3. Configure Helr
 
-In `hel.yaml`, add a GWS source with `auth.type: oauth2`:
+In `helr.yaml`, add a GWS source with `auth.type: oauth2`:
 
 ```yaml
   gws-login:
@@ -83,8 +83,8 @@ export GWS_CLIENT_ID="your-client-id.apps.googleusercontent.com"
 export GWS_CLIENT_SECRET="your-client-secret"
 export GWS_REFRESH_TOKEN="your-refresh-token"
 
-hel validate
-hel test --source gws-login
+helr validate
+helr test --source gws-login
 ```
 
 To add more apps (drive, admin, etc.), duplicate the source and change the URL path to `.../applications/drive`, `.../applications/admin`, and so on.
@@ -104,7 +104,7 @@ To add more apps (drive, admin, etc.), duplicate the source and change the URL p
 ### B3. Create service account and key
 
 1. **APIs & Services** → **Credentials** → **Create credentials** → **Service account**.
-2. Name (e.g. `hel-gws-audit`) → **Create and continue** → **Done**.
+2. Name (e.g. `helr-gws-audit`) → **Create and continue** → **Done**.
 3. Open the service account → **Keys** → **Add key** → **Create new key** → **JSON** → **Create**.
 4. Save the JSON file (e.g. `./credentials.json`). **Do not commit it.**
 
@@ -116,9 +116,9 @@ To add more apps (drive, admin, etc.), duplicate the source and change the URL p
    `https://www.googleapis.com/auth/admin.reports.audit.readonly`  
    → **Authorize**.
 
-### B5. Configure Hel
+### B5. Configure Helr
 
-In `hel.yaml`, uncomment the `gws-login` source that uses **`auth.type: google_service_account`** (see `hel.yaml` comment block “Google Workspace (GWS) audit logs — Admin SDK Reports API”). Set:
+In `helr.yaml`, uncomment the `gws-login` source that uses **`auth.type: google_service_account`** (see `helr.yaml` comment block “Google Workspace (GWS) audit logs — Admin SDK Reports API”). Set:
 
 - `credentials_file: "./credentials.json"` (or `credentials_env: GWS_CREDENTIALS_JSON` with the JSON string in that env var).
 - Keep `subject_env: GWS_DELEGATED_USER`.
@@ -128,11 +128,11 @@ In `hel.yaml`, uncomment the `gws-login` source that uses **`auth.type: google_s
 ```bash
 export GWS_DELEGATED_USER="admin@yourdomain.com"   # Workspace admin email
 
-hel validate
-hel test --source gws-login
+helr validate
+helr test --source gws-login
 ```
 
-Optional: `hel run --once` or `hel run` for continuous collection.
+Optional: `helr run --once` or `helr run` for continuous collection.
 
 ### B7. Add more applications
 
@@ -157,9 +157,9 @@ Duplicate the `gws-login` source; change the source key and URL path:
 | **B:** `403 Forbidden` | Domain-wide delegation in GWS Admin with scope `admin.reports.audit.readonly`; Client ID matches the service account. |
 | **B:** `401 Unauthorized` | `GWS_DELEGATED_USER` is a **Workspace admin** email (same domain). |
 | No events | No activity in that app recently; try another app or check Admin SDK quota. |
-| Config placeholder unset | Any `${VAR}` in `hel.yaml` must have that env var set. |
+| Config placeholder unset | Any `${VAR}` in `helr.yaml` must have that env var set. |
 
-**Per-source state (watermark):** To derive "start from" from the last event (e.g. GWS `startTime`), set `state.watermark_field` (dotted path in each event, e.g. `id.time`) and `state.watermark_param` (e.g. `startTime`). Hel stores the max value per source and sends it as that query param on the first request of each poll.
+**Per-source state (watermark):** To derive "start from" from the last event (e.g. GWS `startTime`), set `state.watermark_field` (dotted path in each event, e.g. `id.time`) and `state.watermark_param` (e.g. `startTime`). Helr stores the max value per source and sends it as that query param on the first request of each poll.
 
 ## Quick reference
 

@@ -1,8 +1,8 @@
-# Hel
+# Helr
 
-Hel is a generic HTTP API log collector. It polls audit-log and event APIs, such as Okta, Google Workspace, GitHub, Slack, 1Password, Tailscale, and others, handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout or to a file for downstream collectors (like Grafana Alloy, Vector, Fluent Bit, Loki).
+Helr is a generic HTTP API log collector. It polls audit-log and event APIs, such as Okta, Google Workspace, GitHub, Slack, 1Password, Tailscale, and others, handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout or to a file for downstream collectors (like Grafana Alloy, Vector, Fluent Bit, Loki).
 
-Most sources work **declaratively**: define a URL, auth, pagination strategy, and schedule in YAML and Hel does the rest. For APIs that need custom logic (GraphQL, non-standard auth flows, bespoke pagination), **optional JS hooks** let you script any stage of the request lifecycle, like auth, request building, response parsing, pagination, and state, without forking the binary. Build with `--features hooks`; see [docs/hooks.md](./docs/hooks.md).
+Most sources work **declaratively**: define a URL, auth, pagination strategy, and schedule in YAML and Helr does the rest. For APIs that need custom logic (GraphQL, non-standard auth flows, bespoke pagination), **optional JS hooks** let you script any stage of the request lifecycle, like auth, request building, response parsing, pagination, and state, without forking the binary. Build with `--features hooks`; see [docs/hooks.md](./docs/hooks.md).
 
 Single binary, no runtime dependencies beyond the config, secrets and optional scripts.
 
@@ -34,69 +34,69 @@ cargo install helr
 cargo install --path .
 ```
 
-Binary will be `hel` in `~/.cargo/bin` (or your configured target dir).
+Binary will be `helr` in `~/.cargo/bin` (or your configured target dir).
 
 ### Build from source
 
 ```bash
 git clone https://github.com/timescale/helr.git && cd helr
 cargo build --release
-./target/release/hel --help
+./target/release/helr --help
 ```
 
 ## Quick start
 
 ```bash
 # Validate config (fails if placeholders or secrets are missing)
-hel validate
+helr validate
 
 # One poll cycle (all sources)
-hel run --once
+helr run --once
 
 # Continuous (NDJSON to stdout)
-hel run
+helr run
 
 # Write to file with optional rotation
-hel run --output /var/log/hel/events.ndjson
-hel run --output /var/log/hel/events.ndjson --output-rotate daily
-hel run --output /var/log/hel/events.ndjson --output-rotate size:100
+helr run --output /var/log/helr/events.ndjson
+helr run --output /var/log/helr/events.ndjson --output-rotate daily
+helr run --output /var/log/helr/events.ndjson --output-rotate size:100
 
 # Test one source
-hel test --source okta-audit
-hel test --source gws-login
-hel test --source github-audit
-hel test --source slack-audit
-hel test --source 1password-audit
-hel test --source tailscale-audit
-hel test --source tailscale-network
-hel test --source andromeda-audit
+helr test --source okta-audit
+helr test --source gws-login
+helr test --source github-audit
+helr test --source slack-audit
+helr test --source 1password-audit
+helr test --source tailscale-audit
+helr test --source tailscale-network
+helr test --source andromeda-audit
 
 # State (inspect, reset, set cursor, export/import)
-hel state show okta-audit
-hel state reset okta-audit
-hel state set okta-audit next_url "https://..."
-hel state export
-hel state import
+helr state show okta-audit
+helr state reset okta-audit
+helr state set okta-audit next_url "https://..."
+helr state export
+helr state import
 ```
 
-Config path defaults to `hel.yaml`; override with `--config` per subcommand.
+Config path defaults to `helr.yaml`; override with `--config` per subcommand.
 
 ## Configuration
 
-See [**`hel.yaml`**](./hel.yaml) in this repo for a minimal example. You define **sources** under `sources:`: each needs `url`, and usually `auth`, `pagination`, and `resilience`. Placeholders like `${OKTA_DOMAIN}` are expanded from the environment at load time.
+See [**`helr.yaml`**](./helr.yaml) in this repo for a minimal example. You define **sources** under `sources:`: each needs `url`, and usually `auth`, `pagination`, and `resilience`. Placeholders like `${OKTA_DOMAIN}` are expanded from the environment at load time.
 
 ### Config order of precedence
 
 Configuration is merged in this order (later overrides earlier):
 
 1. **Built-in defaults** (e.g. `log_level: info`, `schedule.interval_secs: 60`)
-2. **Config file** (`hel.yaml` or path given by `--config`)
-3. **Environment variables** — `HEL_LOG_LEVEL` and `HEL_LOG_FORMAT` override global log settings when set; placeholders like `${OKTA_DOMAIN}` are expanded from the environment at load time (no default; unset = error)
+2. **Config file** (`helr.yaml` or path given by `--config`)
+3. **Environment variables** — `HELR_LOG_LEVEL` and `HELR_LOG_FORMAT` override global log settings when set; placeholders like `${OKTA_DOMAIN}` are expanded from the environment at load time (no default; unset = error)
 4. **CLI flags** — e.g. `--config` to choose the config file (no other config overrides via CLI today)
 
-**Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Hel's own logs (stderr) use the same label key and value `hel`.
+**Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Helr's own logs (stderr) use the same label key and value `helr`.
 
-**Broken pipe (SIGPIPE):** When stdout is a pipe and the consumer (e.g. Alloy, `hel run | alloy ...`) exits, writes return EPIPE. Hel treats this as **fatal**: the error is logged, `hel_output_errors_total` is incremented, and the process exits with a non-zero code so an orchestrator can restart. Keep the downstream process running, or use file output (`--output /path`) and have the collector tail the file instead.
+**Broken pipe (SIGPIPE):** When stdout is a pipe and the consumer (e.g. Alloy, `helr run | alloy ...`) exits, writes return EPIPE. Helr treats this as **fatal**: the error is logged, `helr_output_errors_total` is incremented, and the process exits with a non-zero code so an orchestrator can restart. Keep the downstream process running, or use file output (`--output /path`) and have the collector tail the file instead.
 
 <details>
 <summary><strong>Config reference (all options)</strong></summary>
@@ -106,11 +106,11 @@ Configuration is merged in this order (later overrides earlier):
 | Option | Description | Possible values | Default |
 |--------|-------------|-----------------|---------|
 | `log_level` | Logging level | `trace`, `debug`, `info`, `warn`, `error` | `info` |
-| `log_format` | Hel log format (stderr) | `json`, `pretty` | — (none) |
-| `source_label_key` | Key for producer label in NDJSON and Hel logs | string | — (effective: `source`) |
-| `source_label_value` | Value for producer label in Hel's own logs | string | — (effective: `hel`) |
+| `log_format` | Helr log format (stderr) | `json`, `pretty` | — (none) |
+| `source_label_key` | Key for producer label in NDJSON and Helr logs | string | — (effective: `source`) |
+| `source_label_value` | Value for producer label in Helr's own logs | string | — (effective: `helr`) |
 | `state.backend` | State store backend | `sqlite`, `memory`, `redis`, `postgres` | — |
-| `state.path` | Path to state file (SQLite) | string | `./hel-state.db` (when backend is sqlite) |
+| `state.path` | Path to state file (SQLite) | string | `./helr-state.db` (when backend is sqlite) |
 | `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`) | string | — (required when backend is redis or postgres) |
 | `api.enabled` | Enable API and health HTTP server | boolean | `false` |
 | `api.address` | API/health server bind address | string | `0.0.0.0` |
@@ -144,11 +144,11 @@ When `api.enabled` is true, GET `/healthz` returns full JSON (version, uptime, p
 | `backpressure.disk_buffer.max_size_mb` | Max total spill size (MB); when current file + `.old` exceed this, producer blocks until writer drains | number | `1024` |
 | `backpressure.disk_buffer.segment_size_mb` | When current spill file reaches this size (MB), it is rotated to `path.old` and a new file is created; writer drains `.old` then current | number | `64` |
 
-Metrics: `hel_events_dropped_total{source, reason="backpressure"|"max_queue_age"}`, `hel_pending_events{source}`.
+Metrics: `helr_events_dropped_total{source, reason="backpressure"|"max_queue_age"}`, `helr_pending_events{source}`.
 
 **SIGHUP** (Unix): When running continuously (not `--once`, not replay), sending SIGHUP to the process reloads the config from the same file. The next poll tick uses the new config (sources, schedule, auth, etc.). Set `global.reload.restart_sources_on_sighup: true` to also clear the circuit breaker and OAuth2 token cache so each source re-establishes connections and tokens on the next tick.
 
-**SIGUSR1** (Unix): When `global.dump_on_sigusr1` is set, sending SIGUSR1 to the process dumps the current state (same shape as `hel state export`) and Prometheus metrics. Use `destination: log` to write the dump to the process log (INFO level), or `destination: file` with `path: /path/to/dump.txt` to write to a file.
+**SIGUSR1** (Unix): When `global.dump_on_sigusr1` is set, sending SIGUSR1 to the process dumps the current state (same shape as `helr state export`) and Prometheus metrics. Use `destination: log` to write the dump to the process log (INFO level), or `destination: file` with `path: /path/to/dump.txt` to write to a file.
 
 **Bulkhead** (`global.bulkhead:`): Per-source and global concurrency caps using semaphores. Set `max_concurrent_sources` to limit how many sources poll at once (e.g. avoid overloading a shared API). Set `max_concurrent_requests` to limit concurrent HTTP requests per source (default no limit). Override per source with `resilience.bulkhead.max_concurrent_requests`.
 
@@ -291,7 +291,7 @@ Secrets can be read from file or env; file takes precedence when set. Client cer
 
 | Doc | Description |
 |-----|-------------|
-| [hel.yaml](hel.yaml) | Example config with Okta, GWS, GitHub, Slack, 1Password, and Tailscale sources (commented where inactive). |
+| [helr.yaml](helr.yaml) | Example config with Okta, GWS, GitHub, Slack, 1Password, and Tailscale sources (commented where inactive). |
 | [Okta](docs/integrations/okta.md) | Okta System Log: API token (SSWS) or OAuth2 App Integration; link-header pagination, replay. |
 | [GWS/GCP](docs/integrations/gws-gcp.md) | GWS audit logs: OAuth2 refresh token or service account + domain-wide delegation. |
 | [GitHub](docs/integrations/github.md) | GitHub organization audit log: PAT (classic) or GitHub App token; link-header pagination. |
@@ -302,7 +302,7 @@ Secrets can be read from file or env; file takes precedence when set. Client cer
 
 ## Session replay
 
-Record API responses once, then replay from disk to test the pipeline without hitting the live API: `hel run --once --record-dir ./recordings` to save; `hel run --once --replay-dir ./recordings` to replay.
+Record API responses once, then replay from disk to test the pipeline without hitting the live API: `helr run --once --record-dir ./recordings` to save; `helr run --once --replay-dir ./recordings` to replay.
 
 ## Development / tests
 

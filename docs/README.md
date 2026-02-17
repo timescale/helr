@@ -1,4 +1,4 @@
-# Hel documentation
+# Helr documentation
 
 ## Core & features
 

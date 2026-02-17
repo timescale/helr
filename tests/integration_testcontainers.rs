@@ -24,15 +24,15 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[cfg(feature = "testcontainers")]
 fn hel_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_hel").unwrap_or_else(|_| {
+    std::env::var("CARGO_BIN_EXE_helr").unwrap_or_else(|_| {
         format!(
-            "{}/target/debug/hel",
+            "{}/target/debug/helr",
             std::env::var("CARGO_MANIFEST_DIR").unwrap()
         )
     })
 }
 
-/// State backend Redis via testcontainers: start Redis container, run hel run --once, then state show.
+/// State backend Redis via testcontainers: start Redis container, run helr run --once, then state show.
 #[cfg(feature = "testcontainers")]
 #[tokio::test]
 async fn testcontainers_redis_state_run_and_show() {
@@ -57,7 +57,7 @@ async fn testcontainers_redis_state_run_and_show() {
 
     let config_dir = std::env::temp_dir().join("hel_tc_redis");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -84,11 +84,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out_run.status.success(),
-        "hel run --once failed: stderr={}",
+        "helr run --once failed: stderr={}",
         String::from_utf8_lossy(&out_run.stderr)
     );
 
@@ -103,11 +103,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel state show");
+        .expect("run helr state show");
 
     assert!(
         out_show.status.success(),
-        "hel state show failed: stderr={}",
+        "helr state show failed: stderr={}",
         String::from_utf8_lossy(&out_show.stderr)
     );
 
@@ -119,7 +119,7 @@ sources:
     );
 }
 
-/// State backend Postgres via testcontainers: start Postgres container, run hel run --once, then state show.
+/// State backend Postgres via testcontainers: start Postgres container, run helr run --once, then state show.
 #[cfg(feature = "testcontainers")]
 #[tokio::test]
 async fn testcontainers_postgres_state_run_and_show() {
@@ -147,7 +147,7 @@ async fn testcontainers_postgres_state_run_and_show() {
 
     let config_dir = std::env::temp_dir().join("hel_tc_postgres");
     let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("hel.yaml");
+    let config_path = config_dir.join("helr.yaml");
     let yaml = format!(
         r#"
 global:
@@ -174,11 +174,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel");
+        .expect("run helr");
 
     assert!(
         out_run.status.success(),
-        "hel run --once failed: stderr={}",
+        "helr run --once failed: stderr={}",
         String::from_utf8_lossy(&out_run.stderr)
     );
 
@@ -193,11 +193,11 @@ sources:
         .env("RUST_LOG", "error")
         .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
         .output()
-        .expect("run hel state show");
+        .expect("run helr state show");
 
     assert!(
         out_show.status.success(),
-        "hel state show failed: stderr={}",
+        "helr state show failed: stderr={}",
         String::from_utf8_lossy(&out_show.stderr)
     );
 

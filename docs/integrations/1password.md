@@ -1,6 +1,6 @@
 # 1Password
 
-**1Password** audit events record actions performed by team members in your 1Password Business account - account, vault, group, user, and app changes. Hel pulls these events via the **1Password Events API** ([Audit events](https://developer.1password.com/docs/events-api/audit-events/), [API reference](https://developer.1password.com/docs/events-api/reference/)): `POST https://events.1password.com/api/v2/auditevents`. Events are returned in an `items` array and paginated with a **cursor** in the response body; you send that cursor in the **request body** of the next POST.
+**1Password** audit events record actions performed by team members in your 1Password Business account - account, vault, group, user, and app changes. Helr pulls these events via the **1Password Events API** ([Audit events](https://developer.1password.com/docs/events-api/audit-events/), [API reference](https://developer.1password.com/docs/events-api/reference/)): `POST https://events.1password.com/api/v2/auditevents`. Events are returned in an `items` array and paginated with a **cursor** in the response body; you send that cursor in the **request body** of the next POST.
 
 You authenticate with a **bearer token** from an **Events Reporting integration** in your 1Password Business account. The token must have the **auditevents** feature (and optionally sign-in attempts and item usage).
 
@@ -15,19 +15,19 @@ You authenticate with a **bearer token** from an **Events Reporting integration*
 2. Go to **Integrations** → **Directory**. In the **Events Reporting** section, choose your SIEM or **Other**.
 3. Enter a name and select **Add Integration**.
 4. Create a bearer token:
-   - **Token Name**: e.g. `hel-audit`.
+   - **Token Name**: e.g. `helr-audit`.
    - **Expires After**: Optional (default: Never).
    - **Events to Report**: Include **Audit events** (and sign-in attempts / item usage if you need those from other endpoints).
 5. Select **Issue Token**, then save the token (e.g. in 1Password or as an env var). **The credential is shown only once.**
-6. Store the token as `ONEPASSWORD_EVENTS_TOKEN` (or another env var you reference in `hel.yaml`).
+6. Store the token as `ONEPASSWORD_EVENTS_TOKEN` (or another env var you reference in `helr.yaml`).
 
 See [Get started with the 1Password Events API](https://developer.1password.com/docs/events-api/get-started/) and [Authorization](https://developer.1password.com/docs/events-api/authorization/) for details.
 
-## Step 2: Configure Hel
+## Step 2: Configure Helr
 
-The audit events endpoint is **POST**; the first request uses a **ResetCursor** (empty object or with optional `limit`, `start_time`, `end_time`). Subsequent requests send the **cursor** from the previous response in the request body. Hel merges the cursor into the body when present.
+The audit events endpoint is **POST**; the first request uses a **ResetCursor** (empty object or with optional `limit`, `start_time`, `end_time`). Subsequent requests send the **cursor** from the previous response in the request body. Helr merges the cursor into the body when present.
 
-In `hel.yaml`, add a 1Password audit source:
+In `helr.yaml`, add a 1Password audit source:
 
 ```yaml
   1password-audit:
@@ -66,13 +66,13 @@ In `hel.yaml`, add a 1Password audit source:
 ```
 
 - **`ONEPASSWORD_EVENTS_TOKEN`**: Bearer token from your Events Reporting integration with **audit events** enabled.
-- **`body: {}`**: First request uses an empty body (ResetCursor with defaults). Hel merges `cursor` into the body on subsequent requests.
-- **Cursor**: Response has top-level `cursor` and `has_more`; Hel uses `cursor_path: cursor` and sends it as `cursor` in the body (`cursor_param: cursor`).
-- **Events**: Response `items` array is used automatically by Hel.
+- **`body: {}`**: First request uses an empty body (ResetCursor with defaults). Helr merges `cursor` into the body on subsequent requests.
+- **Cursor**: Response has top-level `cursor` and `has_more`; Helr uses `cursor_path: cursor` and sends it as `cursor` in the body (`cursor_param: cursor`).
+- **Events**: Response `items` array is used automatically by Helr.
 
 ## Optional: first-request time range and limit
 
-The 1Password **ResetCursor** supports optional `limit` (1–1000, default 100), `start_time`, and `end_time` (RFC 3339). To use them, set them in the initial `body`; Hel will merge the cursor into that body on later requests (1Password expects only `cursor` for continuing requests, so the merged body is still valid).
+The 1Password **ResetCursor** supports optional `limit` (1–1000, default 100), `start_time`, and `end_time` (RFC 3339). To use them, set them in the initial `body`; Helr will merge the cursor into that body on later requests (1Password expects only `cursor` for continuing requests, so the merged body is still valid).
 
 Example: limit 500 and a start time:
 
@@ -93,11 +93,11 @@ For ongoing ingestion you typically use an empty body and rely on the saved curs
 ```bash
 export ONEPASSWORD_EVENTS_TOKEN="ops_..."
 
-hel validate
-hel test --source 1password-audit   # or: hel run --once
+helr validate
+helr test --source 1password-audit   # or: helr run --once
 ```
 
-You should see NDJSON lines (one per audit event). Then run `hel run` for continuous collection.
+You should see NDJSON lines (one per audit event). Then run `helr run` for continuous collection.
 
 ## Optional: dedupe
 
@@ -117,7 +117,7 @@ The same API has **sign-in attempts** (`POST /api/v2/signinattempts`) and **item
 
 ## Testing with replay
 
-Run once with `--record-dir ./recordings` (with valid credentials) to save responses, then use `hel run --once --replay-dir ./recordings` to replay without calling the API.
+Run once with `--record-dir ./recordings` (with valid credentials) to save responses, then use `helr run --once --replay-dir ./recordings` to replay without calling the API.
 
 ## Troubleshooting
 
@@ -133,6 +133,6 @@ Run once with `--record-dir ./recordings` (with valid credentials) to save respo
 
 - **API:** [POST /api/v2/auditevents](https://developer.1password.com/docs/events-api/reference#post-apiv2auditevents) — `POST https://events.1password.com/api/v2/auditevents`.
 - **Auth:** Bearer token from Events Reporting integration with **audit events** (auditevents) feature.
-- **Pagination:** Cursor in response body (`cursor`, `has_more`); send `cursor` in request body on next POST. Hel uses `strategy: cursor` with `cursor_param: cursor`, `cursor_path: cursor`; body is merged with cursor for POST.
+- **Pagination:** Cursor in response body (`cursor`, `has_more`); send `cursor` in request body on next POST. Helr uses `strategy: cursor` with `cursor_param: cursor`, `cursor_path: cursor`; body is merged with cursor for POST.
 - **Event array:** `items`.
 - **Env:** `ONEPASSWORD_EVENTS_TOKEN`.

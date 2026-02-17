@@ -1,6 +1,6 @@
 # Audit
 
-Optional audit logging for credential access and config changes. When enabled, Hel logs **when** secrets are read and when config is loaded or reloaded; it does **not** log secret values.
+Optional audit logging for credential access and config changes. When enabled, Helr logs **when** secrets are read and when config is loaded or reloaded; it does **not** log secret values.
 
 ## Configuration
 
@@ -27,16 +27,16 @@ global:
 With `global.audit.enabled: true` and a bearer-token source `okta-audit`:
 
 ```
-{"ts":"2026-02-05T12:00:00Z","level":"info","msg":"audit: config loaded","path":"/etc/hel/hel.yaml"}
+{"ts":"2026-02-05T12:00:00Z","level":"info","msg":"audit: config loaded","path":"/etc/helr/helr.yaml"}
 {"ts":"2026-02-05T12:00:01Z","level":"info","msg":"audit: credential accessed","source":"okta-audit","kind":"bearer_token"}
 ```
 
 After SIGHUP reload:
 
 ```
-{"ts":"2026-02-05T12:05:00Z","level":"info","msg":"audit: config reloaded","path":"/etc/hel/hel.yaml"}
+{"ts":"2026-02-05T12:05:00Z","level":"info","msg":"audit: config reloaded","path":"/etc/helr/helr.yaml"}
 ```
 
 ## Secret redaction elsewhere
 
-Hel does **not** redact secrets from **event payloads** (NDJSON output). To detect or redact secrets in log lines or NDJSON, use downstream tooling (e.g. [Grafana Alloy `loki.secretfilter`](https://github.com/grafana/alloy/blob/main/docs/sources/reference/components/loki/loki.secretfilter.md), [Gitleaks](https://github.com/gitleaks/gitleaks), or [sensleak-rs](https://github.com/crates-pro/sensleak-rs)).
+Helr does **not** redact secrets from **event payloads** (NDJSON output). To detect or redact secrets in log lines or NDJSON, use downstream tooling (e.g. [Grafana Alloy `loki.secretfilter`](https://github.com/grafana/alloy/blob/main/docs/sources/reference/components/loki/loki.secretfilter.md), [Gitleaks](https://github.com/gitleaks/gitleaks), or [sensleak-rs](https://github.com/crates-pro/sensleak-rs)).

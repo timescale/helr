@@ -148,7 +148,7 @@ impl FileSink {
             .path
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("hel");
+            .unwrap_or("helr");
         let ext = inner
             .path
             .extension()
@@ -805,7 +805,7 @@ mod tests {
 
     #[test]
     fn file_sink_append_and_rotate_by_size() {
-        let dir = std::env::temp_dir().join("hel_output_test");
+        let dir = std::env::temp_dir().join("helr_output_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("out.ndjson");
         let _ = fs::remove_file(&path);

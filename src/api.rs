@@ -338,7 +338,7 @@ mod tests {
         let n = API_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("hel_api_test_{}", n));
         let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("hel.yaml");
+        let path = dir.join("helr.yaml");
         let yaml = r#"
 global: {}
 sources:

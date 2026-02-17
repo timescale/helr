@@ -2,7 +2,7 @@
 //!
 //! Implementations: in-memory (tests), SQLite, Redis, Postgres.
 //!
-//! **Single-writer assumption:** Only one Hel process should use a given state store (e.g. one SQLite file).
+//! **Single-writer assumption:** Only one Helr process should use a given state store (e.g. one SQLite file).
 //! For multi-instance deployments use Redis or Postgres state backend.
 
 use async_trait::async_trait;
@@ -89,7 +89,7 @@ impl SqliteStateStore {
             .map_err(|e| anyhow::anyhow!("open sqlite {:?}: {}", path, e))?;
         conn.execute_batch(
             r#"
-            CREATE TABLE IF NOT EXISTS hel_state (
+            CREATE TABLE IF NOT EXISTS helr_state (
                 source_id TEXT NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
@@ -116,7 +116,7 @@ impl StateStore for SqliteStateStore {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
             let mut stmt =
-                c.prepare("SELECT value FROM hel_state WHERE source_id = ?1 AND key = ?2")?;
+                c.prepare("SELECT value FROM helr_state WHERE source_id = ?1 AND key = ?2")?;
             let mut rows = stmt.query([&source_id, &key])?;
             if let Some(row) = rows.next()? {
                 let value: String = row.get(0)?;
@@ -143,7 +143,7 @@ impl StateStore for SqliteStateStore {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
             c.execute(
-                "INSERT INTO hel_state (source_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO helr_state (source_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (source_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
                 rusqlite::params![&source_id, &key, &value, updated_at],
             )?;
@@ -161,7 +161,7 @@ impl StateStore for SqliteStateStore {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
             let mut stmt =
-                c.prepare("SELECT key FROM hel_state WHERE source_id = ?1 ORDER BY key")?;
+                c.prepare("SELECT key FROM helr_state WHERE source_id = ?1 ORDER BY key")?;
             let rows = stmt.query_map([&source_id], |row| row.get(0))?;
             let keys: Result<Vec<String>, _> = rows.collect();
             Ok(keys?)
@@ -177,7 +177,7 @@ impl StateStore for SqliteStateStore {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
             let mut stmt =
-                c.prepare("SELECT DISTINCT source_id FROM hel_state ORDER BY source_id")?;
+                c.prepare("SELECT DISTINCT source_id FROM helr_state ORDER BY source_id")?;
             let rows = stmt.query_map([], |row| row.get(0))?;
             let ids: Result<Vec<String>, _> = rows.collect();
             Ok(ids?)
@@ -193,7 +193,7 @@ impl StateStore for SqliteStateStore {
             let c = conn
                 .lock()
                 .map_err(|_| anyhow::anyhow!("state store lock poisoned"))?;
-            c.execute("DELETE FROM hel_state WHERE source_id = ?1", [&source_id])?;
+            c.execute("DELETE FROM helr_state WHERE source_id = ?1", [&source_id])?;
             Ok::<_, anyhow::Error>(())
         })
         .await
@@ -201,10 +201,10 @@ impl StateStore for SqliteStateStore {
     }
 }
 
-/// Redis key prefix for state hashes: one hash per source, key = "hel:state:{source_id}".
-const REDIS_STATE_PREFIX: &str = "hel:state:";
+/// Redis key prefix for state hashes: one hash per source, key = "helr:state:{source_id}".
+const REDIS_STATE_PREFIX: &str = "helr:state:";
 
-/// Redis-backed state store. One hash per source: HGET/HSET hel:state:{source_id} {key} {value}.
+/// Redis-backed state store. One hash per source: HGET/HSET helr:state:{source_id} {key} {value}.
 pub struct RedisStateStore {
     conn: Arc<tokio::sync::Mutex<redis::aio::ConnectionManager>>,
 }
@@ -314,7 +314,7 @@ pub struct PostgresStateStore {
 }
 
 impl PostgresStateStore {
-    /// Connect to Postgres at url (e.g. `postgres://user:pass@localhost/dbname`). Creates hel_state table if missing.
+    /// Connect to Postgres at url (e.g. `postgres://user:pass@localhost/dbname`). Creates helr_state table if missing.
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
         let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
             .await
@@ -327,7 +327,7 @@ impl PostgresStateStore {
         client
             .batch_execute(
                 r#"
-                CREATE TABLE IF NOT EXISTS hel_state (
+                CREATE TABLE IF NOT EXISTS helr_state (
                     source_id TEXT NOT NULL,
                     key TEXT NOT NULL,
                     value TEXT NOT NULL,
@@ -351,7 +351,7 @@ impl StateStore for PostgresStateStore {
         let row: Option<tokio_postgres::Row> = self
             .client
             .query_opt(
-                "SELECT value FROM hel_state WHERE source_id = $1 AND key = $2",
+                "SELECT value FROM helr_state WHERE source_id = $1 AND key = $2",
                 &[&source_id, &key],
             )
             .await
@@ -366,7 +366,7 @@ impl StateStore for PostgresStateStore {
             .as_secs() as i64;
         self.client
             .execute(
-                "INSERT INTO hel_state (source_id, key, value, updated_at) VALUES ($1, $2, $3, $4)
+                "INSERT INTO helr_state (source_id, key, value, updated_at) VALUES ($1, $2, $3, $4)
                  ON CONFLICT (source_id, key) DO UPDATE SET value = $3, updated_at = $4",
                 &[&source_id, &key, &value, &updated_at],
             )
@@ -379,7 +379,7 @@ impl StateStore for PostgresStateStore {
         let rows = self
             .client
             .query(
-                "SELECT key FROM hel_state WHERE source_id = $1 ORDER BY key",
+                "SELECT key FROM helr_state WHERE source_id = $1 ORDER BY key",
                 &[&source_id],
             )
             .await
@@ -391,7 +391,7 @@ impl StateStore for PostgresStateStore {
         let rows = self
             .client
             .query(
-                "SELECT DISTINCT source_id FROM hel_state ORDER BY source_id",
+                "SELECT DISTINCT source_id FROM helr_state ORDER BY source_id",
                 &[],
             )
             .await
@@ -401,7 +401,7 @@ impl StateStore for PostgresStateStore {
 
     async fn clear_source(&self, source_id: &str) -> anyhow::Result<()> {
         self.client
-            .execute("DELETE FROM hel_state WHERE source_id = $1", &[&source_id])
+            .execute("DELETE FROM helr_state WHERE source_id = $1", &[&source_id])
             .await
             .map_err(|e| anyhow::anyhow!("postgres: {}", e))?;
         Ok(())
@@ -414,7 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_state_store_get_set_list() {
-        let dir = std::env::temp_dir().join("hel_state_test");
+        let dir = std::env::temp_dir().join("helr_state_test");
         let _ = std::fs::remove_file(&dir);
         let store = SqliteStateStore::open(&dir).unwrap();
         assert!(store.get("s1", "cursor").await.unwrap().is_none());

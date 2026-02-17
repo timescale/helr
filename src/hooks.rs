@@ -105,7 +105,7 @@ pub struct GetAuthResult {
 /// State to commit from commitState: key-value pairs to write to the state store.
 pub type CommitStateResult = HashMap<String, String>;
 
-/// Logger that forwards console.log/info/warn/error to Hel's tracing (JSON logs).
+/// Logger that forwards console.log/info/warn/error to Helr's tracing (JSON logs).
 #[derive(Debug, Trace, Finalize)]
 struct TracingLogger;
 

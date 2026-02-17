@@ -1,6 +1,6 @@
 # JS Hooks (Boa)
 
-Optional JavaScript hooks let you customize request building, response parsing, pagination, and state commit per source. Hooks run in a **sandbox**: timeout per call; no file system (`require`). **`console.log`, `console.warn`, and `console.error`** are available; output is forwarded to Hel's logger (tracing), so it appears as JSON like other Hel logs, with field `hook_console`. When built with `--features hooks` and **`allow_network: true`** in `global.hooks`, the **`fetch()`** Web API is available so hooks can make HTTP requests (e.g. in `getAuth` or `buildRequest`); the same per-call timeout applies to the whole execution including any `fetch()` calls.
+Optional JavaScript hooks let you customize request building, response parsing, pagination, and state commit per source. Hooks run in a **sandbox**: timeout per call; no file system (`require`). **`console.log`, `console.warn`, and `console.error`** are available; output is forwarded to Helr's logger (tracing), so it appears as JSON like other Helr logs, with field `hook_console`. When built with `--features hooks` and **`allow_network: true`** in `global.hooks`, the **`fetch()`** Web API is available so hooks can make HTTP requests (e.g. in `getAuth` or `buildRequest`); the same per-call timeout applies to the whole execution including any `fetch()` calls.
 
 **Requires:** Build with `--features hooks` and enable hooks in config.
 
@@ -103,7 +103,7 @@ function getAuth(ctx) {
 
 ## Using fetch()
 
-When **`allow_network: true`** is set in `global.hooks`, the standard **`fetch()`** Web API is available inside your script. You can use it in any hook (e.g. to call a token endpoint in `getAuth`). Hooks may return a **Promise**; Hel awaits it before reading the result, so you can use `async`/`await` or return `fetch(...).then(...)`.
+When **`allow_network: true`** is set in `global.hooks`, the standard **`fetch()`** Web API is available inside your script. You can use it in any hook (e.g. to call a token endpoint in `getAuth`). Hooks may return a **Promise**; Helr awaits it before reading the result, so you can use `async`/`await` or return `fetch(...).then(...)`.
 
 ```javascript
 // Example: getAuth that fetches a token (allow_network: true required)
@@ -263,7 +263,7 @@ When using hooks, the **hook** is responsible for auth (e.g. in `buildRequest` h
 - **Timeout:** Each hook call is limited to `hooks.timeout_secs` (default 5). Exceeding it fails the call and the poll tick.
 - **Network:** By default hooks cannot make HTTP calls. Set **`allow_network: true`** in `global.hooks` to enable **`fetch()`** (e.g. for token or cookie exchange in getAuth).
 - **No file system:** No `require` or Node-style `fs`; hooks cannot read or write files.
-- **Console:** `console.log`, `console.warn`, and `console.error` are available for debugging; they are forwarded to Hel's logger (tracing), so output is JSON with field `hook_console`.
+- **Console:** `console.log`, `console.warn`, and `console.error` are available for debugging; they are forwarded to Helr's logger (tracing), so output is JSON with field `hook_console`.
 
 ## When to use hooks vs declarative config
 

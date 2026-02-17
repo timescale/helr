@@ -1,6 +1,6 @@
 # Slack
 
-**Slack** audit logs record who did what across your Enterprise organization - logins, channel and file actions, app installs, and more. Hel pulls these events via the **Slack Audit Logs API** ([Using the Audit Logs API](https://docs.slack.dev/admins/audit-logs-api/)): `GET https://api.slack.com/audit/v1/logs`. Events are returned in an `entries` array and paginated with a **cursor** in `response_metadata.next_cursor`; you pass it back as the `cursor` query parameter on the next request.
+**Slack** audit logs record who did what across your Enterprise organization - logins, channel and file actions, app installs, and more. Helr pulls these events via the **Slack Audit Logs API** ([Using the Audit Logs API](https://docs.slack.dev/admins/audit-logs-api/)): `GET https://api.slack.com/audit/v1/logs`. Events are returned in an `entries` array and paginated with a **cursor** in `response_metadata.next_cursor`; you pass it back as the `cursor` query parameter on the next request.
 
 You authenticate with a **Slack user token** (prefix `xoxp-`) that has the `auditlogs:read` scope. The app must be **installed by the Owner** of an **Enterprise organization** (not a single workspace). The token must be associated with that Enterprise org owner.
 
@@ -16,13 +16,13 @@ You authenticate with a **Slack user token** (prefix `xoxp-`) that has the `audi
 2. In the app, open **OAuth & Permissions**. Under **User Token Scopes**, add **auditlogs:read**.
 3. Under **Manage Distribution**, enable distribution as needed, then use **Share Your App with Your Workspace** (or org). Copy the **Install to Workspace** (or **Install to Organization**) URL.
 4. Open that URL in a browser and complete the OAuth flow. You must be logged in as the **Owner** of the **Enterprise organization**. In the install screen, choose the **organization** in the dropdown, not a single workspace.
-5. After install, copy the **User OAuth Token** (starts with `xoxp-`). Store it as `SLACK_AUDIT_TOKEN` (or another env var you reference in `hel.yaml`).
+5. After install, copy the **User OAuth Token** (starts with `xoxp-`). Store it as `SLACK_AUDIT_TOKEN` (or another env var you reference in `helr.yaml`).
 
 **Note:** The token must be a **user token** (`xoxp-`) for an **Enterprise organization owner**. Enterprise org administrator tokens are not currently supported for the Audit Logs API.
 
-## Step 2: Configure Hel
+## Step 2: Configure Helr
 
-In `hel.yaml`, add a Slack audit log source. The API base URL is fixed; you can use query params for time range and filters.
+In `helr.yaml`, add a Slack audit log source. The API base URL is fixed; you can use query params for time range and filters.
 
 ```yaml
   slack-audit:
@@ -60,7 +60,7 @@ In `hel.yaml`, add a Slack audit log source. The API base URL is fixed; you can 
 ```
 
 - **`SLACK_AUDIT_TOKEN`**: Your Slack user token (`xoxp-...`) with `auditlogs:read`, from an Enterprise org owner install.
-- **`limit`**: Slack accepts up to **9,999** per request; 100–200 is recommended for steady pagination. Hel already supports the `entries` array and cursor from `response_metadata.next_cursor`.
+- **`limit`**: Slack accepts up to **9,999** per request; 100–200 is recommended for steady pagination. Helr already supports the `entries` array and cursor from `response_metadata.next_cursor`.
 - **Rate limit:** The Audit Logs API is **Tier 3**: up to **50 calls per minute** per organization (org-wide, not per-app). Use a conservative `interval_secs` (e.g. 300) and `page_delay_secs` (e.g. 2) to avoid `rate_limited` errors.
 
 ## Run
@@ -68,15 +68,15 @@ In `hel.yaml`, add a Slack audit log source. The API base URL is fixed; you can 
 ```bash
 export SLACK_AUDIT_TOKEN="xoxp-..."
 
-hel validate
-hel test --source slack-audit   # or: hel run --once
+helr validate
+helr test --source slack-audit   # or: helr run --once
 ```
 
-You should see NDJSON lines (one per audit event). Then run `hel run` for continuous collection.
+You should see NDJSON lines (one per audit event). Then run `helr run` for continuous collection.
 
 ## Filters (query params)
 
-You can narrow results with optional query parameters. Add them under `query_params` in `hel.yaml` (or use `first_request_query_params` if you only want them on the first request when there is no saved cursor).
+You can narrow results with optional query parameters. Add them under `query_params` in `helr.yaml` (or use `first_request_query_params` if you only want them on the first request when there is no saved cursor).
 
 | Parameter | Type   | Description |
 |-----------|--------|-------------|
@@ -100,7 +100,7 @@ Example: only logins for a specific user since a given time:
       actor: "W123AB456"
 ```
 
-**Incremental from last event:** To resume from the latest event timestamp on each first request (no saved cursor), use `incremental_from`. Hel stores the max value of the given event field after each poll and sends it as the specified query param on the first request. Slack events use `date_create` (Unix timestamp); the API accepts `oldest` as that param:
+**Incremental from last event:** To resume from the latest event timestamp on each first request (no saved cursor), use `incremental_from`. Helr stores the max value of the given event field after each poll and sends it as the specified query param on the first request. Slack events use `date_create` (Unix timestamp); the API accepts `oldest` as that param:
 
 ```yaml
   slack-audit:
@@ -112,7 +112,7 @@ Example: only logins for a specific user since a given time:
       param_name: "oldest"
 ```
 
-On the first request (or after cursor reset), Hel will add `oldest=<last_stored_ts>` from state so you only fetch events newer than the last run. You can still set `oldest` / `latest` explicitly in `query_params` for a fixed window.
+On the first request (or after cursor reset), Helr will add `oldest=<last_stored_ts>` from state so you only fetch events newer than the last run. You can still set `oldest` / `latest` explicitly in `query_params` for a fixed window.
 
 ## Optional: dedupe
 
@@ -128,7 +128,7 @@ Events include an `id` field. To skip duplicates across polls or replay, add:
 
 ## Testing with replay
 
-To test without calling the API repeatedly: run once with `--record-dir ./recordings` (with valid credentials) to save responses, then use `hel run --once --replay-dir ./recordings` to replay from disk.
+To test without calling the API repeatedly: run once with `--record-dir ./recordings` (with valid credentials) to save responses, then use `helr run --once --replay-dir ./recordings` to replay from disk.
 
 ## Troubleshooting
 
@@ -138,14 +138,14 @@ To test without calling the API repeatedly: run once with `--record-dir ./record
 | `missing_authentication` / `invalid_authentication` | Token present and valid; must be for an **Enterprise organization owner** and have `auditlogs:read`. |
 | `feature_not_enabled` / `invalid_workspace` / `team_not_authorized` | Audit Logs API is **only for Slack Enterprise**. Install the app on the **organization** (not a workspace) and ensure the workspace is part of an Enterprise org. |
 | `user_not_authorized` | The user who installed the app must be an **Enterprise organization owner**. |
-| `invalid_cursor` | Cursor expired or corrupted. With `on_cursor_error: reset`, Hel clears the cursor and starts from the first page on the next poll. |
-| `rate_limited` | Tier 3 = 50 calls/min org-wide. Increase `interval_secs`, lower `max_pages`, set `page_delay_secs`; Hel uses `Retry-After` when `respect_headers: true`. |
+| `invalid_cursor` | Cursor expired or corrupted. With `on_cursor_error: reset`, Helr clears the cursor and starts from the first page on the next poll. |
+| `rate_limited` | Tier 3 = 50 calls/min org-wide. Increase `interval_secs`, lower `max_pages`, set `page_delay_secs`; Helr uses `Retry-After` when `respect_headers: true`. |
 | No events | Check `oldest` / `latest`; data not available before March 2018. |
 
 ## Quick reference
 
 - **API:** [Audit Logs API methods & actions](https://docs.slack.dev/reference/audit-logs-api/methods-actions-reference) — `GET https://api.slack.com/audit/v1/logs`.
 - **Auth:** User token (`xoxp-`) with `auditlogs:read`; `Authorization: Bearer <token>`; app installed by Enterprise org **Owner**.
-- **Pagination:** Cursor in `response_metadata.next_cursor`; send as query param `cursor`. Hel uses `strategy: cursor` with `cursor_param: cursor`, `cursor_path: response_metadata.next_cursor`.
+- **Pagination:** Cursor in `response_metadata.next_cursor`; send as query param `cursor`. Helr uses `strategy: cursor` with `cursor_param: cursor`, `cursor_path: response_metadata.next_cursor`.
 - **Rate limit:** 50 calls per minute (Tier 3), organization-wide.
 - **Env:** `SLACK_AUDIT_TOKEN`.
