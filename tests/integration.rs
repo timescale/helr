@@ -1300,6 +1300,66 @@ sources:
 "#);
 }
 
+/// True offset pagination: offset=0 then offset=2 (limit=2), stop when empty.
+#[tokio::test]
+async fn integration_offset_pagination_two_pages() {
+    use wiremock::matchers::query_param;
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(query_param("offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "o1"}, {"id": "o2"}
+        ])))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(query_param("offset", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_offset");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("helr.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  offset-source:
+    url: "{}/"
+    pagination:
+      strategy: offset
+      offset_param: offset
+      limit_param: limit
+      limit: 2
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let snapshot_output = redact_stdout_for_snapshot(&stdout, Some(server.uri().as_str()));
+    assert_snapshot!(snapshot_output, @r#"
+{"endpoint":"/","event":{"id":"o1"},"meta":{},"source":"offset-source","ts":"REDACTED_TS"}
+{"endpoint":"/","event":{"id":"o2"},"meta":{},"source":"offset-source","ts":"REDACTED_TS"}
+"#);
+}
+
 /// Link-header max_pages: stop after max_pages even if next link present.
 #[tokio::test]
 async fn integration_link_header_respects_max_pages() {

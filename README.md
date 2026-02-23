@@ -229,10 +229,12 @@ Secrets can be read from env var or file; file takes precedence when set.
 | `link_header` | — | `rel` (Link relation), `max_pages` | `rel: next` |
 | `cursor` | `cursor_param`, `cursor_path` | `max_pages` | — |
 | `page_offset` | `page_param`, `limit_param`, `limit` | `max_pages` | — |
+| `offset` | `offset_param`, `limit_param`, `limit` | `max_pages` | — |
 
 - **link_header:** Next URL from `Link` header (e.g. `rel="next"`).
 - **cursor:** Cursor from response JSON at `cursor_path`; sent as query param `cursor_param` (GET) or merged into body (POST).
 - **page_offset:** Query params `page_param` (1-based page) and `limit_param` (page size); `limit` is the value.
+- **offset:** True offset-based pagination: `offset_param` starts at 0 and increments by `limit` each page (e.g. `offset=0&limit=100`, `offset=100&limit=100`, ...).
 
 ---
 
