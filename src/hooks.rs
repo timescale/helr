@@ -12,8 +12,17 @@ use boa_runtime::fetch::BlockingReqwestFetcher;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tokio::task;
+
+/// Per-source cache for getAuth results: (result, fetched_at).
+pub type HookAuthCache = Arc<RwLock<HashMap<String, (GetAuthResult, Instant)>>>;
+
+pub fn new_hook_auth_cache() -> HookAuthCache {
+    Arc::new(RwLock::new(HashMap::new()))
+}
 
 /// Resolved path to the hook script (absolute or relative to cwd). Use when loading from file; pass the `script` path string.
 pub fn script_path(global: &HooksConfig, script: &str) -> anyhow::Result<std::path::PathBuf> {
@@ -429,6 +438,7 @@ mod tests {
             memory_limit_mb: None,
             allow_network: false,
             allow_fs: false,
+            auth_cache_ttl_secs: 1800,
         }
     }
 
