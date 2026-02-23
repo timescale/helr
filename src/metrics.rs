@@ -1,10 +1,11 @@
 //! Prometheus metrics: requests, events, errors, duration, circuit breaker state.
 //! When global.metrics.enabled, GET /metrics on the configured port exposes text format.
 
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
+
 use prometheus::{Encoder, IntCounterVec, IntGaugeVec, Opts, TextEncoder};
 
-static METRICS: OnceCell<MetricsInner> = OnceCell::new();
+static METRICS: OnceLock<MetricsInner> = OnceLock::new();
 
 struct MetricsInner {
     requests_total: IntCounterVec,
