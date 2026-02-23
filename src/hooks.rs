@@ -438,6 +438,7 @@ mod tests {
             memory_limit_mb: None,
             allow_network: false,
             allow_fs: false,
+            auth_cache_ttl_secs: 1800,
         }
     }
 
