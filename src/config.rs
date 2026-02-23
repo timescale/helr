@@ -755,6 +755,13 @@ pub enum PaginationConfig {
         #[serde(default)]
         max_pages: Option<u32>,
     },
+    Offset {
+        offset_param: String,
+        limit_param: String,
+        limit: u32,
+        #[serde(default)]
+        max_pages: Option<u32>,
+    },
 }
 
 fn default_rel() -> String {

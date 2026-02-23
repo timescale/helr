@@ -333,6 +333,33 @@ async fn poll_one_source(
             )
             .await
         }
+        Some(PaginationConfig::Offset {
+            offset_param,
+            limit_param,
+            limit,
+            max_pages,
+        }) => {
+            poll_offset_pagination(
+                store,
+                source_id,
+                source,
+                global,
+                &client,
+                offset_param,
+                limit_param,
+                *limit,
+                max_pages.unwrap_or(100),
+                circuit_store,
+                token_cache,
+                dpop_key_cache.clone(),
+                dedupe_store,
+                event_sink,
+                record_state,
+                rate_limiter.as_ref(),
+                request_semaphore.clone(),
+            )
+            .await
+        }
         _ => {
             return poll_single_page(
                 store,
@@ -1483,6 +1510,215 @@ async fn poll_page_offset_pagination(
                 events = total_events,
                 duration_ms = start.elapsed().as_millis(),
                 "poll completed (page/offset)"
+            );
+            break;
+        }
+        if page == max_pages {
+            tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
+        }
+    }
+    store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
+    Ok(())
+}
+
+/// True offset-based pagination: offset increments by limit each page (offset=0, offset=100, ...).
+#[allow(clippy::too_many_arguments)]
+async fn poll_offset_pagination(
+    store: Arc<dyn StateStore>,
+    source_id: &str,
+    source: &SourceConfig,
+    global: &GlobalConfig,
+    client: &reqwest::Client,
+    offset_param: &str,
+    limit_param: &str,
+    limit: u32,
+    max_pages: u32,
+    circuit_store: CircuitStore,
+    token_cache: OAuth2TokenCache,
+    dpop_key_cache: Option<DPoPKeyCache>,
+    dedupe_store: DedupeStore,
+    event_sink: Arc<dyn EventSink>,
+    record_state: Option<Arc<RecordState>>,
+    rate_limiter: Option<&Arc<ClientRateLimiter>>,
+    request_semaphore: Option<Arc<Semaphore>>,
+) -> anyhow::Result<()> {
+    use reqwest::Url;
+    let start = Instant::now();
+    let base_url = source.url.as_str();
+    let mut total_events = 0u64;
+    let mut incremental_max_ts: Option<String> = None;
+    let mut watermark_max_ts: Option<String> = None;
+    let page_delay = source
+        .resilience
+        .as_ref()
+        .and_then(|r| r.rate_limit.as_ref())
+        .and_then(|rl| rl.page_delay_secs);
+    for page in 1..=max_pages {
+        let offset = (page - 1) * limit;
+        if page > 1
+            && let Some(secs) = page_delay
+        {
+            tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+        }
+        let mut u = Url::parse(base_url).context("offset base url")?;
+        u.query_pairs_mut()
+            .append_pair(offset_param, &offset.to_string());
+        u.query_pairs_mut()
+            .append_pair(limit_param, &limit.to_string());
+        if page == 1
+            && let Some(ref params) = source.query_params
+        {
+            for (k, v) in params {
+                u.query_pairs_mut().append_pair(k, &v.to_param_value());
+            }
+        }
+        let url = u.to_string();
+        if let Some(cb) = source
+            .resilience
+            .as_ref()
+            .and_then(|r| r.circuit_breaker.as_ref())
+        {
+            circuit::allow_request(&circuit_store, source_id, cb)
+                .await
+                .context("circuit open")?;
+        }
+        if let Some(limiter) = rate_limiter {
+            limiter.until_ready().await;
+        }
+        let _request_permit = match &request_semaphore {
+            Some(s) => Some(
+                s.acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("bulkhead request acquire: {}", e))?,
+            ),
+            None => None,
+        };
+        let req_start = std::time::Instant::now();
+        let response = match execute_with_retry(
+            client,
+            source,
+            source_id,
+            &url,
+            None,
+            source.resilience.as_ref().and_then(|r| r.retries.as_ref()),
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
+            Some(&token_cache),
+            dpop_key_cache.as_ref(),
+            global.audit.as_ref(),
+        )
+        .await
+        {
+            Ok(r) => {
+                let success = r.status().as_u16() < 500;
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, success).await;
+                }
+                metrics::record_request(
+                    source_id,
+                    status_class(r.status().as_u16()),
+                    req_start.elapsed().as_secs_f64(),
+                );
+                r
+            }
+            Err(e) => {
+                if let Some(cb) = source
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.circuit_breaker.as_ref())
+                {
+                    circuit::record_result(&circuit_store, source_id, cb, false).await;
+                }
+                metrics::record_request(source_id, "error", req_start.elapsed().as_secs_f64());
+                metrics::record_error(source_id);
+                return Err(e).context("http request");
+            }
+        };
+
+        maybe_adaptive_sleep_after_response(
+            response.headers(),
+            source_id,
+            source
+                .resilience
+                .as_ref()
+                .and_then(|r| r.rate_limit.as_ref()),
+        )
+        .await;
+
+        let path = response.url().path().to_string();
+        let record_url = response.url().clone();
+        let record_status = response.status().as_u16();
+        let record_headers = response.headers().clone();
+        let body_bytes = response.bytes().await.context("read body")?;
+        if let Some(ref rs) = record_state {
+            rs.save(
+                source_id,
+                record_url.as_str(),
+                record_status,
+                &record_headers,
+                &body_bytes,
+            )?;
+        }
+        if !(200..300).contains(&record_status) {
+            let body_str = String::from_utf8_lossy(&body_bytes);
+            anyhow::bail!("http {} {}", record_status, body_str);
+        }
+        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
+        if let Some(limit_bytes) = source.max_response_bytes
+            && body.len() as u64 > limit_bytes
+        {
+            anyhow::bail!(
+                "response body size {} exceeds max_response_bytes {}",
+                body.len(),
+                limit_bytes
+            );
+        }
+        let events = match parse_events_from_body_for_source(&body, source) {
+            Ok(ev) => ev,
+            Err(e) => {
+                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                    tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
+                    continue;
+                }
+                return Err(e).context("parse response");
+            }
+        };
+        if let Some(ref inc) = source.incremental_from {
+            update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+        }
+        if let Some(ref st) = source.state {
+            update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
+        }
+        let mut emitted_count = 0u64;
+        for event_value in events.iter() {
+            if let Some(d) = &source.dedupe {
+                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                    continue;
+                }
+            }
+            total_events += 1;
+            emitted_count += 1;
+            let emitted = build_emitted_event(source, source_id, &path, event_value);
+            emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+        }
+        metrics::record_events(source_id, emitted_count);
+        if events.len() < limit as usize {
+            tracing::info!(
+                source = %source_id,
+                pages = page,
+                events = total_events,
+                duration_ms = start.elapsed().as_millis(),
+                "poll completed (offset)"
             );
             break;
         }
