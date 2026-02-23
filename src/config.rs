@@ -957,8 +957,8 @@ impl Config {
         let s = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("read config {:?}: {}", path, e))?;
         let expanded = expand_env_vars_strict(&s)?;
-        let config: Config =
-            serde_yaml::from_str(&expanded).map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
+        let config: Config = serde_yaml_ng::from_str(&expanded)
+            .map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
         if config.sources.is_empty() {
             anyhow::bail!("config must have at least one source");
         }
@@ -2026,7 +2026,7 @@ state:
 query_params:
   maxResults: "500"
 "#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let st = source.state.as_ref().expect("state block");
         assert_eq!(st.watermark_field, "id.time");
         assert_eq!(st.watermark_param, "startTime");
@@ -2039,7 +2039,7 @@ state:
   watermark_param: "startTime"
   state_key: "gws_watermark"
 "#;
-        let source2: SourceConfig = serde_yaml::from_str(yaml_with_key).unwrap();
+        let source2: SourceConfig = serde_yaml_ng::from_str(yaml_with_key).unwrap();
         let st2 = source2.state.as_ref().unwrap();
         assert_eq!(st2.state_key.as_deref(), Some("gws_watermark"));
     }
@@ -2057,7 +2057,7 @@ sources:
     pagination:
       strategy: link_header
 "#;
-        let config: Config = serde_yaml::from_str(yaml_redis).unwrap();
+        let config: Config = serde_yaml_ng::from_str(yaml_redis).unwrap();
         let st = config.global.state.as_ref().unwrap();
         assert_eq!(st.backend, "redis");
         assert_eq!(st.url.as_deref(), Some("redis://127.0.0.1:6379/"));
@@ -2073,7 +2073,7 @@ sources:
     pagination:
       strategy: link_header
 "#;
-        let config_pg: Config = serde_yaml::from_str(yaml_pg).unwrap();
+        let config_pg: Config = serde_yaml_ng::from_str(yaml_pg).unwrap();
         let st_pg = config_pg.global.state.as_ref().unwrap();
         assert_eq!(st_pg.backend, "postgres");
         assert_eq!(
@@ -2089,7 +2089,7 @@ url: "https://example.com/"
 hooks:
   script: "okta.js"
 "#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let h = source.hooks.as_ref().unwrap();
         assert_eq!(h.script.as_deref(), Some("okta.js"));
         assert!(h.script_inline.is_none());
@@ -2109,7 +2109,7 @@ sources:
     pagination:
       strategy: link_header
 "#;
-        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let audit = config.global.audit.as_ref().unwrap();
         assert!(audit.enabled);
         assert!(audit.log_credential_access);
@@ -2124,7 +2124,7 @@ hooks:
   script_inline: |
     function buildRequest(ctx) { return {}; }
 "#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let h = source.hooks.as_ref().unwrap();
         assert!(h.script.is_none());
         assert!(h.script_inline.as_ref().unwrap().contains("buildRequest"));

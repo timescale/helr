@@ -9,7 +9,7 @@ use crate::config::{
 use crate::dpop::{DPoPKeyCache, build_dpop_proof, get_or_create_dpop_key};
 use crate::oauth2::{OAuth2TokenCache, get_google_sa_token, get_oauth_token, invalidate_token};
 use anyhow::Context;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Response};
 use std::time::Duration;

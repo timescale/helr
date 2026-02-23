@@ -2160,7 +2160,7 @@ query_params:
   limit: 20
   sortOrder: "ASCENDING"
 "#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
         assert!(url.contains("since=2024-01-01T00%3A00%3A00Z"));
         assert!(url.contains("limit=20"));
@@ -2175,7 +2175,7 @@ query_params:
   limit: "20"
   filter: "eventType eq \"user.session.start\""
 "#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
         assert!(url.contains("limit=20"));
         assert!(url.contains("filter="));
@@ -2192,7 +2192,7 @@ state:
   watermark_field: "id.time"
   watermark_param: "startTime"
 "#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let url = url_with_first_request_params_sync("https://example.com/logs", &source).unwrap();
         assert!(
             !url.contains("since="),
@@ -2215,7 +2215,7 @@ state:
     #[test]
     fn test_effective_source_label_default() {
         let yaml = r#"url: "https://example.com/logs""#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(effective_source_label(&source, "okta-audit"), "okta-audit");
     }
 
@@ -2225,7 +2225,7 @@ state:
 url: "https://example.com/logs"
 source_label_value: "okta_audit"
 "#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(effective_source_label(&source, "okta-audit"), "okta_audit");
     }
 
@@ -2234,14 +2234,14 @@ source_label_value: "okta_audit"
         use crate::config::GlobalConfig;
         let mut global = GlobalConfig::default();
         let yaml = r#"url: "https://example.com/logs""#;
-        let source: SourceConfig = serde_yaml::from_str(yaml).unwrap();
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(effective_source_label_key(&global, &source), "source");
         global.source_label_key = Some("service".to_string());
         assert_eq!(effective_source_label_key(&global, &source), "service");
         let yaml_override = r#"url: "https://example.com/logs"
 source_label_key: "origin"
 "#;
-        let source_override: SourceConfig = serde_yaml::from_str(yaml_override).unwrap();
+        let source_override: SourceConfig = serde_yaml_ng::from_str(yaml_override).unwrap();
         assert_eq!(
             effective_source_label_key(&global, &source_override),
             "origin"

@@ -314,8 +314,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Key/value for the producer label in Helr's JSON log lines (set in init_logging).
-static HELR_LOG_LABEL_KEY: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
-static HELR_LOG_LABEL_VALUE: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+static HELR_LOG_LABEL_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static HELR_LOG_LABEL_VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Post-process a JSON log line: add configurable producer label (key/value), rename "target" to "module" so "source" (or configured key) is the sole producer field.
 fn add_source_to_json_log_line(line: &str) -> String {
@@ -408,8 +408,8 @@ impl Clone for HelJsonStderr {
     }
 }
 
-static HELR_JSON_WRITER: once_cell::sync::Lazy<Mutex<JsonSourceLabelWriter>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(JsonSourceLabelWriter::new()));
+static HELR_JSON_WRITER: std::sync::LazyLock<Mutex<JsonSourceLabelWriter>> =
+    std::sync::LazyLock::new(|| Mutex::new(JsonSourceLabelWriter::new()));
 
 impl tracing_subscriber::fmt::MakeWriter<'_> for HelJsonStderr {
     type Writer = HelJsonStderr;
