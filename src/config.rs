@@ -957,8 +957,8 @@ impl Config {
         let s = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("read config {:?}: {}", path, e))?;
         let expanded = expand_env_vars_strict(&s)?;
-        let config: Config =
-            serde_yaml_ng::from_str(&expanded).map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
+        let config: Config = serde_yaml_ng::from_str(&expanded)
+            .map_err(|e| anyhow::anyhow!("parse config: {}", e))?;
         if config.sources.is_empty() {
             anyhow::bail!("config must have at least one source");
         }
