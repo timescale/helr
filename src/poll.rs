@@ -388,6 +388,27 @@ async fn poll_with_hooks(
     let path_for_emit = url.clone();
     let label = effective_source_label(source, source_id);
 
+    // Call getAuth once per poll, not per page — avoids redundant logins during pagination.
+    let auth_result: Option<GetAuthResult> = {
+        let init_state_keys = store.list_keys(source_id).await?;
+        let mut init_state = HashMap::new();
+        for k in &init_state_keys {
+            if let Some(v) = store.get(source_id, k).await? {
+                init_state.insert(k.clone(), v);
+            }
+        }
+        let init_ctx = HookContext {
+            env: std::env::vars().collect(),
+            state: init_state,
+            request_id: format!("helr-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+            source_id: source_id.to_string(),
+            default_since: source.from.clone(),
+            pagination: None,
+            headers: source.headers.clone(),
+        };
+        call_get_auth(script, &init_ctx, hooks_config).await?
+    };
+
     for _page in 1..=max_pages {
         if let Some(limiter) = rate_limiter {
             limiter.until_ready().await;
@@ -425,9 +446,6 @@ async fn poll_with_hooks(
             },
             headers: source.headers.clone(),
         };
-
-        // Optional getAuth(ctx): returns headers/cookie/body/query to merge into the request (hook can use ctx.env and fetch()).
-        let auth_result: Option<GetAuthResult> = call_get_auth(script, &ctx, hooks_config).await?;
 
         let build_result = call_build_request(script, &ctx, hooks_config).await?;
         let (final_url, final_body) = if let Some(ref br) = build_result {
