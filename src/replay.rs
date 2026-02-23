@@ -302,7 +302,7 @@ sources:
       strategy: link_header
       rel: next
 "#;
-        let config: crate::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: crate::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let rewritten = rewrite_config_for_replay(&config, "http://127.0.0.1:9999");
         assert_eq!(
             rewritten.sources.get("my-source").unwrap().url,
