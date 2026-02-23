@@ -123,10 +123,17 @@ pub struct HooksConfig {
     /// Allow file system access in hooks (default false; sandbox).
     #[serde(default)]
     pub allow_fs: bool,
+    /// Cache getAuth results for this many seconds (default 1800 = 30 min). 0 disables caching.
+    #[serde(default = "default_hooks_auth_cache_ttl_secs")]
+    pub auth_cache_ttl_secs: u64,
 }
 
 fn default_hooks_timeout_secs() -> u64 {
     5
+}
+
+fn default_hooks_auth_cache_ttl_secs() -> u64 {
+    1800
 }
 
 /// Per-source hooks: script from file path and/or inline string.
