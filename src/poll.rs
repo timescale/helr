@@ -428,12 +428,12 @@ async fn poll_with_hooks(
                 headers: source.headers.clone(),
             };
             let result = call_get_auth(script, &init_ctx, hooks_config).await?;
-            if !ttl.is_zero() {
-                if let Some(ref r) = result {
-                    let mut guard = HOOK_AUTH_CACHE.write().await;
-                    guard.insert(source_id.to_string(), (r.clone(), Instant::now()));
-                    tracing::debug!(source = %source_id, ttl_secs = ttl.as_secs(), "cached getAuth result");
-                }
+            if !ttl.is_zero()
+                && let Some(ref r) = result
+            {
+                let mut guard = HOOK_AUTH_CACHE.write().await;
+                guard.insert(source_id.to_string(), (r.clone(), Instant::now()));
+                tracing::debug!(source = %source_id, ttl_secs = ttl.as_secs(), "cached getAuth result");
             }
             result
         }
