@@ -1,7 +1,7 @@
 use crate::circuit::{self, CircuitStore};
 use crate::config::{
-    CheckpointTiming, CursorExpiredBehavior, GlobalConfig, HttpMethod, OnParseErrorBehavior,
-    SourceConfig,
+    CheckpointTiming, CursorExpiredBehavior, GlobalConfig, HttpMethod, InvalidUtf8Behavior,
+    OnParseErrorBehavior, SourceConfig,
 };
 use crate::dedupe::{self, DedupeStore};
 use crate::dpop::DPoPKeyCache;
@@ -174,7 +174,7 @@ pub(super) async fn poll_cursor_pagination(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -184,10 +184,10 @@ pub(super) async fn poll_cursor_pagination(
                 &body_bytes,
             )?;
         }
-        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if !status.is_success() {
+            let body_lossy = String::from_utf8_lossy(&body_bytes);
             if cursor.is_some() && status.as_u16() >= 400 && status.as_u16() < 500 {
-                let lower = body.to_lowercase();
+                let lower = body_lossy.to_lowercase();
                 let is_expired = status.as_u16() == 410
                     || lower.contains("expired")
                     || lower.contains("invalid cursor")
@@ -201,18 +201,9 @@ pub(super) async fn poll_cursor_pagination(
                     return Ok(());
                 }
             }
-            anyhow::bail!("http {} {}", status, body);
+            anyhow::bail!("http {} {}", status, body_lossy);
         }
-        if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body.len(),
-                limit
-            );
-        }
-        total_bytes += body.len() as u64;
+        total_bytes += body_bytes.len() as u64;
         if let Some(limit) = max_bytes
             && total_bytes > limit
         {
@@ -224,17 +215,33 @@ pub(super) async fn poll_cursor_pagination(
             );
             break;
         }
-        let value: serde_json::Value = match serde_json::from_str(&body) {
-            Ok(v) => v,
-            Err(e) => {
-                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
-                    tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
-                    return Ok(());
+        let value: serde_json::Value = match source.on_invalid_utf8 {
+            Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
+                let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
+                match serde_json::from_str(&body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                            tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                            return Ok(());
+                        }
+                        return Err(e).context("parse response json");
+                    }
                 }
-                return Err(e).context("parse response json");
             }
+            _ => match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                        tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                        return Ok(());
+                    }
+                    return Err(e).context("parse response json");
+                }
+            },
         };
-        let events = match parse_events_from_value_for_source(&value, source) {
+        let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
+        let events = match parse_events_from_value_for_source(value, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -250,11 +257,11 @@ pub(super) async fn poll_cursor_pagination(
         if let Some(ref st) = source.state {
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
-        let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -276,7 +283,7 @@ pub(super) async fn poll_cursor_pagination(
                 tracing::debug!(
                     source = %source_id,
                     page = page,
-                    events = events.len(),
+                    events = event_count,
                     "next cursor page"
                 );
             }

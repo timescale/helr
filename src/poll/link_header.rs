@@ -166,7 +166,7 @@ pub(super) async fn poll_link_header(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -176,18 +176,8 @@ pub(super) async fn poll_link_header(
                 &body_bytes,
             )?;
         }
-        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
-        if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body.len(),
-                limit
-            );
-        }
-        total_bytes += body.len() as u64;
-        let events = match parse_events_from_body_for_source(&body, source) {
+        total_bytes += body_bytes.len() as u64;
+        let events = match parse_events_from_body_for_source(&body_bytes, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -204,10 +194,11 @@ pub(super) async fn poll_link_header(
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
 
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue; // duplicate
                 }
@@ -240,7 +231,7 @@ pub(super) async fn poll_link_header(
             tracing::debug!(
                 source = %source_id,
                 page = page,
-                events = events.len(),
+                events = event_count,
                 total_bytes,
                 "next page"
             );

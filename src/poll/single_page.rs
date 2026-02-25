@@ -116,7 +116,7 @@ pub(super) async fn poll_single_page(
     let record_url = response.url().clone();
     let record_status = response.status().as_u16();
     let record_headers = response.headers().clone();
-    let body_bytes = response.bytes().await.context("read body")?;
+    let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
 
     if let Some(ref rs) = record_state {
         rs.save(
@@ -133,17 +133,7 @@ pub(super) async fn poll_single_page(
         anyhow::bail!("http {} {}", record_status, body_str);
     }
     let path = record_url.path().to_string();
-    let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
-    if let Some(limit) = source.max_response_bytes
-        && body.len() as u64 > limit
-    {
-        anyhow::bail!(
-            "response body size {} exceeds max_response_bytes {}",
-            body.len(),
-            limit
-        );
-    }
-    let events = match parse_events_from_body_for_source(&body, source) {
+    let events = match parse_events_from_body_for_source(&body_bytes, source) {
         Ok(ev) => ev,
         Err(e) => {
             if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -165,9 +155,9 @@ pub(super) async fn poll_single_page(
     }
 
     let mut emitted_count = 0u64;
-    for event_value in &events {
+    for event_value in events {
         if let Some(d) = &source.dedupe {
-            let id = event_id(event_value, &d.id_path).unwrap_or_default();
+            let id = event_id(&event_value, &d.id_path).unwrap_or_default();
             if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                 continue;
             }

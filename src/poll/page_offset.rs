@@ -150,7 +150,7 @@ pub(super) async fn poll_page_offset_pagination(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -164,17 +164,7 @@ pub(super) async fn poll_page_offset_pagination(
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
         }
-        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
-        if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body.len(),
-                limit
-            );
-        }
-        let events = match parse_events_from_body_for_source(&body, source) {
+        let events = match parse_events_from_body_for_source(&body_bytes, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -190,10 +180,11 @@ pub(super) async fn poll_page_offset_pagination(
         if let Some(ref st) = source.state {
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -204,7 +195,7 @@ pub(super) async fn poll_page_offset_pagination(
             emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
-        if events.len() < limit as usize {
+        if event_count < limit as usize {
             tracing::info!(
                 source = %source_id,
                 pages = page,
@@ -359,7 +350,7 @@ pub(super) async fn poll_offset_pagination(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -373,17 +364,7 @@ pub(super) async fn poll_offset_pagination(
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
         }
-        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
-        if let Some(limit_bytes) = source.max_response_bytes
-            && body.len() as u64 > limit_bytes
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body.len(),
-                limit_bytes
-            );
-        }
-        let events = match parse_events_from_body_for_source(&body, source) {
+        let events = match parse_events_from_body_for_source(&body_bytes, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -399,10 +380,11 @@ pub(super) async fn poll_offset_pagination(
         if let Some(ref st) = source.state {
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -413,7 +395,7 @@ pub(super) async fn poll_offset_pagination(
             emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
-        if events.len() < limit as usize {
+        if event_count < limit as usize {
             tracing::info!(
                 source = %source_id,
                 pages = page,

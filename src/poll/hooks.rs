@@ -262,7 +262,7 @@ pub(super) async fn poll_with_hooks(
             .iter()
             .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
             .collect();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
         let body_json: serde_json::Value =
             serde_json::from_str(&body_str).unwrap_or(serde_json::Value::String(body_str.clone()));
@@ -276,7 +276,7 @@ pub(super) async fn poll_with_hooks(
             match call_parse_response(script, &ctx, &hook_response, hooks_config).await? {
                 ev if !ev.is_empty() => ev,
                 _ => {
-                    let parsed = parse_events_from_body_for_source(&body_str, source)?;
+                    let parsed = parse_events_from_body_for_source(&body_bytes, source)?;
                     parsed
                         .into_iter()
                         .map(|event_value| {
