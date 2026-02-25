@@ -164,35 +164,90 @@ pub(super) async fn poll_page_offset_pagination(
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
         }
-        let events = match parse_events_from_body_for_source(&body_bytes, source) {
-            Ok(ev) => ev,
-            Err(e) => {
-                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
-                    tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
-                    continue;
-                }
-                return Err(e).context("parse response");
-            }
-        };
-        if let Some(ref inc) = source.incremental_from {
-            update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
-        }
-        if let Some(ref st) = source.state {
-            update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
-        }
-        let event_count = events.len();
+        let mut event_count = 0usize;
         let mut emitted_count = 0u64;
-        for event_value in events {
-            if let Some(d) = &source.dedupe {
-                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
-                if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
-                    continue;
+        let mut _streamed = false;
+
+        #[cfg(feature = "streaming")]
+        if source.response_streaming.is_some() {
+            use super::streaming;
+            use anyhow::Context as _;
+            let parse_result = match streaming::parse_streaming(&body_bytes, source) {
+                Ok(r) => r,
+                Err(e) => {
+                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                        tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
+                        continue;
+                    }
+                    return Err(e).context("streaming parse");
                 }
+            };
+            let obj_path = source.response_event_object_path.as_deref();
+            for result in parse_result.iter(&body_bytes) {
+                let event_value = result.context("parse event element")?;
+                let event_value = match streaming::unwrap_event_object(event_value, obj_path) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                event_count += 1;
+                if let Some(ref inc) = source.incremental_from {
+                    update_max_timestamp_single(
+                        &mut incremental_max_ts,
+                        &event_value,
+                        &inc.event_timestamp_path,
+                    );
+                }
+                if let Some(ref st) = source.state {
+                    update_max_timestamp_single(
+                        &mut watermark_max_ts,
+                        &event_value,
+                        &st.watermark_field,
+                    );
+                }
+                if let Some(d) = &source.dedupe {
+                    let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                    if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                        continue;
+                    }
+                }
+                total_events += 1;
+                emitted_count += 1;
+                let emitted = build_emitted_event(source, source_id, &path, event_value);
+                emit_event_line(global, source_id, source, &event_sink, &emitted)?;
             }
-            total_events += 1;
-            emitted_count += 1;
-            let emitted = build_emitted_event(source, source_id, &path, event_value);
-            emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+            _streamed = true;
+        }
+
+        if !_streamed {
+            let events = match parse_events_from_body_for_source(&body_bytes, source) {
+                Ok(ev) => ev,
+                Err(e) => {
+                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                        tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
+                        continue;
+                    }
+                    return Err(e).context("parse response");
+                }
+            };
+            if let Some(ref inc) = source.incremental_from {
+                update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+            }
+            if let Some(ref st) = source.state {
+                update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
+            }
+            event_count = events.len();
+            for event_value in events {
+                if let Some(d) = &source.dedupe {
+                    let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                    if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                        continue;
+                    }
+                }
+                total_events += 1;
+                emitted_count += 1;
+                let emitted = build_emitted_event(source, source_id, &path, event_value);
+                emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+            }
         }
         metrics::record_events(source_id, emitted_count);
         if event_count < limit as usize {
@@ -364,35 +419,90 @@ pub(super) async fn poll_offset_pagination(
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
         }
-        let events = match parse_events_from_body_for_source(&body_bytes, source) {
-            Ok(ev) => ev,
-            Err(e) => {
-                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
-                    tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
-                    continue;
-                }
-                return Err(e).context("parse response");
-            }
-        };
-        if let Some(ref inc) = source.incremental_from {
-            update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
-        }
-        if let Some(ref st) = source.state {
-            update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
-        }
-        let event_count = events.len();
+        let mut event_count = 0usize;
         let mut emitted_count = 0u64;
-        for event_value in events {
-            if let Some(d) = &source.dedupe {
-                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
-                if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
-                    continue;
+        let mut _streamed = false;
+
+        #[cfg(feature = "streaming")]
+        if source.response_streaming.is_some() {
+            use super::streaming;
+            use anyhow::Context as _;
+            let parse_result = match streaming::parse_streaming(&body_bytes, source) {
+                Ok(r) => r,
+                Err(e) => {
+                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                        tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
+                        continue;
+                    }
+                    return Err(e).context("streaming parse");
                 }
+            };
+            let obj_path = source.response_event_object_path.as_deref();
+            for result in parse_result.iter(&body_bytes) {
+                let event_value = result.context("parse event element")?;
+                let event_value = match streaming::unwrap_event_object(event_value, obj_path) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                event_count += 1;
+                if let Some(ref inc) = source.incremental_from {
+                    update_max_timestamp_single(
+                        &mut incremental_max_ts,
+                        &event_value,
+                        &inc.event_timestamp_path,
+                    );
+                }
+                if let Some(ref st) = source.state {
+                    update_max_timestamp_single(
+                        &mut watermark_max_ts,
+                        &event_value,
+                        &st.watermark_field,
+                    );
+                }
+                if let Some(d) = &source.dedupe {
+                    let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                    if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                        continue;
+                    }
+                }
+                total_events += 1;
+                emitted_count += 1;
+                let emitted = build_emitted_event(source, source_id, &path, event_value);
+                emit_event_line(global, source_id, source, &event_sink, &emitted)?;
             }
-            total_events += 1;
-            emitted_count += 1;
-            let emitted = build_emitted_event(source, source_id, &path, event_value);
-            emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+            _streamed = true;
+        }
+
+        if !_streamed {
+            let events = match parse_events_from_body_for_source(&body_bytes, source) {
+                Ok(ev) => ev,
+                Err(e) => {
+                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                        tracing::warn!(source = %source_id, error = %e, "parse error, skipping page");
+                        continue;
+                    }
+                    return Err(e).context("parse response");
+                }
+            };
+            if let Some(ref inc) = source.incremental_from {
+                update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
+            }
+            if let Some(ref st) = source.state {
+                update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
+            }
+            event_count = events.len();
+            for event_value in events {
+                if let Some(d) = &source.dedupe {
+                    let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                    if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                        continue;
+                    }
+                }
+                total_events += 1;
+                emitted_count += 1;
+                let emitted = build_emitted_event(source, source_id, &path, event_value);
+                emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+            }
         }
         metrics::record_events(source_id, emitted_count);
         if event_count < limit as usize {

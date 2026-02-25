@@ -215,10 +215,87 @@ pub(super) async fn poll_cursor_pagination(
             );
             break;
         }
-        let value: serde_json::Value = match source.on_invalid_utf8 {
-            Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
-                let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
-                match serde_json::from_str(&body) {
+        let mut next_cursor: Option<String> = None;
+        let mut event_count = 0usize;
+        let mut emitted_count = 0u64;
+        let mut _streamed = false;
+
+        #[cfg(feature = "streaming")]
+        if source.response_streaming.is_some() {
+            use super::streaming;
+            let parse_result = match streaming::parse_streaming(&body_bytes, source) {
+                Ok(r) => r,
+                Err(e) => {
+                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                        tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                        return Ok(());
+                    }
+                    return Err(e).context("streaming parse");
+                }
+            };
+            next_cursor =
+                json_path_str(parse_result.metadata(), cursor_path).filter(|s| !s.is_empty());
+            let obj_path = source.response_event_object_path.as_deref();
+            for result in parse_result.iter(&body_bytes) {
+                let event_value = match result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                            tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                            return Ok(());
+                        }
+                        return Err(e).context("parse event element");
+                    }
+                };
+                let event_value = match streaming::unwrap_event_object(event_value, obj_path) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                event_count += 1;
+                if let Some(ref inc) = source.incremental_from {
+                    update_max_timestamp_single(
+                        &mut incremental_max_ts,
+                        &event_value,
+                        &inc.event_timestamp_path,
+                    );
+                }
+                if let Some(ref st) = source.state {
+                    update_max_timestamp_single(
+                        &mut watermark_max_ts,
+                        &event_value,
+                        &st.watermark_field,
+                    );
+                }
+                if let Some(d) = &source.dedupe {
+                    let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                    if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                        continue;
+                    }
+                }
+                total_events += 1;
+                emitted_count += 1;
+                let emitted = build_emitted_event(source, source_id, &path, event_value);
+                emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+            }
+            _streamed = true;
+        }
+
+        if !_streamed {
+            let value: serde_json::Value = match source.on_invalid_utf8 {
+                Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
+                    let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
+                    match serde_json::from_str(&body) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                                tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                                return Ok(());
+                            }
+                            return Err(e).context("parse response json");
+                        }
+                    }
+                }
+                _ => match serde_json::from_slice(&body_bytes) {
                     Ok(v) => v,
                     Err(e) => {
                         if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -227,49 +304,38 @@ pub(super) async fn poll_cursor_pagination(
                         }
                         return Err(e).context("parse response json");
                     }
-                }
-            }
-            _ => match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
+                },
+            };
+            next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
+            let events = match parse_events_from_value_for_source(value, source) {
+                Ok(ev) => ev,
                 Err(e) => {
                     if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
                         tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
                         return Ok(());
                     }
-                    return Err(e).context("parse response json");
+                    return Err(e).context("extract events");
                 }
-            },
-        };
-        let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
-        let events = match parse_events_from_value_for_source(value, source) {
-            Ok(ev) => ev,
-            Err(e) => {
-                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
-                    tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
-                    return Ok(());
-                }
-                return Err(e).context("extract events");
+            };
+            if let Some(ref inc) = source.incremental_from {
+                update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
             }
-        };
-        if let Some(ref inc) = source.incremental_from {
-            update_max_timestamp(&mut incremental_max_ts, &events, &inc.event_timestamp_path);
-        }
-        if let Some(ref st) = source.state {
-            update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
-        }
-        let event_count = events.len();
-        let mut emitted_count = 0u64;
-        for event_value in events {
-            if let Some(d) = &source.dedupe {
-                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
-                if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
-                    continue;
-                }
+            if let Some(ref st) = source.state {
+                update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
             }
-            total_events += 1;
-            emitted_count += 1;
-            let emitted = build_emitted_event(source, source_id, &path, event_value);
-            emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+            event_count = events.len();
+            for event_value in events {
+                if let Some(d) = &source.dedupe {
+                    let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                    if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                        continue;
+                    }
+                }
+                total_events += 1;
+                emitted_count += 1;
+                let emitted = build_emitted_event(source, source_id, &path, event_value);
+                emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+            }
         }
         metrics::record_events(source_id, emitted_count);
         let checkpoint_per_page = source.checkpoint != Some(CheckpointTiming::EndOfTick);

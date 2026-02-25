@@ -177,12 +177,6 @@ impl StreamingParseResult {
         }
     }
 
-    pub(crate) fn array_range(&self) -> (usize, usize) {
-        match self {
-            Self::Borrowed { array_range, .. } | Self::Owned { array_range, .. } => *array_range,
-        }
-    }
-
     pub(crate) fn iter<'a>(&'a self, body_bytes: &'a [u8]) -> ArrayElementIter<'a> {
         match self {
             Self::Borrowed { array_range, .. } => ArrayElementIter::new(body_bytes, *array_range),
