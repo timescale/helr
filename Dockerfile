@@ -18,14 +18,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/target \
     mkdir -p src && echo 'fn main() {}' > src/main.rs && \
-    cargo build --release --features hooks && rm -rf src
+    cargo build --release --features hooks,streaming && rm -rf src
 
 # Copy real source and build the binary.
 COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/target \
-    touch src/main.rs && cargo build --release --features hooks && \
+    touch src/main.rs && cargo build --release --features hooks,streaming && \
     cp /target/release/helr /build/helr
 
 # -----------------------------------------------------------------------------
