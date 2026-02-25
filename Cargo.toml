@@ -34,7 +34,7 @@ sysinfo = "0.38"
 governor = "0.10"
 redis = { version = "1.0", features = ["tokio-comp", "connection-manager"] }
 tokio-postgres = "0.7"
-tokio-util = { version = "0.7", features = ["io"], optional = true }
+tokio-util = { version = "0.7", features = ["io", "io-util"], optional = true }
 
 # Optional JS hooks (Boa engine). When disabled, sources with hooks config are ignored.
 boa_engine = { version = "0.21", optional = true }
