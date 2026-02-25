@@ -8,6 +8,8 @@ mod link_header;
 mod page_offset;
 mod parse;
 mod single_page;
+#[cfg(feature = "streaming")]
+mod streaming;
 
 use crate::circuit::CircuitStore;
 use crate::client::build_client;
