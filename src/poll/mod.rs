@@ -566,4 +566,161 @@ source_label_key: "origin"
             "origin"
         );
     }
+
+    // --- Phase 1a tests: parse_events_from_body_for_source UTF-8 branching ---
+
+    #[test]
+    fn test_parse_body_from_slice_valid_utf8() {
+        let yaml = r#"url: "https://example.com/logs""#;
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let body = br#"[{"id":1},{"id":2}]"#;
+        let events = parse_events_from_body_for_source(body, &source).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["id"], serde_json::json!(1));
+        assert_eq!(events[1]["id"], serde_json::json!(2));
+    }
+
+    #[test]
+    fn test_parse_body_invalid_utf8_replace_uses_lossy_path() {
+        let yaml = r#"
+url: "https://example.com/logs"
+on_invalid_utf8: replace
+"#;
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        // Build JSON bytes with 0xFF byte inside a string value (invalid UTF-8).
+        // With Replace, from_utf8_lossy converts 0xFF -> U+FFFD before JSON parsing.
+        let mut body = Vec::new();
+        body.extend_from_slice(b"[{\"msg\":\"hello ");
+        body.push(0xFF);
+        body.extend_from_slice(b" world\"}]");
+        let events = parse_events_from_body_for_source(&body, &source);
+        assert!(events.is_ok(), "should parse with lossy replacement");
+        let events = events.unwrap();
+        assert_eq!(events.len(), 1);
+        let msg = events[0]["msg"].as_str().unwrap();
+        assert!(msg.contains('\u{FFFD}'), "should contain replacement char");
+    }
+
+    #[test]
+    fn test_parse_body_invalid_utf8_no_config_fails() {
+        let yaml = r#"url: "https://example.com/logs""#;
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        // Without on_invalid_utf8, from_slice is used and requires valid UTF-8 JSON
+        let body: Vec<u8> = vec![0xff, 0xfe];
+        let result = parse_events_from_body_for_source(&body, &source);
+        assert!(result.is_err(), "from_slice should reject non-JSON bytes");
+    }
+
+    // --- Phase 1b tests: ownership through paths + event_object_path ---
+
+    #[test]
+    fn test_parse_body_with_response_events_path() {
+        let yaml = r#"
+url: "https://example.com/api"
+response_events_path: "data.records"
+"#;
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let body = br#"{"data":{"records":[{"id":"a"},{"id":"b"}]},"meta":"ignored"}"#;
+        let events = parse_events_from_body_for_source(body, &source).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["id"], serde_json::json!("a"));
+        assert_eq!(events[1]["id"], serde_json::json!("b"));
+    }
+
+    #[test]
+    fn test_parse_body_with_event_object_path_graphql_edges() {
+        let yaml = r#"
+url: "https://example.com/graphql"
+response_events_path: "data.edges"
+response_event_object_path: "node"
+"#;
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let body = br#"{"data":{"edges":[{"node":{"id":1},"cursor":"c1"},{"node":{"id":2},"cursor":"c2"}]}}"#;
+        let events = parse_events_from_body_for_source(body, &source).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], serde_json::json!({"id": 1}));
+        assert_eq!(events[1], serde_json::json!({"id": 2}));
+    }
+
+    #[test]
+    fn test_parse_body_with_event_object_path_deep_nested() {
+        let yaml = r#"
+url: "https://example.com/api"
+response_events_path: "results"
+response_event_object_path: "payload.data"
+"#;
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let body =
+            br#"{"results":[{"payload":{"data":{"id":"x"}}},{"payload":{"data":{"id":"y"}}}]}"#;
+        let events = parse_events_from_body_for_source(body, &source).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], serde_json::json!({"id": "x"}));
+        assert_eq!(events[1], serde_json::json!({"id": "y"}));
+    }
+
+    #[test]
+    fn test_parse_body_events_path_not_found_errors() {
+        let yaml = r#"
+url: "https://example.com/api"
+response_events_path: "nonexistent.path"
+"#;
+        let source: SourceConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let body = br#"{"data":[{"id":1}]}"#;
+        let result = parse_events_from_body_for_source(body, &source);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("did not resolve"),
+            "error should mention path resolution: {err}"
+        );
+    }
+
+    // --- Phase 1c tests: read_body_with_limit ---
+
+    #[tokio::test]
+    async fn test_read_body_with_limit_within_limit() {
+        let server = wiremock::MockServer::start().await;
+        let body = r#"[{"id":1},{"id":2}]"#;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let response = reqwest::get(server.uri()).await.unwrap();
+        let result = read_body_with_limit(response, Some(1024)).await.unwrap();
+        assert_eq!(result, body.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_read_body_with_limit_exceeds_limit() {
+        let server = wiremock::MockServer::start().await;
+        let body = "x".repeat(500);
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&body))
+            .mount(&server)
+            .await;
+
+        let response = reqwest::get(server.uri()).await.unwrap();
+        let result = read_body_with_limit(response, Some(100)).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds max_response_bytes"),
+            "should report size exceeded: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_body_with_limit_no_limit_reads_all() {
+        let server = wiremock::MockServer::start().await;
+        let body = "a]".repeat(5000);
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&body))
+            .mount(&server)
+            .await;
+
+        let response = reqwest::get(server.uri()).await.unwrap();
+        let result = read_body_with_limit(response, None).await.unwrap();
+        assert_eq!(result.len(), body.len());
+    }
 }
