@@ -152,31 +152,13 @@ pub(super) async fn poll_link_header(
         .await;
 
         let status = response.status();
-        if !status.is_success() {
-            anyhow::bail!(
-                "http {} {}",
-                status,
-                response.text().await.unwrap_or_default()
-            );
-        }
-
         let next_url = next_link_from_headers(response.headers(), rel);
         let base_url = response.url().clone();
         let path = base_url.path().to_string();
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
-        if let Some(ref rs) = record_state {
-            rs.save(
-                source_id,
-                record_url.as_str(),
-                record_status,
-                &record_headers,
-                &body_bytes,
-            )?;
-        }
-        total_bytes += body_bytes.len() as u64;
+        let mut response = Some(response);
         let mut event_count = 0usize;
         let mut emitted_count = 0u64;
         let mut _streamed = false;
@@ -184,54 +166,169 @@ pub(super) async fn poll_link_header(
         #[cfg(feature = "streaming")]
         if source.response_streaming.is_some() {
             use super::streaming;
-            use anyhow::Context as _;
-            let parse_result = match streaming::parse_streaming(&body_bytes, source) {
-                Ok(r) => r,
-                Err(e) => {
-                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
-                        tracing::warn!(source = %source_id, error = %e, "parse error, stopping pagination");
-                        break;
-                    }
-                    return Err(e).context("streaming parse");
+            use crate::config::StreamingMode;
+
+            let use_full = source.response_streaming == Some(StreamingMode::Full)
+                && source.on_invalid_utf8.is_none();
+
+            if use_full {
+                let resp = response.take().unwrap();
+                if !status.is_success() {
+                    anyhow::bail!("http {} {}", status, resp.text().await.unwrap_or_default());
                 }
-            };
-            let obj_path = source.response_event_object_path.as_deref();
-            for result in parse_result.iter(&body_bytes) {
-                let event_value = result.context("parse event element")?;
-                let event_value = match streaming::unwrap_event_object(event_value, obj_path) {
-                    Some(v) => v,
-                    None => continue,
+                let tee_path = record_state.as_ref().map(|_| {
+                    std::env::temp_dir().join(format!(
+                        "helr-tee-{}-{}.bin",
+                        std::process::id(),
+                        source_id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+                    ))
+                });
+                let (mut event_rx, _meta_rx, join_handle) = streaming::stream_and_parse(
+                    resp,
+                    source.response_events_path.clone(),
+                    source.max_response_bytes,
+                    tee_path.clone(),
+                )
+                .await?;
+
+                let obj_path = source.response_event_object_path.as_deref();
+                while let Some(result) = event_rx.recv().await {
+                    let event_value = match result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                                tracing::warn!(source = %source_id, error = %e, "parse error, stopping pagination");
+                                break;
+                            }
+                            return Err(e).context("streaming parse element");
+                        }
+                    };
+                    let event_value = match streaming::unwrap_event_object(event_value, obj_path) {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    event_count += 1;
+                    if let Some(ref inc) = source.incremental_from {
+                        update_max_timestamp_single(
+                            &mut incremental_max_ts,
+                            &event_value,
+                            &inc.event_timestamp_path,
+                        );
+                    }
+                    if let Some(ref st) = source.state {
+                        update_max_timestamp_single(
+                            &mut watermark_max_ts,
+                            &event_value,
+                            &st.watermark_field,
+                        );
+                    }
+                    if let Some(d) = &source.dedupe {
+                        let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                        if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                            continue;
+                        }
+                    }
+                    total_events += 1;
+                    emitted_count += 1;
+                    let emitted = build_emitted_event(source, source_id, &path, event_value);
+                    emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+                }
+
+                join_handle
+                    .await
+                    .map_err(|e| anyhow::anyhow!("streaming parser panicked: {}", e))??;
+
+                if let (Some(rs), Some(tp)) = (&record_state, &tee_path) {
+                    let body = std::fs::read(tp).context("read tee file for recording")?;
+                    rs.save(
+                        source_id,
+                        record_url.as_str(),
+                        record_status,
+                        &record_headers,
+                        &body,
+                    )?;
+                    let _ = std::fs::remove_file(tp);
+                }
+                _streamed = true;
+            } else {
+                let resp = response.take().unwrap();
+                if !status.is_success() {
+                    anyhow::bail!("http {} {}", status, resp.text().await.unwrap_or_default());
+                }
+                let body_bytes = read_body_with_limit(resp, source.max_response_bytes).await?;
+                if let Some(ref rs) = record_state {
+                    rs.save(
+                        source_id,
+                        record_url.as_str(),
+                        record_status,
+                        &record_headers,
+                        &body_bytes,
+                    )?;
+                }
+                total_bytes += body_bytes.len() as u64;
+                let parse_result = match streaming::parse_streaming(&body_bytes, source) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                            tracing::warn!(source = %source_id, error = %e, "parse error, stopping pagination");
+                            break;
+                        }
+                        return Err(e).context("streaming parse");
+                    }
                 };
-                event_count += 1;
-                if let Some(ref inc) = source.incremental_from {
-                    update_max_timestamp_single(
-                        &mut incremental_max_ts,
-                        &event_value,
-                        &inc.event_timestamp_path,
-                    );
-                }
-                if let Some(ref st) = source.state {
-                    update_max_timestamp_single(
-                        &mut watermark_max_ts,
-                        &event_value,
-                        &st.watermark_field,
-                    );
-                }
-                if let Some(d) = &source.dedupe {
-                    let id = event_id(&event_value, &d.id_path).unwrap_or_default();
-                    if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
-                        continue;
+                let obj_path = source.response_event_object_path.as_deref();
+                for result in parse_result.iter(&body_bytes) {
+                    let event_value = result.context("parse event element")?;
+                    let event_value = match streaming::unwrap_event_object(event_value, obj_path) {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    event_count += 1;
+                    if let Some(ref inc) = source.incremental_from {
+                        update_max_timestamp_single(
+                            &mut incremental_max_ts,
+                            &event_value,
+                            &inc.event_timestamp_path,
+                        );
                     }
+                    if let Some(ref st) = source.state {
+                        update_max_timestamp_single(
+                            &mut watermark_max_ts,
+                            &event_value,
+                            &st.watermark_field,
+                        );
+                    }
+                    if let Some(d) = &source.dedupe {
+                        let id = event_id(&event_value, &d.id_path).unwrap_or_default();
+                        if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
+                            continue;
+                        }
+                    }
+                    total_events += 1;
+                    emitted_count += 1;
+                    let emitted = build_emitted_event(source, source_id, &path, event_value);
+                    emit_event_line(global, source_id, source, &event_sink, &emitted)?;
                 }
-                total_events += 1;
-                emitted_count += 1;
-                let emitted = build_emitted_event(source, source_id, &path, event_value);
-                emit_event_line(global, source_id, source, &event_sink, &emitted)?;
+                _streamed = true;
             }
-            _streamed = true;
         }
 
         if !_streamed {
+            let resp = response.take().unwrap();
+            if !status.is_success() {
+                anyhow::bail!("http {} {}", status, resp.text().await.unwrap_or_default());
+            }
+            let body_bytes = read_body_with_limit(resp, source.max_response_bytes).await?;
+            if let Some(ref rs) = record_state {
+                rs.save(
+                    source_id,
+                    record_url.as_str(),
+                    record_status,
+                    &record_headers,
+                    &body_bytes,
+                )?;
+            }
+            total_bytes += body_bytes.len() as u64;
             let events = match parse_events_from_body_for_source(&body_bytes, source) {
                 Ok(ev) => ev,
                 Err(e) => {
