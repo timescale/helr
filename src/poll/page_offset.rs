@@ -150,7 +150,7 @@ pub(super) async fn poll_page_offset_pagination(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -163,15 +163,6 @@ pub(super) async fn poll_page_offset_pagination(
         if !(200..300).contains(&record_status) {
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
-        }
-        if let Some(limit) = source.max_response_bytes
-            && body_bytes.len() as u64 > limit
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body_bytes.len(),
-                limit
-            );
         }
         let events = match parse_events_from_body_for_source(&body_bytes, source) {
             Ok(ev) => ev,
@@ -359,7 +350,7 @@ pub(super) async fn poll_offset_pagination(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -372,15 +363,6 @@ pub(super) async fn poll_offset_pagination(
         if !(200..300).contains(&record_status) {
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
-        }
-        if let Some(limit_bytes) = source.max_response_bytes
-            && body_bytes.len() as u64 > limit_bytes
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body_bytes.len(),
-                limit_bytes
-            );
         }
         let events = match parse_events_from_body_for_source(&body_bytes, source) {
             Ok(ev) => ev,

@@ -166,7 +166,7 @@ pub(super) async fn poll_link_header(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -175,15 +175,6 @@ pub(super) async fn poll_link_header(
                 &record_headers,
                 &body_bytes,
             )?;
-        }
-        if let Some(limit) = source.max_response_bytes
-            && body_bytes.len() as u64 > limit
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body_bytes.len(),
-                limit
-            );
         }
         total_bytes += body_bytes.len() as u64;
         let events = match parse_events_from_body_for_source(&body_bytes, source) {

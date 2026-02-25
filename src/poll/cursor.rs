@@ -174,7 +174,7 @@ pub(super) async fn poll_cursor_pagination(
         let record_url = response.url().clone();
         let record_status = response.status().as_u16();
         let record_headers = response.headers().clone();
-        let body_bytes = response.bytes().await.context("read body")?;
+        let body_bytes = read_body_with_limit(response, source.max_response_bytes).await?;
         if let Some(ref rs) = record_state {
             rs.save(
                 source_id,
@@ -202,15 +202,6 @@ pub(super) async fn poll_cursor_pagination(
                 }
             }
             anyhow::bail!("http {} {}", status, body_lossy);
-        }
-        if let Some(limit) = source.max_response_bytes
-            && body_bytes.len() as u64 > limit
-        {
-            anyhow::bail!(
-                "response body size {} exceeds max_response_bytes {}",
-                body_bytes.len(),
-                limit
-            );
         }
         total_bytes += body_bytes.len() as u64;
         if let Some(limit) = max_bytes

@@ -9,6 +9,7 @@ use crate::retry::rate_limit_info_from_headers;
 use crate::state::StateStore;
 use anyhow::Context;
 use chrono::Utc;
+use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +25,37 @@ pub(crate) fn bytes_to_string(
         _ => String::from_utf8(bytes.to_vec())
             .map_err(|e| anyhow::anyhow!("invalid UTF-8 in response: {}", e)),
     }
+}
+
+/// Stream response body with early abort when `max_bytes` is exceeded.
+/// Checks Content-Length upfront when available, then enforces the limit chunk-by-chunk.
+pub(crate) async fn read_body_with_limit(
+    response: reqwest::Response,
+    max_bytes: Option<u64>,
+) -> anyhow::Result<Vec<u8>> {
+    let content_length = response.content_length();
+    if let (Some(cl), Some(limit)) = (content_length, max_bytes)
+        && cl > limit
+    {
+        anyhow::bail!("Content-Length {} exceeds max_response_bytes {}", cl, limit);
+    }
+    let mut stream = response.bytes_stream();
+    let capacity = content_length.unwrap_or(8192).min(16 * 1024 * 1024) as usize;
+    let mut buf = Vec::with_capacity(capacity);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read body chunk")?;
+        buf.extend_from_slice(&chunk);
+        if let Some(limit) = max_bytes
+            && buf.len() as u64 > limit
+        {
+            anyhow::bail!(
+                "response body size {} exceeds max_response_bytes {}",
+                buf.len(),
+                limit
+            );
+        }
+    }
+    Ok(buf)
 }
 
 /// Value for the producer label in NDJSON: source_label_value if set, else the config source key.

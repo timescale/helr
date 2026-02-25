@@ -15,7 +15,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1.0"
-reqwest = { version = "0.13", features = ["json", "form"] }
+reqwest = { version = "0.13", features = ["json", "form", "stream"] }
+futures-util = "0.3"
 rusqlite = { version = "0.38", features = ["bundled"] }
 anyhow = "1.0"
 async-trait = "0.1"
