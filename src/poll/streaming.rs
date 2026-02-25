@@ -471,13 +471,6 @@ impl<R> TeeReader<R> {
         };
         Ok(Self { inner, tee })
     }
-
-    pub(crate) fn flush_tee(&mut self) -> io::Result<()> {
-        if let Some(ref mut tee) = self.tee {
-            tee.flush()?;
-        }
-        Ok(())
-    }
 }
 
 impl<R: Read> Read for TeeReader<R> {
@@ -1127,7 +1120,7 @@ mod tests {
         let mut reader = TeeReader::new(io::Cursor::new(data), Some(tmp.as_path())).unwrap();
         let mut buf = Vec::new();
         reader.read_to_end(&mut buf).unwrap();
-        reader.flush_tee().unwrap();
+        drop(reader);
         assert_eq!(buf, data);
         let tee_contents = std::fs::read(&tmp).unwrap();
         assert_eq!(tee_contents, data);
@@ -1400,5 +1393,265 @@ mod tests {
 
         assert_eq!(phase2_events, phase3_events);
         assert_eq!(phase2_meta["cursor"], phase3_meta["cursor"]);
+    }
+
+    #[tokio::test]
+    async fn test_phase3_metadata_after_events_array() {
+        let json = br#"{"events":[{"id":1},{"id":2}],"cursor":"page2","total":42}"#.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, meta_rx) = tokio::sync::oneshot::channel();
+
+        tokio::task::spawn_blocking(move || {
+            let mut reader = io::BufReader::new(io::Cursor::new(json));
+            let pre = scan_to_array(&mut reader, Some("events")).unwrap();
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(result) = event_rx.recv().await {
+            events.push(result.unwrap());
+        }
+        assert_eq!(events.len(), 2);
+
+        let metadata = meta_rx.await.unwrap().unwrap();
+        assert_eq!(metadata["cursor"], "page2");
+        assert_eq!(metadata["total"], 42);
+        assert!(metadata["events"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_phase3_top_level_array_no_metadata() {
+        let json = br#"[{"x":1},{"x":2},{"x":3}]"#.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, meta_rx) = tokio::sync::oneshot::channel();
+
+        tokio::task::spawn_blocking(move || {
+            let mut reader = io::BufReader::new(io::Cursor::new(json));
+            let pre = scan_to_array(&mut reader, None).unwrap();
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(result) = event_rx.recv().await {
+            events.push(result.unwrap());
+        }
+        assert_eq!(events.len(), 3);
+        let metadata = meta_rx.await.unwrap().unwrap();
+        assert!(metadata.is_null());
+    }
+
+    #[tokio::test]
+    async fn test_phase3_default_key_with_metadata() {
+        let json = br#"{"count":3,"items":[{"a":1},{"a":2},{"a":3}],"next":"http://x"}"#.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, meta_rx) = tokio::sync::oneshot::channel();
+
+        tokio::task::spawn_blocking(move || {
+            let mut reader = io::BufReader::new(io::Cursor::new(json));
+            let pre = scan_to_array(&mut reader, None).unwrap();
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(result) = event_rx.recv().await {
+            events.push(result.unwrap());
+        }
+        assert_eq!(events.len(), 3);
+
+        let metadata = meta_rx.await.unwrap().unwrap();
+        assert_eq!(metadata["count"], 3);
+        assert_eq!(metadata["next"], "http://x");
+    }
+
+    #[tokio::test]
+    async fn test_phase3_dotted_path_deeply_nested() {
+        let json = br#"{"result":{"data":{"records":[{"v":10},{"v":20}]},"ok":true}}"#.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, meta_rx) = tokio::sync::oneshot::channel();
+
+        tokio::task::spawn_blocking(move || {
+            let mut reader = io::BufReader::new(io::Cursor::new(json));
+            let pre = scan_to_array(&mut reader, Some("result.data.records")).unwrap();
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(result) = event_rx.recv().await {
+            events.push(result.unwrap());
+        }
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["v"], 10);
+        assert_eq!(events[1]["v"], 20);
+
+        let metadata = meta_rx.await.unwrap().unwrap();
+        assert_eq!(metadata["result"]["ok"], true);
+    }
+
+    #[test]
+    fn test_byte_counting_reader_exact_limit() {
+        let data = b"12345";
+        let mut reader = ByteCountingReader::new(io::Cursor::new(data), Some(5));
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, data);
+    }
+
+    #[test]
+    fn test_tee_reader_large_data() {
+        let data: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+        let tmp = std::env::temp_dir().join("helr_test_tee_large.bin");
+        let mut reader =
+            TeeReader::new(io::Cursor::new(data.clone()), Some(tmp.as_path())).unwrap();
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).unwrap();
+        drop(reader);
+        assert_eq!(buf, data);
+        let tee_contents = std::fs::read(&tmp).unwrap();
+        assert_eq!(tee_contents, data);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_phase3_max_response_bytes_enforcement() {
+        let json = br#"[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5}]"#.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, _meta_rx) = tokio::sync::oneshot::channel();
+
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let counting = ByteCountingReader::new(io::Cursor::new(json), Some(10));
+            let mut reader = io::BufReader::new(counting);
+            let pre = scan_to_array(&mut reader, None)?;
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("exceeds max_response_bytes"));
+
+        let mut count = 0;
+        while event_rx.recv().await.is_some() {
+            count += 1;
+        }
+        assert!(count <= 5);
+    }
+
+    #[tokio::test]
+    async fn test_phase3_equivalence_default_keys() {
+        let json = br#"{"total":2,"data":[{"name":"alice"},{"name":"bob"}],"page":1}"#;
+
+        let (s, e) = find_array_range(json, None).unwrap();
+        let phase2_meta = extract_metadata(json, (s, e)).unwrap();
+        let phase2_events: Vec<serde_json::Value> = ArrayElementIter::new(json, (s, e))
+            .map(|r| r.unwrap())
+            .collect();
+
+        let json_vec = json.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, meta_rx) = tokio::sync::oneshot::channel();
+
+        tokio::task::spawn_blocking(move || {
+            let mut reader = io::BufReader::new(io::Cursor::new(json_vec));
+            let pre = scan_to_array(&mut reader, None).unwrap();
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let mut phase3_events = Vec::new();
+        while let Some(result) = event_rx.recv().await {
+            phase3_events.push(result.unwrap());
+        }
+        let phase3_meta = meta_rx.await.unwrap().unwrap();
+
+        assert_eq!(phase2_events, phase3_events);
+        assert_eq!(phase2_meta["total"], phase3_meta["total"]);
+        assert_eq!(phase2_meta["page"], phase3_meta["page"]);
+    }
+
+    #[tokio::test]
+    async fn test_phase3_equivalence_top_level_array() {
+        let json = br#"[{"id":1},{"id":2},{"id":3}]"#;
+
+        let (s, e) = find_array_range(json, None).unwrap();
+        let phase2_events: Vec<serde_json::Value> = ArrayElementIter::new(json, (s, e))
+            .map(|r| r.unwrap())
+            .collect();
+
+        let json_vec = json.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, _meta_rx) = tokio::sync::oneshot::channel();
+
+        tokio::task::spawn_blocking(move || {
+            let mut reader = io::BufReader::new(io::Cursor::new(json_vec));
+            let pre = scan_to_array(&mut reader, None).unwrap();
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let mut phase3_events = Vec::new();
+        while let Some(result) = event_rx.recv().await {
+            phase3_events.push(result.unwrap());
+        }
+
+        assert_eq!(phase2_events, phase3_events);
+    }
+
+    #[tokio::test]
+    async fn test_phase3_equivalence_dotted_path() {
+        let json = br#"{"result":{"items":[{"k":"v1"},{"k":"v2"}]},"cursor":"c"}"#;
+
+        let (s, e) = find_array_range(json, Some("result.items")).unwrap();
+        let phase2_meta = extract_metadata(json, (s, e)).unwrap();
+        let phase2_events: Vec<serde_json::Value> = ArrayElementIter::new(json, (s, e))
+            .map(|r| r.unwrap())
+            .collect();
+
+        let json_vec = json.to_vec();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let (meta_tx, meta_rx) = tokio::sync::oneshot::channel();
+
+        tokio::task::spawn_blocking(move || {
+            let mut reader = io::BufReader::new(io::Cursor::new(json_vec));
+            let pre = scan_to_array(&mut reader, Some("result.items")).unwrap();
+            parse_elements_from_reader(&mut reader, &event_tx, pre, meta_tx).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let mut phase3_events = Vec::new();
+        while let Some(result) = event_rx.recv().await {
+            phase3_events.push(result.unwrap());
+        }
+        let phase3_meta = meta_rx.await.unwrap().unwrap();
+
+        assert_eq!(phase2_events, phase3_events);
+        assert_eq!(phase2_meta["cursor"], phase3_meta["cursor"]);
+    }
+
+    #[test]
+    fn test_tee_reader_combined_with_byte_counting() {
+        let data = b"hello world 12345";
+        let tmp = std::env::temp_dir().join("helr_test_tee_counting.bin");
+        let tee = TeeReader::new(io::Cursor::new(data.as_slice()), Some(tmp.as_path())).unwrap();
+        let mut counting = ByteCountingReader::new(tee, Some(100));
+        let mut buf = Vec::new();
+        counting.read_to_end(&mut buf).unwrap();
+        drop(counting);
+        assert_eq!(buf, data);
+        let tee_contents = std::fs::read(&tmp).unwrap();
+        assert_eq!(tee_contents, data);
+        let _ = std::fs::remove_file(&tmp);
     }
 }
