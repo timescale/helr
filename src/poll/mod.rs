@@ -8,6 +8,8 @@ mod link_header;
 mod page_offset;
 mod parse;
 mod single_page;
+#[cfg(feature = "streaming")]
+mod streaming;
 
 use crate::circuit::CircuitStore;
 use crate::client::build_client;
@@ -722,5 +724,254 @@ response_events_path: "nonexistent.path"
         let response = reqwest::get(server.uri()).await.unwrap();
         let result = read_body_with_limit(response, None).await.unwrap();
         assert_eq!(result.len(), body.len());
+    }
+}
+
+#[cfg(all(test, feature = "streaming"))]
+mod streaming_equivalence_tests {
+    use super::parse::*;
+    use super::streaming;
+    use crate::config::SourceConfig;
+
+    fn standard_parse(body: &[u8], source: &SourceConfig) -> Vec<serde_json::Value> {
+        parse_events_from_body_for_source(body, source).unwrap()
+    }
+
+    fn streaming_parse(body: &[u8], source: &SourceConfig) -> Vec<serde_json::Value> {
+        let result = streaming::parse_streaming(body, source).unwrap();
+        let obj_path = source.response_event_object_path.as_deref();
+        result
+            .iter(body)
+            .filter_map(|r| {
+                let v = r.unwrap();
+                streaming::unwrap_event_object(v, obj_path)
+            })
+            .collect()
+    }
+
+    fn assert_equivalence(body: &[u8], source: &SourceConfig) {
+        let std_events = standard_parse(body, source);
+        let str_events = streaming_parse(body, source);
+        assert_eq!(
+            std_events, str_events,
+            "streaming and standard parse must produce identical output"
+        );
+    }
+
+    fn source(yaml: &str) -> SourceConfig {
+        serde_yaml_ng::from_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn equiv_top_level_array() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"[{"id":1,"msg":"a"},{"id":2,"msg":"b"},{"id":3,"msg":"c"}]"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_empty_array() {
+        let s = source(r#"url: "https://x.com""#);
+        assert_equivalence(b"[]", &s);
+    }
+
+    #[test]
+    fn equiv_single_element() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"[{"id":1}]"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_items_key() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"{"items":[{"id":1},{"id":2}],"cursor":"abc"}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_events_key() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"{"events":[{"id":"a"},{"id":"b"}],"total":2}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_data_key() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"{"data":[{"n":10}],"next":"page2"}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_logs_key() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"{"logs":[{"level":"info","msg":"ok"}]}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_entries_key() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"{"entries":[{"id":"e1"}],"nextPageToken":"t"}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_response_events_path_single_segment() {
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "records"
+"#,
+        );
+        let body = br#"{"records":[{"id":1},{"id":2}],"meta":"ok"}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_response_events_path_nested() {
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "data.records"
+"#,
+        );
+        let body = br#"{"data":{"records":[{"id":"a"},{"id":"b"}]},"cursor":"c"}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_response_events_path_deeply_nested() {
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "a.b.c"
+"#,
+        );
+        let body = br#"{"a":{"b":{"c":[{"x":1},{"x":2},{"x":3}]}}}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_event_object_path_graphql() {
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "data.edges"
+response_event_object_path: "node"
+"#,
+        );
+        let body = br#"{"data":{"edges":[{"node":{"id":1},"cursor":"c1"},{"node":{"id":2},"cursor":"c2"}]}}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_event_object_path_deep() {
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "results"
+response_event_object_path: "payload.data"
+"#,
+        );
+        let body =
+            br#"{"results":[{"payload":{"data":{"id":"x"}}},{"payload":{"data":{"id":"y"}}}]}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_whitespace_and_formatting() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = b"  \n  [  { \"id\" : 1 }  ,  { \"id\" : 2 }  ]  \n  ";
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_nested_arrays_in_events() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"[{"id":1,"tags":["a","b"]},{"id":2,"tags":[]}]"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_nested_objects_in_events() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"[{"id":1,"meta":{"k":"v"}},{"id":2,"deep":{"a":{"b":true}}}]"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_strings_with_escapes() {
+        let s = source(r#"url: "https://x.com""#);
+        let body = br#"[{"msg":"hello \"world\""},{"msg":"line1\nline2"}]"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_cursor_metadata_extraction() {
+        let body = br#"{"cursor":"next123","events":[{"id":1},{"id":2}],"total":2}"#;
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "events"
+"#,
+        );
+        let result = streaming::parse_streaming(body, &s).unwrap();
+        let meta = result.metadata();
+        assert_eq!(meta["cursor"], "next123");
+        assert_eq!(meta["total"], 2);
+        assert!(meta["events"].as_array().unwrap().is_empty());
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_large_event_count() {
+        let s = source(r#"url: "https://x.com""#);
+        let events: Vec<serde_json::Value> = (0..500)
+            .map(|i| serde_json::json!({"id": i, "name": format!("event_{}", i)}))
+            .collect();
+        let body = serde_json::to_vec(&events).unwrap();
+        assert_equivalence(&body, &s);
+    }
+
+    #[test]
+    fn equiv_on_invalid_utf8_replace() {
+        let s = source(
+            r#"
+url: "https://x.com"
+on_invalid_utf8: replace
+"#,
+        );
+        let mut body = Vec::new();
+        body.extend_from_slice(b"[{\"msg\":\"hello ");
+        body.push(0xFF);
+        body.extend_from_slice(b" world\"}]");
+        assert_equivalence(&body, &s);
+    }
+
+    #[test]
+    fn equiv_events_with_cursor_metadata() {
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "data.AndromedaEvents.edges"
+response_event_object_path: "node"
+"#,
+        );
+        let body = br#"{"data":{"AndromedaEvents":{"edges":[{"node":{"id":"e1","ts":"2024-01-01"},"cursor":"c1"},{"node":{"id":"e2","ts":"2024-01-02"},"cursor":"c2"}],"pageInfo":{"hasNextPage":true,"endCursor":"c2"}}}}"#;
+        assert_equivalence(body, &s);
+    }
+
+    #[test]
+    fn equiv_empty_events_with_metadata() {
+        let s = source(
+            r#"
+url: "https://x.com"
+response_events_path: "events"
+"#,
+        );
+        let body = br#"{"events":[],"cursor":null,"total":0}"#;
+        assert_equivalence(body, &s);
     }
 }

@@ -274,11 +274,20 @@ pub(crate) fn update_max_timestamp(
     path: &str,
 ) {
     for event in events {
-        if let Some(v) = value_at_path_as_string(event, path)
-            && max_ts.as_ref().is_none_or(|m| v.as_str() > m.as_str())
-        {
-            *max_ts = Some(v);
-        }
+        update_max_timestamp_single(max_ts, event, path);
+    }
+}
+
+/// Update max_ts from a single event (used by streaming path to track incrementally).
+pub(crate) fn update_max_timestamp_single(
+    max_ts: &mut Option<String>,
+    event: &serde_json::Value,
+    path: &str,
+) {
+    if let Some(v) = value_at_path_as_string(event, path)
+        && max_ts.as_ref().is_none_or(|m| v.as_str() > m.as_str())
+    {
+        *max_ts = Some(v);
     }
 }
 

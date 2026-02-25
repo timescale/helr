@@ -121,6 +121,11 @@ pub struct SourceConfig {
     /// Optional JS hooks script for this source (buildRequest, parseResponse, getNextPage, commitState). Requires global hooks.enabled.
     #[serde(default)]
     pub hooks: Option<SourceHooksConfig>,
+
+    /// Streaming JSON parse mode: "buffered" (parse events one-at-a-time from buffered bytes)
+    /// or "full" (stream download + stream parse). Requires `streaming` Cargo feature.
+    #[serde(default)]
+    pub response_streaming: Option<StreamingMode>,
 }
 
 /// Config for time-based incremental ingestion: use state for "from" param and store latest event timestamp after each poll.
@@ -245,6 +250,16 @@ pub struct ScheduleConfig {
     pub interval_secs: u64,
     #[serde(default)]
     pub jitter_secs: Option<u64>,
+}
+
+/// Streaming JSON parse mode (requires `streaming` Cargo feature).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamingMode {
+    /// Phase 2: buffer response body, parse events array one-at-a-time from bytes.
+    Buffered,
+    /// Phase 3: stream download + parse without buffering the full body.
+    Full,
 }
 
 fn default_interval_secs() -> u64 {
