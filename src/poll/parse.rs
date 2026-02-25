@@ -1,16 +1,23 @@
-use crate::config::SourceConfig;
+use crate::config::{InvalidUtf8Behavior, SourceConfig};
 use crate::event::EmittedEvent;
 use anyhow::Context;
 use chrono::Utc;
 
-use super::helpers::effective_source_label;
+use super::helpers::{bytes_to_string, effective_source_label};
 
-/// Parse response body using source's response_events_path / response_event_object_path when set.
+/// Parse response body bytes using source config. Uses `from_slice` for valid UTF-8 sources,
+/// falls back to lossy `bytes_to_string` + `from_str` when `on_invalid_utf8` is Replace/Escape.
 pub(crate) fn parse_events_from_body_for_source(
-    body: &str,
+    body_bytes: &[u8],
     source: &SourceConfig,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    let value: serde_json::Value = serde_json::from_str(body).context("parse response json")?;
+    let value: serde_json::Value = match source.on_invalid_utf8 {
+        Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
+            let body = bytes_to_string(body_bytes, source.on_invalid_utf8)?;
+            serde_json::from_str(&body).context("parse response json")?
+        }
+        _ => serde_json::from_slice(body_bytes).context("parse response json")?,
+    };
     parse_events_from_value_for_source(&value, source)
 }
 

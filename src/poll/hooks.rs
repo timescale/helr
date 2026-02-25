@@ -276,7 +276,7 @@ pub(super) async fn poll_with_hooks(
             match call_parse_response(script, &ctx, &hook_response, hooks_config).await? {
                 ev if !ev.is_empty() => ev,
                 _ => {
-                    let parsed = parse_events_from_body_for_source(&body_str, source)?;
+                    let parsed = parse_events_from_body_for_source(&body_bytes, source)?;
                     parsed
                         .into_iter()
                         .map(|event_value| {

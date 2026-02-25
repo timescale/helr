@@ -164,17 +164,16 @@ pub(super) async fn poll_page_offset_pagination(
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
         }
-        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit
+            && body_bytes.len() as u64 > limit
         {
             anyhow::bail!(
                 "response body size {} exceeds max_response_bytes {}",
-                body.len(),
+                body_bytes.len(),
                 limit
             );
         }
-        let events = match parse_events_from_body_for_source(&body, source) {
+        let events = match parse_events_from_body_for_source(&body_bytes, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -373,17 +372,16 @@ pub(super) async fn poll_offset_pagination(
             let body_str = String::from_utf8_lossy(&body_bytes);
             anyhow::bail!("http {} {}", record_status, body_str);
         }
-        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if let Some(limit_bytes) = source.max_response_bytes
-            && body.len() as u64 > limit_bytes
+            && body_bytes.len() as u64 > limit_bytes
         {
             anyhow::bail!(
                 "response body size {} exceeds max_response_bytes {}",
-                body.len(),
+                body_bytes.len(),
                 limit_bytes
             );
         }
-        let events = match parse_events_from_body_for_source(&body, source) {
+        let events = match parse_events_from_body_for_source(&body_bytes, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {

@@ -1,7 +1,7 @@
 use crate::circuit::{self, CircuitStore};
 use crate::config::{
-    CheckpointTiming, CursorExpiredBehavior, GlobalConfig, HttpMethod, OnParseErrorBehavior,
-    SourceConfig,
+    CheckpointTiming, CursorExpiredBehavior, GlobalConfig, HttpMethod, InvalidUtf8Behavior,
+    OnParseErrorBehavior, SourceConfig,
 };
 use crate::dedupe::{self, DedupeStore};
 use crate::dpop::DPoPKeyCache;
@@ -184,10 +184,10 @@ pub(super) async fn poll_cursor_pagination(
                 &body_bytes,
             )?;
         }
-        let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
         if !status.is_success() {
+            let body_lossy = String::from_utf8_lossy(&body_bytes);
             if cursor.is_some() && status.as_u16() >= 400 && status.as_u16() < 500 {
-                let lower = body.to_lowercase();
+                let lower = body_lossy.to_lowercase();
                 let is_expired = status.as_u16() == 410
                     || lower.contains("expired")
                     || lower.contains("invalid cursor")
@@ -201,18 +201,18 @@ pub(super) async fn poll_cursor_pagination(
                     return Ok(());
                 }
             }
-            anyhow::bail!("http {} {}", status, body);
+            anyhow::bail!("http {} {}", status, body_lossy);
         }
         if let Some(limit) = source.max_response_bytes
-            && body.len() as u64 > limit
+            && body_bytes.len() as u64 > limit
         {
             anyhow::bail!(
                 "response body size {} exceeds max_response_bytes {}",
-                body.len(),
+                body_bytes.len(),
                 limit
             );
         }
-        total_bytes += body.len() as u64;
+        total_bytes += body_bytes.len() as u64;
         if let Some(limit) = max_bytes
             && total_bytes > limit
         {
@@ -224,15 +224,30 @@ pub(super) async fn poll_cursor_pagination(
             );
             break;
         }
-        let value: serde_json::Value = match serde_json::from_str(&body) {
-            Ok(v) => v,
-            Err(e) => {
-                if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
-                    tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
-                    return Ok(());
+        let value: serde_json::Value = match source.on_invalid_utf8 {
+            Some(InvalidUtf8Behavior::Replace) | Some(InvalidUtf8Behavior::Escape) => {
+                let body = bytes_to_string(&body_bytes, source.on_invalid_utf8)?;
+                match serde_json::from_str(&body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                            tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                            return Ok(());
+                        }
+                        return Err(e).context("parse response json");
+                    }
                 }
-                return Err(e).context("parse response json");
             }
+            _ => match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
+                        tracing::warn!(source = %source_id, error = %e, "parse error, stopping cursor pagination");
+                        return Ok(());
+                    }
+                    return Err(e).context("parse response json");
+                }
+            },
         };
         let events = match parse_events_from_value_for_source(&value, source) {
             Ok(ev) => ev,
