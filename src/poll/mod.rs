@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn test_parse_events_from_value_top_level_array() {
         let v = serde_json::json!([{"id": 1}, {"id": 2}]);
-        let events = parse_events_from_value(&v).unwrap();
+        let events = parse_events_from_value(v).unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].get("id"), Some(&serde_json::json!(1)));
     }
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn test_parse_events_from_value_items_key() {
         let v = serde_json::json!({"items": [{"id": 1}], "next_cursor": "abc"});
-        let events = parse_events_from_value(&v).unwrap();
+        let events = parse_events_from_value(v).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].get("id"), Some(&serde_json::json!(1)));
     }
@@ -425,14 +425,14 @@ mod tests {
     #[test]
     fn test_parse_events_from_value_empty_array() {
         let v = serde_json::json!([]);
-        let events = parse_events_from_value(&v).unwrap();
+        let events = parse_events_from_value(v).unwrap();
         assert_eq!(events.len(), 0);
     }
 
     #[test]
     fn test_parse_events_from_value_logs_key() {
         let v = serde_json::json!({"logs": [{"id": "a"}], "next": "x"});
-        let events = parse_events_from_value(&v).unwrap();
+        let events = parse_events_from_value(v).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].get("id"), Some(&serde_json::json!("a")));
     }
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn test_parse_events_from_value_entries_key() {
         let v = serde_json::json!({"entries": [{"id": "e1"}], "nextPageToken": "tok"});
-        let events = parse_events_from_value(&v).unwrap();
+        let events = parse_events_from_value(v).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].get("id"), Some(&serde_json::json!("e1")));
     }
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn test_parse_events_from_value_single_value_fallback() {
         let v = serde_json::json!({"id": 42});
-        let events = parse_events_from_value(&v).unwrap();
+        let events = parse_events_from_value(v).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].get("id"), Some(&serde_json::json!(42)));
     }

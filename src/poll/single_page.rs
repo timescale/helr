@@ -164,9 +164,9 @@ pub(super) async fn poll_single_page(
     }
 
     let mut emitted_count = 0u64;
-    for event_value in &events {
+    for event_value in events {
         if let Some(d) = &source.dedupe {
-            let id = event_id(event_value, &d.id_path).unwrap_or_default();
+            let id = event_id(&event_value, &d.id_path).unwrap_or_default();
             if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                 continue;
             }

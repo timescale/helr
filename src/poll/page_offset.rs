@@ -189,10 +189,11 @@ pub(super) async fn poll_page_offset_pagination(
         if let Some(ref st) = source.state {
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -203,7 +204,7 @@ pub(super) async fn poll_page_offset_pagination(
             emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
-        if events.len() < limit as usize {
+        if event_count < limit as usize {
             tracing::info!(
                 source = %source_id,
                 pages = page,
@@ -397,10 +398,11 @@ pub(super) async fn poll_offset_pagination(
         if let Some(ref st) = source.state {
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -411,7 +413,7 @@ pub(super) async fn poll_offset_pagination(
             emit_event_line(global, source_id, source, &event_sink, &emitted)?;
         }
         metrics::record_events(source_id, emitted_count);
-        if events.len() < limit as usize {
+        if event_count < limit as usize {
             tracing::info!(
                 source = %source_id,
                 pages = page,

@@ -249,7 +249,8 @@ pub(super) async fn poll_cursor_pagination(
                 }
             },
         };
-        let events = match parse_events_from_value_for_source(&value, source) {
+        let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
+        let events = match parse_events_from_value_for_source(value, source) {
             Ok(ev) => ev,
             Err(e) => {
                 if source.on_parse_error == Some(OnParseErrorBehavior::Skip) {
@@ -265,11 +266,11 @@ pub(super) async fn poll_cursor_pagination(
         if let Some(ref st) = source.state {
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
-        let next_cursor = json_path_str(&value, cursor_path).filter(|s| !s.is_empty());
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue;
                 }
@@ -291,7 +292,7 @@ pub(super) async fn poll_cursor_pagination(
                 tracing::debug!(
                     source = %source_id,
                     page = page,
-                    events = events.len(),
+                    events = event_count,
                     "next cursor page"
                 );
             }

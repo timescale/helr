@@ -18,12 +18,13 @@ pub(crate) fn parse_events_from_body_for_source(
         }
         _ => serde_json::from_slice(body_bytes).context("parse response json")?,
     };
-    parse_events_from_value_for_source(&value, source)
+    parse_events_from_value_for_source(value, source)
 }
 
 /// Extract events from parsed JSON using source's optional paths or default keys.
+/// Takes ownership of the Value tree to avoid cloning the events array.
 pub(crate) fn parse_events_from_value_for_source(
-    value: &serde_json::Value,
+    value: serde_json::Value,
     source: &SourceConfig,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let path = source.response_events_path.as_deref();
@@ -37,21 +38,21 @@ pub(crate) fn parse_events_from_value_for_source(
 
 /// Extract events array at dotted path, optionally unwrapping each element (e.g. edge.node).
 fn parse_events_from_value_with_path(
-    value: &serde_json::Value,
+    mut value: serde_json::Value,
     events_path: Option<&str>,
     event_object_path: Option<&str>,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let arr = match events_path {
-        Some(p) => json_path_array(value, p).ok_or_else(|| {
+        Some(p) => json_path_array(&mut value, p).ok_or_else(|| {
             anyhow::anyhow!("response_events_path {:?} did not resolve to an array", p)
         })?,
         None => {
-            if let Some(arr) = value.as_array() {
-                arr.clone()
-            } else if let Some(obj) = value.as_object() {
+            if let Some(arr) = value.as_array_mut() {
+                std::mem::take(arr)
+            } else if let Some(obj) = value.as_object_mut() {
                 for key in &["items", "data", "events", "logs", "entries"] {
-                    if let Some(v) = obj.get(*key).and_then(|v| v.as_array()) {
-                        return Ok(unwrap_event_objects(v, event_object_path));
+                    if let Some(v) = obj.get_mut(*key).and_then(|v| v.as_array_mut()) {
+                        return Ok(unwrap_event_objects(std::mem::take(v), event_object_path));
                     }
                 }
                 anyhow::bail!(
@@ -62,54 +63,55 @@ fn parse_events_from_value_with_path(
             }
         }
     };
-    Ok(unwrap_event_objects(&arr, event_object_path))
+    Ok(unwrap_event_objects(arr, event_object_path))
 }
 
-/// Get array at dotted path (e.g. "data.AndromedaEvents.edges").
-fn json_path_array(value: &serde_json::Value, path: &str) -> Option<Vec<serde_json::Value>> {
+/// Take array at dotted path (e.g. "data.AndromedaEvents.edges"), draining it from the tree.
+fn json_path_array(value: &mut serde_json::Value, path: &str) -> Option<Vec<serde_json::Value>> {
     let mut v = value;
     for segment in path.split('.') {
-        v = v.get(segment)?;
+        v = v.get_mut(segment)?;
     }
-    v.as_array().cloned()
+    v.as_array_mut().map(std::mem::take)
 }
 
-/// For each element, optionally take the value at dotted path (e.g. "node"); otherwise use element.
+/// For each element, optionally take the value at dotted path (e.g. "node"); otherwise return as-is.
 fn unwrap_event_objects(
-    arr: &[serde_json::Value],
+    arr: Vec<serde_json::Value>,
     object_path: Option<&str>,
 ) -> Vec<serde_json::Value> {
     let Some(path) = object_path else {
-        return arr.to_vec();
+        return arr;
     };
-    arr.iter()
-        .filter_map(|el| {
-            let mut v = el;
+    arr.into_iter()
+        .filter_map(|mut el| {
+            let mut v = &mut el;
             for segment in path.split('.') {
-                v = v.get(segment)?;
+                v = v.get_mut(segment)?;
             }
-            Some(v.clone())
+            Some(std::mem::take(v))
         })
         .collect()
 }
 
 /// Extract events array from parsed JSON (same keys as parse_events_from_body).
+/// Takes ownership to avoid cloning.
 pub(crate) fn parse_events_from_value(
-    value: &serde_json::Value,
+    mut value: serde_json::Value,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    if let Some(arr) = value.as_array() {
-        return Ok(arr.clone());
+    if let Some(arr) = value.as_array_mut() {
+        return Ok(std::mem::take(arr));
     }
-    if let Some(obj) = value.as_object() {
+    if let Some(obj) = value.as_object_mut() {
         for key in &["items", "data", "events", "logs", "entries"] {
-            if let Some(v) = obj.get(*key)
-                && let Some(arr) = v.as_array()
+            if let Some(v) = obj.get_mut(*key)
+                && let Some(arr) = v.as_array_mut()
             {
-                return Ok(arr.clone());
+                return Ok(std::mem::take(arr));
             }
         }
     }
-    Ok(vec![value.clone()])
+    Ok(vec![value])
 }
 
 /// Get string at dotted path in JSON (e.g. "next_cursor", "meta.next_page_token").
@@ -162,24 +164,28 @@ pub(crate) fn event_ts_with_field(
 }
 
 /// Build NDJSON envelope from raw event using source transform (timestamp_field, id_field) when set.
+/// Takes ownership of event_value to avoid cloning (EmittedEvent::new already accepts owned Value).
 pub(crate) fn build_emitted_event(
     source: &SourceConfig,
     source_id: &str,
     path: &str,
-    event_value: &serde_json::Value,
+    event_value: serde_json::Value,
 ) -> EmittedEvent {
     let ts = event_ts_with_field(
-        event_value,
+        &event_value,
         source
             .transform
             .as_ref()
             .and_then(|t| t.timestamp_field.as_deref()),
     );
     let label = effective_source_label(source, source_id);
-    let mut emitted = EmittedEvent::new(ts, label, path.to_string(), event_value.clone());
-    if let Some(id_path) = source.transform.as_ref().and_then(|t| t.id_field.as_ref())
-        && let Some(id) = event_id(event_value, id_path)
-    {
+    let id = source
+        .transform
+        .as_ref()
+        .and_then(|t| t.id_field.as_ref())
+        .and_then(|id_path| event_id(&event_value, id_path));
+    let mut emitted = EmittedEvent::new(ts, label, path.to_string(), event_value);
+    if let Some(id) = id {
         emitted = emitted.with_id(id);
     }
     emitted

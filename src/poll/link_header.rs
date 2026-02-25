@@ -203,10 +203,11 @@ pub(super) async fn poll_link_header(
             update_max_timestamp(&mut watermark_max_ts, &events, &st.watermark_field);
         }
 
+        let event_count = events.len();
         let mut emitted_count = 0u64;
-        for event_value in events.iter() {
+        for event_value in events {
             if let Some(d) = &source.dedupe {
-                let id = event_id(event_value, &d.id_path).unwrap_or_default();
+                let id = event_id(&event_value, &d.id_path).unwrap_or_default();
                 if dedupe::seen_and_add(&dedupe_store, source_id, id, d.capacity).await {
                     continue; // duplicate
                 }
@@ -239,7 +240,7 @@ pub(super) async fn poll_link_header(
             tracing::debug!(
                 source = %source_id,
                 page = page,
-                events = events.len(),
+                events = event_count,
                 total_bytes,
                 "next page"
             );
