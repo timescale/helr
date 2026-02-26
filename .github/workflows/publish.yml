@@ -27,6 +27,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
 
+      - name: Build with all features
+        run: cargo build --all-features
+
       - uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1.0.3
         id: auth
 
