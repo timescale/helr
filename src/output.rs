@@ -605,6 +605,307 @@ impl Drop for BackpressureSink {
     }
 }
 
+// --- HTTP POST sink ---
+
+/// POST NDJSON lines to a remote HTTP endpoint with batching and retry.
+///
+/// Uses a tokio channel + background task so `write_line` stays sync.
+/// Lines are accumulated up to `batch_size` or `batch_timeout`, then flushed
+/// as a single NDJSON body.
+pub struct HttpSink {
+    tx: tokio::sync::mpsc::UnboundedSender<HttpSinkMsg>,
+    rt: tokio::runtime::Handle,
+}
+
+enum HttpSinkMsg {
+    Line(String),
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
+impl HttpSink {
+    /// Spawn the background worker on the current tokio runtime.
+    pub fn new(url: String, config: &crate::config::HttpOutputConfig) -> anyhow::Result<Self> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let batch_size = config.batch_size;
+        let batch_timeout = std::time::Duration::from_millis(config.batch_timeout_ms);
+        let max_retries = config.max_retries;
+        let timeout = std::time::Duration::from_secs(config.timeout_secs);
+
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        for (k, v) in &config.headers {
+            let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                .map_err(|e| anyhow::anyhow!("invalid header name '{k}': {e}"))?;
+            let val = reqwest::header::HeaderValue::from_str(v)
+                .map_err(|e| anyhow::anyhow!("invalid header value for '{k}': {e}"))?;
+            default_headers.insert(name, val);
+        }
+        if !default_headers.contains_key(reqwest::header::CONTENT_TYPE) {
+            default_headers.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/x-ndjson"),
+            );
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .default_headers(default_headers)
+            .build()?;
+
+        let rt = tokio::runtime::Handle::current();
+        rt.spawn(http_sink_worker(
+            rx,
+            client,
+            url,
+            batch_size,
+            batch_timeout,
+            max_retries,
+        ));
+
+        Ok(Self { tx, rt })
+    }
+}
+
+async fn http_sink_worker(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<HttpSinkMsg>,
+    client: reqwest::Client,
+    url: String,
+    batch_size: usize,
+    batch_timeout: std::time::Duration,
+    max_retries: u32,
+) {
+    let mut buf: Vec<String> = Vec::with_capacity(batch_size);
+    let mut flush_waiters: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
+    let sleep = tokio::time::sleep(batch_timeout);
+    tokio::pin!(sleep);
+    let mut timer_active = false;
+
+    loop {
+        tokio::select! {
+            biased;
+            msg = rx.recv() => {
+                match msg {
+                    Some(HttpSinkMsg::Line(line)) => {
+                        buf.push(line);
+                        if !timer_active {
+                            sleep.as_mut().reset(tokio::time::Instant::now() + batch_timeout);
+                            timer_active = true;
+                        }
+                        if buf.len() >= batch_size {
+                            http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
+                            timer_active = false;
+                            for w in flush_waiters.drain(..) { let _ = w.send(()); }
+                        }
+                    }
+                    Some(HttpSinkMsg::Flush(waiter)) => {
+                        if !buf.is_empty() {
+                            http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
+                            timer_active = false;
+                        }
+                        let _ = waiter.send(());
+                        for w in flush_waiters.drain(..) { let _ = w.send(()); }
+                    }
+                    None => {
+                        if !buf.is_empty() {
+                            http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
+                        }
+                        for w in flush_waiters.drain(..) { let _ = w.send(()); }
+                        return;
+                    }
+                }
+            }
+            () = &mut sleep, if timer_active => {
+                if !buf.is_empty() {
+                    http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
+                }
+                timer_active = false;
+                for w in flush_waiters.drain(..) { let _ = w.send(()); }
+            }
+        }
+    }
+}
+
+async fn http_sink_flush_batch(
+    client: &reqwest::Client,
+    url: &str,
+    buf: &mut Vec<String>,
+    max_retries: u32,
+) {
+    let mut body = String::with_capacity(buf.iter().map(|l| l.len() + 1).sum());
+    for line in buf.iter() {
+        body.push_str(line);
+        body.push('\n');
+    }
+    let count = buf.len();
+    buf.clear();
+
+    let mut attempt = 0u32;
+    loop {
+        match client.post(url).body(body.clone()).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::debug!(lines = count, status = %resp.status(), "http sink: batch sent");
+                return;
+            }
+            Ok(resp) if resp.status().is_server_error() && attempt < max_retries => {
+                attempt += 1;
+                let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt));
+                tracing::warn!(
+                    status = %resp.status(), attempt, max_retries,
+                    "http sink: retryable error, backing off {delay:?}",
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Ok(resp) => {
+                tracing::error!(
+                    status = %resp.status(), lines = count,
+                    "http sink: non-retryable response, dropping batch",
+                );
+                metrics::record_output_error("http_sink");
+                return;
+            }
+            Err(e) if (e.is_timeout() || e.is_connect()) && attempt < max_retries => {
+                attempt += 1;
+                let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt));
+                tracing::warn!(
+                    error = %e, attempt, max_retries,
+                    "http sink: transient error, backing off {delay:?}",
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, lines = count, "http sink: send failed, dropping batch");
+                metrics::record_output_error("http_sink");
+                return;
+            }
+        }
+    }
+}
+
+impl EventSink for HttpSink {
+    fn write_line(&self, line: &str) -> anyhow::Result<()> {
+        self.tx
+            .send(HttpSinkMsg::Line(line.to_string()))
+            .map_err(|_| anyhow::anyhow!("http sink worker closed"))
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(HttpSinkMsg::Flush(tx))
+            .map_err(|_| anyhow::anyhow!("http sink worker closed"))?;
+        let rt = self.rt.clone();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                rt.block_on(rx).ok();
+            })
+            .join()
+            .map_err(|_| anyhow::anyhow!("http sink flush thread panicked"))
+        })
+    }
+}
+
+// --- NATS sink ---
+
+/// Publish NDJSON lines to a NATS subject via core publish (fire-and-forget).
+///
+/// Uses a tokio channel + background task so `write_line` stays sync.
+#[cfg(feature = "nats")]
+pub struct NatsSink {
+    tx: tokio::sync::mpsc::UnboundedSender<NatsSinkMsg>,
+    rt: tokio::runtime::Handle,
+}
+
+#[cfg(feature = "nats")]
+enum NatsSinkMsg {
+    Line(String),
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
+#[cfg(feature = "nats")]
+impl NatsSink {
+    /// Connect to NATS and spawn the publish worker.
+    pub async fn connect(server_url: &str, subject: &str) -> anyhow::Result<Self> {
+        let client = async_nats::connect(server_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("nats connect to {server_url}: {e}"))?;
+        let subject = async_nats::Subject::from(subject);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let rt = tokio::runtime::Handle::current();
+        rt.spawn(nats_sink_worker(rx, client, subject));
+        Ok(Self { tx, rt })
+    }
+}
+
+#[cfg(feature = "nats")]
+async fn nats_sink_worker(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<NatsSinkMsg>,
+    client: async_nats::Client,
+    subject: async_nats::Subject,
+) {
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            NatsSinkMsg::Line(line) => {
+                if let Err(e) = client.publish(subject.clone(), line.into()).await {
+                    tracing::error!(error = %e, "nats sink: publish failed");
+                    metrics::record_output_error("nats_sink");
+                }
+            }
+            NatsSinkMsg::Flush(waiter) => {
+                if let Err(e) = client.flush().await {
+                    tracing::warn!(error = %e, "nats sink: flush failed");
+                }
+                let _ = waiter.send(());
+            }
+        }
+    }
+}
+
+#[cfg(feature = "nats")]
+impl EventSink for NatsSink {
+    fn write_line(&self, line: &str) -> anyhow::Result<()> {
+        self.tx
+            .send(NatsSinkMsg::Line(line.to_string()))
+            .map_err(|_| anyhow::anyhow!("nats sink worker closed"))
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(NatsSinkMsg::Flush(tx))
+            .map_err(|_| anyhow::anyhow!("nats sink worker closed"))?;
+        let rt = self.rt.clone();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                rt.block_on(rx).ok();
+            })
+            .join()
+            .map_err(|_| anyhow::anyhow!("nats sink flush thread panicked"))
+        })
+    }
+}
+
+/// Parse a `nats://host:port/subject` URL into `(server_url, subject)`.
+///
+/// If no path component is found after the host, subject defaults to `"helr.events"`.
+#[cfg_attr(not(feature = "nats"), allow(dead_code))]
+pub fn parse_nats_url(url: &str) -> (String, String) {
+    let without_scheme = url.strip_prefix("nats://").unwrap_or(url);
+    match without_scheme.find('/') {
+        Some(pos) => {
+            let server = format!("nats://{}", &without_scheme[..pos]);
+            let subject = without_scheme[pos + 1..].to_string();
+            if subject.is_empty() {
+                (server, "helr.events".to_string())
+            } else {
+                (server, subject)
+            }
+        }
+        None => (
+            format!("nats://{without_scheme}"),
+            "helr.events".to_string(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,5 +1199,101 @@ mod tests {
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&rotated_path);
+    }
+
+    #[test]
+    fn parse_nats_url_with_subject() {
+        let (server, subject) = super::parse_nats_url("nats://localhost:4222/helr.events");
+        assert_eq!(server, "nats://localhost:4222");
+        assert_eq!(subject, "helr.events");
+    }
+
+    #[test]
+    fn parse_nats_url_nested_subject() {
+        let (server, subject) = super::parse_nats_url("nats://nats.internal:4222/logs.helr.prod");
+        assert_eq!(server, "nats://nats.internal:4222");
+        assert_eq!(subject, "logs.helr.prod");
+    }
+
+    #[test]
+    fn parse_nats_url_no_subject() {
+        let (server, subject) = super::parse_nats_url("nats://localhost:4222");
+        assert_eq!(server, "nats://localhost:4222");
+        assert_eq!(subject, "helr.events");
+    }
+
+    #[test]
+    fn parse_nats_url_trailing_slash() {
+        let (server, subject) = super::parse_nats_url("nats://localhost:4222/");
+        assert_eq!(server, "nats://localhost:4222");
+        assert_eq!(subject, "helr.events");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_sink_posts_ndjson_batch() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/ingest"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cfg = crate::config::HttpOutputConfig::default();
+        let url = format!("{}/ingest", mock_server.uri());
+        let sink = HttpSink::new(url, &cfg).unwrap();
+
+        sink.write_line(r#"{"msg":"hello"}"#).unwrap();
+        sink.write_line(r#"{"msg":"world"}"#).unwrap();
+        sink.flush().unwrap();
+
+        // MockServer will verify exactly 1 POST was received on drop.
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_sink_retries_on_server_error() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+
+        struct RetryResponder {
+            count: Arc<AtomicU32>,
+        }
+        impl Respond for RetryResponder {
+            fn respond(&self, _req: &Request) -> ResponseTemplate {
+                let n = self.count.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200)
+                }
+            }
+        }
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/ingest"))
+            .respond_with(RetryResponder { count: cc })
+            .mount(&mock_server)
+            .await;
+
+        let cfg = crate::config::HttpOutputConfig {
+            max_retries: 5,
+            ..Default::default()
+        };
+        let url = format!("{}/ingest", mock_server.uri());
+        let sink = HttpSink::new(url, &cfg).unwrap();
+
+        sink.write_line(r#"{"retry":"test"}"#).unwrap();
+        sink.flush().unwrap();
+
+        // First 2 calls return 503, third succeeds => 3 total calls.
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +61,10 @@ pub struct GlobalConfig {
     /// Optional audit: log credential access, config reloads; redact secrets in logs.
     #[serde(default)]
     pub audit: Option<AuditConfig>,
+
+    /// Output sink tuning (HTTP batch size, NATS subject override, etc.).
+    #[serde(default)]
+    pub output: Option<OutputConfig>,
 }
 
 /// Audit config: log credential access and config changes. Credential-access events never include secret values.
@@ -352,4 +357,76 @@ fn default_metrics_address() -> String {
 }
 fn default_metrics_port() -> u16 {
     9090
+}
+
+/// Output sink configuration (optional; CLI `--output` sets the destination,
+/// this section provides tuning for HTTP and NATS sinks).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputConfig {
+    #[serde(default)]
+    pub http: Option<HttpOutputConfig>,
+
+    #[serde(default)]
+    pub nats: Option<NatsOutputConfig>,
+}
+
+/// Tuning for the HTTP POST output sink.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpOutputConfig {
+    /// Max lines to collect before flushing a batch POST (default 100).
+    #[serde(default = "default_http_batch_size")]
+    pub batch_size: usize,
+
+    /// Max milliseconds to wait for a full batch before flushing early (default 500).
+    #[serde(default = "default_http_batch_timeout_ms")]
+    pub batch_timeout_ms: u64,
+
+    /// Extra HTTP headers (e.g. Authorization). Content-Type defaults to
+    /// `application/x-ndjson` and is added automatically unless overridden here.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Request timeout in seconds (default 30).
+    #[serde(default = "default_http_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Max retries on transient failure (5xx, timeout) with exponential backoff (default 3).
+    #[serde(default = "default_http_max_retries")]
+    pub max_retries: u32,
+}
+
+impl Default for HttpOutputConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: default_http_batch_size(),
+            batch_timeout_ms: default_http_batch_timeout_ms(),
+            headers: HashMap::new(),
+            timeout_secs: default_http_timeout_secs(),
+            max_retries: default_http_max_retries(),
+        }
+    }
+}
+
+fn default_http_batch_size() -> usize {
+    100
+}
+fn default_http_batch_timeout_ms() -> u64 {
+    500
+}
+fn default_http_timeout_secs() -> u64 {
+    30
+}
+fn default_http_max_retries() -> u32 {
+    3
+}
+
+/// Tuning for the NATS output sink.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NatsOutputConfig {
+    /// Override the NATS subject parsed from the `--output nats://` URL.
+    #[serde(default)]
+    pub subject: Option<String>,
 }

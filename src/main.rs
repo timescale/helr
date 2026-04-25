@@ -35,7 +35,11 @@ use circuit::new_circuit_store;
 use config::{Config, DumpOnSigusr1Config};
 use dpop::new_dpop_key_cache;
 use oauth2::new_oauth2_token_cache;
-use output::{BackpressureSink, EventSink, FileSink, RotationPolicy, StdoutSink, parse_rotation};
+use output::{
+    BackpressureSink, EventSink, FileSink, HttpSink, RotationPolicy, StdoutSink, parse_rotation,
+};
+#[cfg(feature = "nats")]
+use output::{NatsSink, parse_nats_url};
 use state::{MemoryStateStore, PostgresStateStore, RedisStateStore, SqliteStateStore, StateStore};
 use std::collections::HashMap;
 use std::io::Write;
@@ -208,13 +212,57 @@ async fn main() -> anyhow::Result<()> {
                     let (event_sink, output_path): (Arc<dyn EventSink>, Option<PathBuf>) =
                         match output {
                             Some(path) => {
-                                let rotation = output_rotate
-                                    .as_deref()
-                                    .map(parse_rotation)
-                                    .transpose()?
-                                    .unwrap_or(RotationPolicy::None);
-                                let path_clone = path.clone();
-                                (Arc::new(FileSink::new(path, rotation)?), Some(path_clone))
+                                let path_str = path.to_string_lossy();
+                                if path_str.starts_with("http://")
+                                    || path_str.starts_with("https://")
+                                {
+                                    let http_cfg = config
+                                        .global
+                                        .output
+                                        .as_ref()
+                                        .and_then(|o| o.http.as_ref())
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    let url = path_str.into_owned();
+                                    tracing::info!(%url, "output: HTTP sink");
+                                    let sink = HttpSink::new(url, &http_cfg)?;
+                                    (Arc::new(sink), None)
+                                } else if path_str.starts_with("nats://") {
+                                    #[cfg(not(feature = "nats"))]
+                                    {
+                                        anyhow::bail!(
+                                            "NATS output requires the 'nats' feature: \
+                                             rebuild with --features nats"
+                                        );
+                                    }
+                                    #[cfg(feature = "nats")]
+                                    {
+                                        let (server, mut subject) = parse_nats_url(&path_str);
+                                        if let Some(s) = config
+                                            .global
+                                            .output
+                                            .as_ref()
+                                            .and_then(|o| o.nats.as_ref())
+                                            .and_then(|n| n.subject.as_deref())
+                                        {
+                                            subject = s.to_string();
+                                        }
+                                        tracing::info!(
+                                            %server, %subject,
+                                            "output: NATS sink",
+                                        );
+                                        let sink = NatsSink::connect(&server, &subject).await?;
+                                        (Arc::new(sink), None)
+                                    }
+                                } else {
+                                    let rotation = output_rotate
+                                        .as_deref()
+                                        .map(parse_rotation)
+                                        .transpose()?
+                                        .unwrap_or(RotationPolicy::None);
+                                    let path_clone = path.clone();
+                                    (Arc::new(FileSink::new(path, rotation)?), Some(path_clone))
+                                }
                             }
                             None => (Arc::new(StdoutSink), None),
                         };

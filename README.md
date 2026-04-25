@@ -1,6 +1,6 @@
 # Helr
 
-Helr is a generic HTTP API log collector. It polls audit-log and event APIs, such as Okta, Google Workspace, GitHub, Slack, 1Password, Tailscale, and others, handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout or to a file for downstream collectors (like Grafana Alloy, Vector, Fluent Bit, Loki).
+Helr is a generic HTTP API log collector. It polls audit-log and event APIs, such as Okta, Google Workspace, GitHub, Slack, 1Password, Tailscale, and others, handles pagination and rate limits, keeps durable state, and emits **NDJSON** to stdout, a file, an HTTP endpoint, or a NATS subject for downstream collectors (like Grafana Alloy, Vector, Fluent Bit, Loki).
 
 Most sources work **declaratively**: define a URL, auth, pagination strategy, and schedule in YAML and Helr does the rest. For APIs that need custom logic (GraphQL, non-standard auth flows, bespoke pagination), **optional JS hooks** let you script any stage of the request lifecycle, like auth, request building, response parsing, pagination, and state, without forking the binary. Build with `--features hooks`; see [docs/hooks.md](./docs/hooks.md).
 
@@ -14,7 +14,7 @@ Single binary, no runtime dependencies beyond the config, secrets and optional s
 - **Resilience:** Split timeouts (connect, request, read, idle, poll_tick), retries with backoff, circuit breaker, **rate limit** — header mapping (X-RateLimit-Limit/Remaining/Reset or custom names), client-side RPS/burst cap, optional adaptive rate limiting (throttle when remaining is low)
 - **TLS:** Custom CA (file or env, merge or replace system roots), client certificate and key (mutual TLS), minimum TLS version (1.2 or 1.3)
 - **State:** SQLite, Redis, or Postgres (or in-memory) for cursor/next_url; single-writer per SQLite file; Redis/Postgres for multi-instance
-- **Output:** NDJSON to stdout or file; optional rotation (daily or by size)
+- **Output:** NDJSON to stdout, file (with optional rotation), HTTP POST (batched, with retry), or NATS publish (requires `--features nats`)
 - **Backpressure:** When the downstream consumer (stdout/file) can't keep up: configurable detection (queue depth, RSS memory threshold) and strategies — **block** (pause poll until drain), **disk_buffer** (spill to disk when queue full, drain when consumer catches up), or **drop** (oldest_first / newest_first / random) with metrics; optional **max_queue_age_secs** to drop events that sit in the queue too long
 - **Graceful degradation:** When the state store fails or is unavailable: optional **state_store_fallback** to memory (state not durable), **emit_without_checkpoint** to continue emitting events when state writes fail, and **reduced_frequency_multiplier** to poll less often when degraded; health JSON reports **state_store_fallback_active**
 - **Session replay:** Record API responses to disk, replay without hitting the live API
@@ -32,6 +32,8 @@ You need Rust (e.g. [rustup](https://rustup.rs/)).
 cargo install helr
 # or from source
 cargo install --path .
+# with NATS output support
+cargo install --path . --features nats
 ```
 
 Binary will be `helr` in `~/.cargo/bin` (or your configured target dir).
@@ -41,6 +43,8 @@ Binary will be `helr` in `~/.cargo/bin` (or your configured target dir).
 ```bash
 git clone https://github.com/timescale/helr.git && cd helr
 cargo build --release
+# with NATS output and JS hooks
+cargo build --release --features nats,hooks
 ./target/release/helr --help
 ```
 
@@ -60,6 +64,12 @@ helr run
 helr run --output /var/log/helr/events.ndjson
 helr run --output /var/log/helr/events.ndjson --output-rotate daily
 helr run --output /var/log/helr/events.ndjson --output-rotate size:100
+
+# POST NDJSON to an HTTP endpoint (batched, with retry)
+helr run --output http://localhost:3100/loki/api/v1/push
+
+# Publish to a NATS subject (requires --features nats)
+helr run --output nats://localhost:4222/helr.events
 
 # Test one source
 helr test --source okta-audit
@@ -96,6 +106,8 @@ Configuration is merged in this order (later overrides earlier):
 
 **Output:** Each NDJSON line is one JSON object: `ts`, `source`, `endpoint`, `event` (raw payload), and `meta` (optional `cursor`, `request_id`). The producer label key defaults to `source`; value is the source id or `source_label_value`. With `log_format: json`, Helr's own logs (stderr) use the same label key and value `helr`.
 
+The `--output` flag selects the sink by URL scheme: a plain path means file, `http://` or `https://` means HTTP POST, and `nats://` means NATS publish. When omitted, output goes to stdout. The `global.output` config section provides optional tuning for HTTP (batch size, headers, retries) and NATS (subject override). NATS output requires `--features nats`.
+
 **Broken pipe (SIGPIPE):** When stdout is a pipe and the consumer (e.g. Alloy, `helr run | alloy ...`) exits, writes return EPIPE. Helr treats this as **fatal**: the error is logged, `helr_output_errors_total` is incremented, and the process exits with a non-zero code so an orchestrator can restart. Keep the downstream process running, or use file output (`--output /path`) and have the collector tail the file instead.
 
 <details>
@@ -121,6 +133,12 @@ Configuration is merged in this order (later overrides earlier):
 | `bulkhead.max_concurrent_sources` | Max number of sources that may poll concurrently (semaphore) | number | — (no limit) |
 | `bulkhead.max_concurrent_requests` | Max concurrent HTTP requests per source (semaphore); overridable per source in `resilience.bulkhead` | number | — (no limit) |
 | `load_shedding.skip_priority_below` | When set and backpressure is active, sources with priority below this (0–10) are not polled. Requires backpressure and per-source `priority`. | number | — (none) |
+| `output.http.batch_size` | Max NDJSON lines per HTTP POST batch | number | `100` |
+| `output.http.batch_timeout_ms` | Max milliseconds to wait for a full batch before flushing early | number | `500` |
+| `output.http.headers` | Extra HTTP headers (e.g. `Authorization: "Bearer ..."`) | map | — |
+| `output.http.timeout_secs` | HTTP request timeout (seconds) | number | `30` |
+| `output.http.max_retries` | Max retries on transient failure (5xx, timeout) with exponential backoff | number | `3` |
+| `output.nats.subject` | Override the NATS subject parsed from the `--output nats://` URL | string | — |
 
 When `api.enabled` is true, GET `/healthz` returns full JSON (version, uptime, per-source status, circuit state, last_error). GET `/readyz` and `/startupz` return version, uptime, and their flags only (no per-source detail). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.
 
