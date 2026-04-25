@@ -28,6 +28,22 @@ global:
     timeout_secs: 5
     allow_network: true
 
+  # Optional output sink tuning. The sink type is selected via --output:
+  #   (absent)                     -> stdout
+  #   --output /path/to/file       -> file (with optional --output-rotate)
+  #   --output http://host/path    -> HTTP POST (batched NDJSON)
+  #   --output nats://host:4222/subj -> NATS publish (requires --features nats)
+  # output:
+  #   http:
+  #     batch_size: 100
+  #     batch_timeout_ms: 500
+  #     headers:
+  #       Authorization: "Bearer ${HTTP_SINK_TOKEN}"
+  #     timeout_secs: 30
+  #     max_retries: 3
+  #   nats:
+  #     subject: "helr.events"   # override subject from --output URL
+
 sources:
   # --- GWS (Admin SDK): docs/integrations/gws-gcp.md. One source per app; duplicate and change URL path for drive, admin, etc.
   # gws-login:
