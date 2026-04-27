@@ -6,6 +6,10 @@ Most sources work **declaratively**: define a URL, auth, pagination strategy, an
 
 Single binary, no runtime dependencies beyond the config, secrets and optional scripts.
 
+> [!TIP]
+> To learn more about Helr, read this article:
+> [Declarative Audit Log Collection from HTTP APIs](https://mostafa.dev/declarative-audit-log-collection-from-http-apis-b0092185a63c).
+
 ## Supported features
 
 - **Sources:** Okta System Log, Google Workspace (GWS) Admin SDK Reports API, GitHub organization audit log, Slack Enterprise audit logs, 1Password Events API (audit), Tailscale configuration audit and network flow logs, GWS via Cloud Logging (LogEntry format), and any HTTP API that returns a JSON array (items/events/entries/logs) with Link-header or cursor pagination
