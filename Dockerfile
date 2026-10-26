@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: build
 # -----------------------------------------------------------------------------
-FROM rust:1-bookworm@sha256:adab7941580c74513aa3347f2d2a1f975498280743d29ec62978ba12e3540d3a AS builder
+FROM rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS builder
 
 WORKDIR /build
 
@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime (distroless: no shell, no package manager, minimal libs)
 # -----------------------------------------------------------------------------
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:e2d29aec8061843706b7e484c444f78fafb05bfe47745505252b1769a05d14f1
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
 
 # Non-root user is set by the image (nonroot:65532).
 # Mount config and state at runtime; do not bake secrets into the image.
