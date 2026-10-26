@@ -97,17 +97,7 @@ pub(crate) fn emit_event_line(
             .unwrap_or(MaxEventBytesBehavior::Fail)
         {
             MaxEventBytesBehavior::Truncate => {
-                let max_usize = max as usize;
-                let truncated: String = if max_usize >= 3 {
-                    format!(
-                        "{}...",
-                        line.chars()
-                            .take(max_usize.saturating_sub(3))
-                            .collect::<String>()
-                    )
-                } else {
-                    line.chars().take(max_usize).collect()
-                };
+                let truncated = truncate_event_line(emitted, label_key, max as usize)?;
                 event_sink
                     .write_line_from_source(Some(source_id), &truncated)
                     .inspect_err(|_e| {
@@ -138,6 +128,37 @@ pub(crate) fn emit_event_line(
         .inspect_err(|_e| {
             metrics::record_output_error(source_id);
         })
+}
+
+/// Replace `event` with a prefix of its JSON text so the line stays valid NDJSON within `max` bytes.
+fn truncate_event_line(
+    emitted: &EmittedEvent,
+    label_key: &str,
+    max: usize,
+) -> anyhow::Result<String> {
+    let text = emitted.event.to_string();
+    let mut stub = emitted.clone();
+    stub.meta.truncated = Some(true);
+    // Escaping makes output length non-linear in the prefix, so binary search the longest fit.
+    let (mut lo, mut hi) = (0usize, text.len().min(max));
+    let mut best = None;
+    while lo <= hi {
+        let mut mid = lo + (hi - lo) / 2;
+        while !text.is_char_boundary(mid) {
+            mid -= 1;
+        }
+        stub.event = serde_json::Value::String(text[..mid].to_string());
+        let line = stub.to_ndjson_line_with_label_key(label_key)?;
+        if line.len() <= max {
+            best = Some(line);
+            lo = lo + (hi - lo) / 2 + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best.ok_or_else(|| anyhow::anyhow!("max_line_bytes {} is smaller than the event envelope", max))
 }
 
 /// Wait until emitted events are accepted by the output, so a checkpoint never advances past undelivered events.

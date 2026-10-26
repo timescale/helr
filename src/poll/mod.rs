@@ -391,6 +391,47 @@ mod tests {
     use crate::config::{GlobalConfig, SourceConfig};
 
     #[test]
+    fn truncated_line_is_valid_json_within_max_bytes() {
+        use crate::config::MaxEventBytesBehavior;
+        use crate::output::EventSink;
+        use std::sync::{Arc, Mutex};
+
+        struct Capture(Mutex<Vec<String>>);
+        impl EventSink for Capture {
+            fn write_line(&self, line: &str) -> anyhow::Result<()> {
+                self.0.lock().unwrap().push(line.to_string());
+                Ok(())
+            }
+        }
+        let source: SourceConfig = serde_yaml_ng::from_str(
+            "url: https://example.com\nmax_line_bytes: 200\nmax_line_bytes_behavior: truncate\n",
+        )
+        .unwrap();
+        assert_eq!(
+            source.max_line_bytes_behavior,
+            Some(MaxEventBytesBehavior::Truncate)
+        );
+        let global: GlobalConfig = serde_yaml_ng::from_str("{}").unwrap();
+        let capture = Arc::new(Capture(Mutex::new(Vec::new())));
+        let sink: Arc<dyn EventSink> = capture.clone();
+        let event = crate::event::EmittedEvent::new(
+            "2024-01-01T00:00:00Z".into(),
+            "s".into(),
+            "/".into(),
+            serde_json::json!({ "msg": "é\"".repeat(200) }),
+        );
+        emit_event_line(&global, "s", &source, &sink, &event).unwrap();
+        let line = capture.0.lock().unwrap()[0].clone();
+        assert!((196..=200).contains(&line.len()), "{} bytes", line.len());
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["meta"]["truncated"], true);
+        assert!(
+            v["event"].as_str().unwrap().starts_with("{\"msg\":\"é"),
+            "{line}"
+        );
+    }
+
+    #[test]
     fn rate_limit_quota_honors_fractional_rps() {
         let q = super::rate_limit_quota(0.5, None).unwrap();
         assert_eq!(q.replenish_interval(), std::time::Duration::from_secs(2));

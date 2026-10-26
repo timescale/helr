@@ -218,7 +218,7 @@ Metrics: `helr_events_dropped_total{source, reason="backpressure"|"max_queue_age
 | `max_response_bytes` | Fail if a single response body exceeds this (bytes) | number | — |
 | `on_invalid_utf8` | When response body is not valid UTF-8 | `replace`, `escape`, `fail` | — |
 | `max_line_bytes` | Max size of one emitted NDJSON line (bytes) | number | — |
-| `max_line_bytes_behavior` | When a line exceeds `max_line_bytes` | `truncate`, `skip`, `fail` | — |
+| `max_line_bytes_behavior` | When a line exceeds `max_line_bytes`. `truncate` keeps the line valid JSON: `event` becomes a string holding the start of the event's JSON, and `meta.truncated` is `true`. | `truncate`, `skip`, `fail` | — |
 | `checkpoint` | When to write state | `end_of_tick`, `per_page` | — |
 | `on_state_write_error` | When state store write fails (e.g. disk full) | `fail`, `skip_checkpoint` | `fail` |
 | `incremental_from` | Store latest event timestamp in state and send as query param on first request (e.g. Slack `oldest`); see below | object | — |

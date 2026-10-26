@@ -25,6 +25,9 @@ pub struct EventMeta {
     pub request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Set when `event` was replaced by a truncated JSON string to fit `max_line_bytes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 impl EmittedEvent {
@@ -38,6 +41,7 @@ impl EmittedEvent {
                 cursor: None,
                 request_id: None,
                 id: None,
+                truncated: None,
             },
         }
     }
