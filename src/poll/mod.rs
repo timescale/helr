@@ -45,6 +45,16 @@ static HOOK_AUTH_CACHE: std::sync::LazyLock<crate::hooks::HookAuthCache> =
 
 /// Run one poll tick for all sources (or only those matching source_filter).
 /// Sources are polled concurrently (one task per source).
+/// One request every 1/rps seconds, so fractional rates like 0.5 are honored instead of rounded up.
+fn rate_limit_quota(rps: f64, burst_size: Option<u32>) -> Option<Quota> {
+    if !(rps > 0.0 && rps.is_finite()) {
+        return None;
+    }
+    let period = Duration::try_from_secs_f64(1.0 / rps).ok()?;
+    let burst = burst_size.unwrap_or((rps.ceil() as u32).max(1)).max(1);
+    Some(Quota::with_period(period)?.allow_burst(NonZeroU32::new(burst)?))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_one_tick(
     config: &Config,
@@ -114,14 +124,7 @@ pub async fn run_one_tick(
             .as_ref()
             .and_then(|r| r.rate_limit.as_ref())
             .and_then(|r| {
-                let rps = r
-                    .max_requests_per_second
-                    .filter(|&x| x > 0.0 && x.is_finite())?;
-                let rps_u = (rps.ceil() as u32).max(1);
-                let rps_nz = NonZeroU32::new(rps_u)?;
-                let burst = r.burst_size.unwrap_or(rps_u).max(1);
-                let burst_nz = NonZeroU32::new(burst).unwrap_or(NonZeroU32::MIN);
-                let quota = Quota::per_second(rps_nz).allow_burst(burst_nz);
+                let quota = rate_limit_quota(r.max_requests_per_second?, r.burst_size)?;
                 Some(Arc::new(RateLimiter::direct(quota)))
             });
         let poll_tick_secs = source
@@ -386,6 +389,21 @@ mod tests {
     use super::helpers::*;
     use super::parse::*;
     use crate::config::{GlobalConfig, SourceConfig};
+
+    #[test]
+    fn rate_limit_quota_honors_fractional_rps() {
+        let q = super::rate_limit_quota(0.5, None).unwrap();
+        assert_eq!(q.replenish_interval(), std::time::Duration::from_secs(2));
+        assert_eq!(q.burst_size().get(), 1);
+        let q = super::rate_limit_quota(10.0, Some(3)).unwrap();
+        assert_eq!(
+            q.replenish_interval(),
+            std::time::Duration::from_millis(100)
+        );
+        assert_eq!(q.burst_size().get(), 3);
+        assert!(super::rate_limit_quota(0.0, None).is_none());
+        assert!(super::rate_limit_quota(f64::NAN, None).is_none());
+    }
 
     #[test]
     fn test_parse_events_from_value_top_level_array() {

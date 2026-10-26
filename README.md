@@ -287,7 +287,7 @@ For `page_offset` and `offset`, the stored watermark (`state.watermark_param`), 
 | `circuit_breaker.half_open_timeout_secs` | Seconds before half-open probe | number | `60` |
 | `circuit_breaker.reset_timeout_secs` | Max time in open state (open duration = min(half_open_timeout_secs, reset_timeout_secs)) | number | — |
 | `circuit_breaker.failure_rate_threshold` | Optional: open when failure rate ≥ this (0.0–1.0); requires `minimum_requests` | number | — |
-| `circuit_breaker.minimum_requests` | Minimum requests before evaluating `failure_rate_threshold` | number | — |
+| `circuit_breaker.minimum_requests` | Window size for `failure_rate_threshold`: the rate is evaluated over each consecutive window of this many requests | number | — |
 | `rate_limit.respect_headers` | Use Retry-After or reset header on 429 (see `headers.reset_header`) | boolean | `true` |
 | `rate_limit.page_delay_secs` | Delay between pagination requests (seconds) | number | — |
 | `rate_limit.headers` | Header names for limit/remaining/reset (when API uses different names) | object | — |

@@ -33,22 +33,30 @@ pub fn is_retryable_status_with_codes(
 }
 
 /// Compute backoff duration for the given attempt (0 = first retry). Applies jitter when retry.jitter is set.
+/// The result never exceeds max_backoff_secs, and odd configs (negative or NaN multiplier) cannot panic.
 fn backoff_duration(retry: &RetryConfig, attempt: u32) -> Duration {
-    let secs = (retry.initial_backoff_secs as f64) * retry.multiplier.powi(attempt as i32);
-    let capped = retry
+    let max_secs = retry
         .max_backoff_secs
-        .map(|max| secs.min(max as f64))
-        .unwrap_or(secs);
-    let base_secs = capped.min(u64::MAX as f64);
-    let delay_secs = if let Some(j) = retry.jitter {
-        let j = j.clamp(0.0, 1.0);
-        let mut rng = rand::rng();
-        let factor = 1.0 + rng.random_range(-j..=j);
-        (base_secs * factor).max(0.0)
-    } else {
-        base_secs
+        .map(|m| m as f64)
+        .unwrap_or(u64::MAX as f64);
+    let clamp = |s: f64| {
+        if s.is_nan() {
+            max_secs
+        } else {
+            s.clamp(0.0, max_secs)
+        }
     };
-    Duration::from_secs_f64(delay_secs)
+    let base_secs =
+        clamp((retry.initial_backoff_secs as f64) * retry.multiplier.powi(attempt as i32));
+    let delay_secs = match retry.jitter {
+        Some(j) if j.is_finite() && j > 0.0 => {
+            let j = j.min(1.0);
+            let factor = 1.0 + rand::rng().random_range(-j..=j);
+            clamp(base_secs * factor)
+        }
+        _ => base_secs,
+    };
+    Duration::try_from_secs_f64(delay_secs).unwrap_or(Duration::MAX)
 }
 
 /// Parse Retry-After (delta-seconds or HTTP-date) and optionally reset header (e.g. X-RateLimit-Reset).
@@ -479,6 +487,28 @@ mod tests {
         assert_eq!(backoff_duration(&retry, 1), Duration::from_secs(2));
         assert_eq!(backoff_duration(&retry, 2), Duration::from_secs(4));
         assert_eq!(backoff_duration(&retry, 10), Duration::from_secs(30)); // capped
+    }
+
+    #[test]
+    fn test_backoff_duration_odd_configs_do_not_panic() {
+        let base = RetryConfig {
+            max_attempts: 3,
+            initial_backoff_secs: 10,
+            max_backoff_secs: Some(10),
+            multiplier: -2.0,
+            jitter: Some(1.0),
+            retryable_status_codes: None,
+        };
+        for attempt in 0..4 {
+            assert!(backoff_duration(&base, attempt) <= Duration::from_secs(10));
+        }
+        let nan = RetryConfig {
+            multiplier: f64::NAN,
+            max_backoff_secs: None,
+            jitter: None,
+            ..base
+        };
+        let _ = backoff_duration(&nan, 2);
     }
 
     #[test]
