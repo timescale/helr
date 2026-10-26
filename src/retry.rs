@@ -197,12 +197,7 @@ async fn dpop_proof_for_request(
         .duration_since(UNIX_EPOCH)
         .context("system time")?
         .as_secs();
-    let jti = format!(
-        "{}-{}-{}",
-        source_id,
-        iat,
-        std::time::Instant::now().elapsed().as_nanos()
-    );
+    let jti = crate::dpop::new_jti();
     let proof = build_dpop_proof(method, url, &key, &jti, iat, nonce, access_token)?;
     Ok(Some(proof))
 }
