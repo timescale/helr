@@ -14,7 +14,7 @@ mod streaming;
 use crate::circuit::CircuitStore;
 use crate::client::build_client;
 use crate::config::{Config, GlobalConfig, PaginationConfig, SourceConfig};
-use crate::dedupe::DedupeStore;
+use crate::dedupe::{self, DedupeStore};
 use crate::dpop::DPoPKeyCache;
 use crate::metrics;
 use crate::oauth2::OAuth2TokenCache;
@@ -132,6 +132,7 @@ pub async fn run_one_tick(
             .as_ref()
             .and_then(|r| r.timeouts.as_ref())
             .and_then(|t| t.poll_tick_secs);
+        let dedupe_for_finish = dedupe_store.clone();
         let h = tokio::spawn(async move {
             let _source_permit = match &global_sources_semaphore_clone {
                 Some(s) => Some(
@@ -155,14 +156,16 @@ pub async fn run_one_tick(
                 rate_limiter,
                 request_semaphore,
             );
-            match poll_tick_secs {
+            let result = match poll_tick_secs {
                 Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), poll_fut).await
                 {
                     Ok(inner) => inner,
                     Err(_) => Err(anyhow::anyhow!("poll tick timed out after {}s", secs)),
                 },
                 None => poll_fut.await,
-            }
+            };
+            dedupe::finish_poll(&dedupe_for_finish, &source_id_key, result.is_ok()).await;
+            result
         });
         handles.push((source_id, h));
     }
