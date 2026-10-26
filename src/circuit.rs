@@ -11,10 +11,12 @@ use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub enum CircuitState {
-    /// Closed: normal operation. failures/requests used for count and rate thresholds.
+    /// Closed: normal operation. `failures` is consecutive (count threshold); `requests` and
+    /// `window_failures` cover the current window of `minimum_requests` (rate threshold).
     Closed {
         failures: u32,
         requests: u32,
+        window_failures: u32,
     },
     Open {
         open_until: Instant,
@@ -63,6 +65,7 @@ pub async fn allow_request(
             Some(CircuitState::Closed {
                 failures: 0,
                 requests: 0,
+                window_failures: 0,
             }),
         ),
         Some(CircuitState::Closed { .. }) => (true, None),
@@ -102,6 +105,7 @@ pub async fn record_result(
     let state = g.get(source_id).cloned().unwrap_or(CircuitState::Closed {
         failures: 0,
         requests: 0,
+        window_failures: 0,
     });
     let now = Instant::now();
     let open_duration_secs = config
@@ -109,16 +113,23 @@ pub async fn record_result(
         .map(|r| std::cmp::min(config.half_open_timeout_secs, r))
         .unwrap_or(config.half_open_timeout_secs);
     let new_state = match state {
-        CircuitState::Closed { failures, requests } => {
+        CircuitState::Closed {
+            failures,
+            requests,
+            window_failures,
+        } => {
             let requests = requests + 1;
             let failures = if success { 0 } else { failures + 1 };
-            let open_on_count = failures >= config.failure_threshold;
-            let open_on_rate = config.minimum_requests.is_some()
-                && config.failure_rate_threshold.is_some()
-                && requests >= config.minimum_requests.unwrap_or(0)
-                && (failures as f64 / requests as f64)
-                    >= config.failure_rate_threshold.unwrap_or(0.0);
-            if !success && (open_on_count || open_on_rate) {
+            let window_failures = window_failures + u32::from(!success);
+            let open_on_count = !success && failures >= config.failure_threshold;
+            let window_full = config
+                .minimum_requests
+                .is_some_and(|min| requests >= min.max(1));
+            let open_on_rate = window_full
+                && config
+                    .failure_rate_threshold
+                    .is_some_and(|t| (window_failures as f64 / requests as f64) >= t);
+            if open_on_count || open_on_rate {
                 let open_until = now + std::time::Duration::from_secs(open_duration_secs);
                 warn!(
                     source = %source_id,
@@ -128,8 +139,18 @@ pub async fn record_result(
                     "circuit opened"
                 );
                 CircuitState::Open { open_until }
+            } else if window_full {
+                CircuitState::Closed {
+                    failures,
+                    requests: 0,
+                    window_failures: 0,
+                }
             } else {
-                CircuitState::Closed { failures, requests }
+                CircuitState::Closed {
+                    failures,
+                    requests,
+                    window_failures,
+                }
             }
         }
         CircuitState::Open { open_until } => CircuitState::Open { open_until },
@@ -141,6 +162,7 @@ pub async fn record_result(
                     CircuitState::Closed {
                         failures: 0,
                         requests: 0,
+                        window_failures: 0,
                     }
                 } else {
                     CircuitState::HalfOpen { successes: s }
@@ -259,6 +281,30 @@ mod tests {
         for i in 0..10 {
             allow_request(&store, "s1", &config).await.unwrap();
             record_result(&store, "s1", &config, i < 5).await;
+        }
+        let err = allow_request(&store, "s1", &config).await.unwrap_err();
+        assert!(err.open_until > Instant::now());
+    }
+
+    #[tokio::test]
+    async fn test_circuit_opens_on_interleaved_failure_rate_after_long_run() {
+        let store = new_circuit_store();
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 100,
+            success_threshold: 1,
+            half_open_timeout_secs: 60,
+            reset_timeout_secs: None,
+            failure_rate_threshold: Some(0.5),
+            minimum_requests: Some(10),
+        };
+        for _ in 0..1000 {
+            allow_request(&store, "s1", &config).await.unwrap();
+            record_result(&store, "s1", &config, true).await;
+        }
+        for i in 0..10 {
+            allow_request(&store, "s1", &config).await.unwrap();
+            record_result(&store, "s1", &config, i % 2 == 0).await;
         }
         let err = allow_request(&store, "s1", &config).await.unwrap_err();
         assert!(err.open_until > Instant::now());

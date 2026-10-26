@@ -155,7 +155,10 @@ pub async fn get_source_config_handler(
         }
     };
     match serde_json::to_value(source) {
-        Ok(v) => (StatusCode::OK, Json(v)),
+        Ok(mut v) => {
+            redact_secrets(&mut v);
+            (StatusCode::OK, Json(v))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -167,12 +170,67 @@ pub async fn get_source_config_handler(
 pub async fn get_global_config_handler(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
     let config = state.config.read().await;
     match serde_json::to_value(&config.global) {
-        Ok(v) => (StatusCode::OK, Json(v)),
+        Ok(mut v) => {
+            redact_secrets(&mut v);
+            (StatusCode::OK, Json(v))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
         ),
     }
+}
+
+const REDACTED: &str = "[redacted]";
+
+/// Config is served after `${VAR}` expansion, so values that commonly carry secrets are masked:
+/// header, query param, and body values, plus URL passwords and query values.
+fn redact_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                match key.as_str() {
+                    "headers" | "query_params" => {
+                        if let Some(inner) = v.as_object_mut() {
+                            for inner_v in inner.values_mut() {
+                                *inner_v = serde_json::Value::from(REDACTED);
+                            }
+                        }
+                    }
+                    "body" if !v.is_null() => *v = serde_json::Value::from(REDACTED),
+                    _ => redact_secrets(v),
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => arr.iter_mut().for_each(redact_secrets),
+        serde_json::Value::String(s) => {
+            if let Some(redacted) = redact_url(s) {
+                *s = redacted;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_url(s: &str) -> Option<String> {
+    if !s.contains("://") {
+        return None;
+    }
+    let mut url = reqwest::Url::parse(s).ok()?;
+    if url.password().is_none() && url.query().is_none() {
+        return None;
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(Some(REDACTED));
+    }
+    if url.query().is_some() {
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, _)| (k.into_owned(), REDACTED.to_string()))
+            .collect();
+        url.query_pairs_mut().clear().extend_pairs(pairs);
+    }
+    Some(url.to_string())
 }
 
 /// POST /api/v1/sources/:id/poll — run one poll tick for the given source.
@@ -421,6 +479,33 @@ sources:
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["url"], "https://example.com/a");
+    }
+
+    #[test]
+    fn redact_secrets_masks_expanded_values() {
+        let mut v = serde_json::json!({
+            "url": "https://example.com/logs?token=abc&limit=10",
+            "headers": { "Authorization": "Bearer abc" },
+            "query_params": { "api_key": "abc" },
+            "body": { "secret": "abc" },
+            "state": { "backend": "postgres", "url": "postgres://helr:pw@db:5432/helr" },
+            "output": { "http": { "headers": { "X-Api-Key": "abc" }, "batch_size": 100 } },
+            "log_level": "info"
+        });
+        redact_secrets(&mut v);
+        let s = v.to_string();
+        assert!(!s.contains("abc"), "{s}");
+        assert!(!s.contains(":pw@"), "{s}");
+        assert_eq!(v["headers"]["Authorization"], REDACTED);
+        assert_eq!(v["output"]["http"]["batch_size"], 100);
+        assert_eq!(v["log_level"], "info");
+        assert!(v["url"].as_str().unwrap().contains("limit="));
+        assert!(
+            v["state"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("postgres://helr:")
+        );
     }
 
     #[tokio::test]

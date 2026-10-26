@@ -1243,6 +1243,149 @@ sources:
 "#);
 }
 
+/// Hook pagination: getNextPage body wins over buildRequest on later pages, and an empty parseResponse page emits nothing.
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn integration_hooks_get_next_page_overrides_build_request() {
+    use wiremock::matchers::body_partial_json;
+    let server = MockServer::start().await;
+    for (skip, ids) in [(0, vec!["a", "b"]), (2, vec!["c", "d"]), (4, vec![])] {
+        let edges: Vec<_> = ids.iter().map(|id| json!({"node": {"id": id}})).collect();
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"skip": skip})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data": {"edges": edges}})),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let config_dir = std::env::temp_dir().join("hel_integration_hooks_next_page");
+    let _ = std::fs::create_dir_all(&config_dir);
+    std::fs::write(
+        config_dir.join("paged.js"),
+        r#"
+function buildRequest(ctx) {
+  return { body: { skip: parseInt(ctx.state.skip || "0", 10) } };
+}
+function parseResponse(ctx, response) {
+  return response.body.data.edges.map(function (e) { return { ts: "", event: e.node }; });
+}
+function getNextPage(ctx, request, response) {
+  if (response.body.data.edges.length < 2) return null;
+  return { body: { skip: request.body.skip + 2 } };
+}
+function commitState(ctx, events) {
+  return { skip: String(parseInt(ctx.state.skip || "0", 10) + events.length) };
+}
+"#,
+    )
+    .expect("write hook");
+    let config_path = config_dir.join("helr.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+  hooks:
+    enabled: true
+    path: "{}"
+sources:
+  paged:
+    url: "{}/graphql"
+    method: post
+    hooks:
+      script: "paged.js"
+    resilience:
+      timeout_secs: 5
+"#,
+        config_dir.display(),
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let ids: Vec<String> = stdout
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).expect("ndjson");
+            v["event"]["id"].as_str().unwrap_or("<none>").to_string()
+        })
+        .collect();
+    assert_eq!(ids, ["a", "b", "c", "d"]);
+}
+
+/// A rejected HTTP output batch fails the tick and leaves the source checkpoint where it was.
+#[tokio::test]
+async fn integration_http_output_failure_does_not_checkpoint() {
+    let source = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": "x", "ts": "100"}]
+        })))
+        .mount(&source)
+        .await;
+    let sink = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&sink)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_http_output_failure");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("helr.yaml");
+    let state_path = config_dir.join("state.db");
+    let _ = std::fs::remove_file(&state_path);
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: sqlite
+    path: "{}"
+sources:
+  wm-source:
+    url: "{}/"
+    state:
+      watermark_field: "ts"
+      watermark_param: "since"
+    resilience:
+      timeout_secs: 5
+"#,
+        state_path.to_str().unwrap().replace('\\', "/"),
+        source.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let config = config_path.to_str().unwrap();
+    let out = std::process::Command::new(hel_bin())
+        .args(["run", "--config", config, "--once", "--output", &sink.uri()])
+        .output()
+        .expect("run helr");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("401"),
+        "expected output error in logs: {stderr}"
+    );
+
+    let show = std::process::Command::new(hel_bin())
+        .args(["state", "--config", config, "show", "wm-source"])
+        .output()
+        .expect("run helr state show");
+    let stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        !stdout.contains("100"),
+        "watermark must not advance: {stdout}"
+    );
+}
+
 /// Page/offset pagination: two pages then empty.
 #[tokio::test]
 async fn integration_page_offset_pagination_two_pages() {
@@ -1298,6 +1441,88 @@ sources:
 {"endpoint":"/","event":{"id":"p1"},"meta":{},"source":"page-source","ts":"REDACTED_TS"}
 {"endpoint":"/","event":{"id":"p2"},"meta":{},"source":"page-source","ts":"REDACTED_TS"}
 "#);
+}
+
+/// Page/offset pagination resumes from the stored watermark and sends it on every page.
+#[tokio::test]
+async fn integration_page_offset_resumes_from_watermark() {
+    use wiremock::matchers::{query_param, query_param_is_missing};
+    let server = MockServer::start().await;
+    let pages = [
+        (
+            None,
+            "1",
+            json!([{"id": "a", "ts": "100"}, {"id": "b", "ts": "200"}]),
+        ),
+        (None, "2", json!([])),
+        (
+            Some("200"),
+            "1",
+            json!([{"id": "c", "ts": "300"}, {"id": "d", "ts": "400"}]),
+        ),
+        (Some("200"), "2", json!([{"id": "e", "ts": "500"}])),
+        (Some("200"), "3", json!([])),
+    ];
+    for (since, page, body) in pages {
+        let mock = Mock::given(method("GET")).and(query_param("page", page));
+        let mock = match since {
+            Some(s) => mock.and(query_param("since", s)),
+            None => mock.and(query_param_is_missing("since")),
+        };
+        mock.respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+
+    let config_dir = std::env::temp_dir().join("hel_integration_page_offset_watermark");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("helr.yaml");
+    let state_path = config_dir.join("state.db");
+    let _ = std::fs::remove_file(&state_path);
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: sqlite
+    path: "{}"
+sources:
+  page-source:
+    url: "{}/"
+    pagination:
+      strategy: page_offset
+      page_param: page
+      limit_param: limit
+      limit: 2
+    state:
+      watermark_field: "ts"
+      watermark_param: "since"
+    resilience:
+      timeout_secs: 5
+"#,
+        state_path.to_str().unwrap().replace('\\', "/"),
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let ids = |output: std::process::Output| -> Vec<String> {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).expect("ndjson");
+                v["event"]["id"].as_str().unwrap_or("").to_string()
+            })
+            .collect()
+    };
+    let first = ids(run_hel(&["run", "--once"], config_path.to_str().unwrap()));
+    assert_eq!(first, ["a", "b"]);
+    let second = ids(run_hel(&["run", "--once"], config_path.to_str().unwrap()));
+    assert_eq!(second, ["c", "d", "e"]);
 }
 
 /// True offset pagination: offset=0 then offset=2 (limit=2), stop when empty.
@@ -1415,6 +1640,55 @@ sources:
         lines.len(),
         stdout
     );
+}
+
+/// A Link next URL on another origin is not followed, so source credentials stay on the source host.
+#[tokio::test]
+async fn integration_link_header_refuses_cross_origin_next() {
+    let other = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(0)
+        .mount(&other)
+        .await;
+    let server = MockServer::start().await;
+    let next_link = format!(r#"<{}/steal>; rel="next""#, other.uri());
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Link", next_link.as_str())
+                .set_body_json(json!([{"id": "m1"}])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_link_cross_origin");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("helr.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  link-source:
+    url: "{}/"
+    headers:
+      Authorization: "Bearer secret"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("different origin"), "stderr: {stderr}");
 }
 
 /// Recorded/fixture: wiremock returns Okta-shaped JSON; parser accepts it.

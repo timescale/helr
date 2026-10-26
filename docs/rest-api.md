@@ -76,7 +76,7 @@ Returns `404` if the source is not in config. If no state store is configured, `
 
 ### GET /api/v1/sources/:id/config
 
-Config for a single source (URL, schedule, auth, pagination, resilience, etc.). Same shape as one entry under `sources` in `helr.yaml`. Auth fields expose env var names (e.g. `token_env`) and paths, not secret values.
+Config for a single source (URL, schedule, auth, pagination, resilience, etc.). Same shape as one entry under `sources` in `helr.yaml`. Auth fields expose env var names (e.g. `token_env`) and paths, not secret values. Because `${VAR}` placeholders are expanded when config loads, values that commonly carry secrets are replaced with `[redacted]`: every `headers`, `query_params`, and `body` value, and the password and query values of any URL.
 
 **Response:** `200 OK` with source config JSON, or `404 Not Found` if the source id is not in config.
 
@@ -84,7 +84,7 @@ Config for a single source (URL, schedule, auth, pagination, resilience, etc.). 
 
 ### GET /api/v1/config
 
-Global config (log_level, log_format, state, health, metrics, backpressure, degradation, reload, bulkhead, load_shedding, hooks, audit, etc.). Same shape as `global` in `helr.yaml`.
+Global config (log_level, log_format, state, health, metrics, backpressure, degradation, reload, bulkhead, load_shedding, hooks, audit, etc.). Same shape as `global` in `helr.yaml`, with the same redaction as the source config endpoint (for example `output.http.headers` and the password in `state.url`).
 
 **Response:** `200 OK` with global config JSON.
 

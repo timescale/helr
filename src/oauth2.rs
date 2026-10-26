@@ -155,7 +155,7 @@ pub async fn get_oauth_token(
             .duration_since(UNIX_EPOCH)
             .context("system time")?
             .as_secs();
-        let jti = format!("{}-{}", source_id, iat);
+        let jti = crate::dpop::new_jti();
         let proof = build_dpop_proof("POST", token_url.as_str(), &key, &jti, iat, None, None)?;
         token_req = token_req.header("DPoP", proof);
     }
@@ -191,7 +191,7 @@ pub async fn get_oauth_token(
                 .duration_since(UNIX_EPOCH)
                 .context("system time")?
                 .as_secs();
-            let jti = format!("{}-{}", source_id, iat);
+            let jti = crate::dpop::new_jti();
             let proof = build_dpop_proof(
                 "POST",
                 token_url.as_str(),
@@ -242,7 +242,7 @@ pub async fn get_oauth_token(
                 .get("expires_in")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(3600);
-            let expires_at = now + Duration::from_secs(expires_in);
+            let expires_at = token_expires_at(now, expires_in);
             {
                 let mut g = cache.write().await;
                 g.insert(source_id.to_string(), (access_token.clone(), expires_at));
@@ -272,7 +272,7 @@ pub async fn get_oauth_token(
         .get("expires_in")
         .and_then(|v| v.as_u64())
         .unwrap_or(3600);
-    let expires_at = now + Duration::from_secs(expires_in);
+    let expires_at = token_expires_at(now, expires_in);
 
     {
         let mut g = cache.write().await;
@@ -280,6 +280,12 @@ pub async fn get_oauth_token(
     }
     debug!(source = %source_id, expires_in, "oauth2 token refreshed");
     Ok(access_token)
+}
+
+/// Cap `expires_in` from the token server so a huge value cannot overflow `Instant`.
+fn token_expires_at(now: Instant, expires_in: u64) -> Instant {
+    const MAX_TOKEN_LIFETIME_SECS: u64 = 365 * 24 * 3600;
+    now + Duration::from_secs(expires_in.min(MAX_TOKEN_LIFETIME_SECS))
 }
 
 /// Build client_assertion JWT for private_key_jwt (RFC 7523): iss/sub=client_id, aud=token_url, RS256.
@@ -442,11 +448,24 @@ pub async fn get_google_sa_token(
         .get("expires_in")
         .and_then(|v| v.as_u64())
         .unwrap_or(3600);
-    let expires_at = now + Duration::from_secs(expires_in);
+    let expires_at = token_expires_at(now, expires_in);
     {
         let mut g = cache.write().await;
         g.insert(source_id.to_string(), (access_token.clone(), expires_at));
     }
     debug!(source = %source_id, expires_in, "google service account token obtained");
     Ok(access_token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_expires_at_caps_huge_expires_in() {
+        let now = Instant::now();
+        let at = token_expires_at(now, u64::MAX);
+        assert_eq!(at - now, Duration::from_secs(365 * 24 * 3600));
+        assert_eq!(token_expires_at(now, 60) - now, Duration::from_secs(60));
+    }
 }

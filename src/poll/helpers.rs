@@ -97,17 +97,7 @@ pub(crate) fn emit_event_line(
             .unwrap_or(MaxEventBytesBehavior::Fail)
         {
             MaxEventBytesBehavior::Truncate => {
-                let max_usize = max as usize;
-                let truncated: String = if max_usize >= 3 {
-                    format!(
-                        "{}...",
-                        line.chars()
-                            .take(max_usize.saturating_sub(3))
-                            .collect::<String>()
-                    )
-                } else {
-                    line.chars().take(max_usize).collect()
-                };
+                let truncated = truncate_event_line(emitted, label_key, max as usize)?;
                 event_sink
                     .write_line_from_source(Some(source_id), &truncated)
                     .inspect_err(|_e| {
@@ -138,6 +128,46 @@ pub(crate) fn emit_event_line(
         .inspect_err(|_e| {
             metrics::record_output_error(source_id);
         })
+}
+
+/// Replace `event` with a prefix of its JSON text so the line stays valid NDJSON within `max` bytes.
+fn truncate_event_line(
+    emitted: &EmittedEvent,
+    label_key: &str,
+    max: usize,
+) -> anyhow::Result<String> {
+    let text = emitted.event.to_string();
+    let mut stub = emitted.clone();
+    stub.meta.truncated = Some(true);
+    // Escaping makes output length non-linear in the prefix, so binary search the longest fit.
+    let (mut lo, mut hi) = (0usize, text.len().min(max));
+    let mut best = None;
+    while lo <= hi {
+        let mut mid = lo + (hi - lo) / 2;
+        while !text.is_char_boundary(mid) {
+            mid -= 1;
+        }
+        stub.event = serde_json::Value::String(text[..mid].to_string());
+        let line = stub.to_ndjson_line_with_label_key(label_key)?;
+        if line.len() <= max {
+            best = Some(line);
+            lo = lo + (hi - lo) / 2 + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best.ok_or_else(|| anyhow::anyhow!("max_line_bytes {} is smaller than the event envelope", max))
+}
+
+/// Wait until emitted events are accepted by the output, so a checkpoint never advances past undelivered events.
+pub(crate) async fn flush_before_checkpoint(event_sink: &Arc<dyn EventSink>) -> anyhow::Result<()> {
+    let sink = event_sink.clone();
+    tokio::task::spawn_blocking(move || sink.flush())
+        .await
+        .context("output flush task")?
+        .context("output flush before checkpoint")
 }
 
 /// Set state key; on error, fail or skip checkpoint per source config or global degradation.emit_without_checkpoint.
@@ -298,13 +328,14 @@ pub(crate) async fn store_incremental_from_after_poll(
     source: &SourceConfig,
     global: &GlobalConfig,
     max_ts: Option<String>,
-) {
+) -> anyhow::Result<()> {
     if let Some(ref inc) = source.incremental_from {
         let val = max_ts.unwrap_or_default();
         if !val.is_empty() {
-            let _ = store_set_or_skip(store, source_id, source, global, &inc.state_key, &val).await;
+            store_set_or_skip(store, source_id, source, global, &inc.state_key, &val).await?;
         }
     }
+    Ok(())
 }
 
 /// Store per-source watermark state after poll when state.watermark_field is configured.
@@ -314,13 +345,14 @@ pub(crate) async fn store_watermark_after_poll(
     source: &SourceConfig,
     global: &GlobalConfig,
     max_ts: Option<String>,
-) {
+) -> anyhow::Result<()> {
     if let Some(key) = watermark_state_key(source) {
         let val = max_ts.unwrap_or_default();
         if !val.is_empty() {
-            let _ = store_set_or_skip(store, source_id, source, global, key, &val).await;
+            store_set_or_skip(store, source_id, source, global, key, &val).await?;
         }
     }
+    Ok(())
 }
 
 pub(crate) fn status_class(status: u16) -> &'static str {

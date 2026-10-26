@@ -60,8 +60,8 @@ Each hook is a JavaScript function in your script. You can define one or more; u
 |------|-------------|--------------|
 | **getAuth(ctx)** | Before buildRequest; optional | `null` or `{ headers?, cookie?, body?, query? }` — see [Auth hook](#auth-hook-getauth) |
 | **buildRequest(ctx)** | Before each HTTP request | `{ url?, headers?, query?, body? }` or `null` to use default |
-| **parseResponse(ctx, response)** | After each response | Array of `{ ts, source, event, meta? }` |
-| **getNextPage(ctx, request, response)** | After parsing; decide next page | `{ url?, body? }` or `null` when no more pages |
+| **parseResponse(ctx, response)** | After each response | Array of `{ ts, source, event, meta? }`. An empty array means the page has no events. Return anything other than an array to fall back to default parsing. |
+| **getNextPage(ctx, request, response)** | After parsing; decide next page | `{ url?, body? }` or `null` when no more pages. On the following pages, the returned `url` and `body` take precedence over those from `buildRequest`. |
 | **commitState(ctx, events)** | After a successful poll tick | Object of key-value pairs to write to the state store |
 
 ### Context (`ctx`)

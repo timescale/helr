@@ -19,20 +19,24 @@ pub fn next_link_from_headers(headers: &HeaderMap, rel: &str) -> Option<String> 
 }
 
 /// Parse a single Link header value string. Format: <uri>; rel="next"[, <uri2>; rel="prev"]
+/// URIs may contain commas, so links are split on `<...>` rather than on `,`.
 fn parse_link_header(s: &str, want_rel: &str) -> Option<String> {
-    for part in s.split(',') {
-        let part = part.trim();
-        let (uri, rest) = part.strip_prefix('<')?.split_once('>')?;
-        let rest = rest.trim().trim_start_matches(';').trim();
-        for param in rest.split(';') {
-            let param = param.trim();
-            if let Some(rel_val) = param.strip_prefix("rel=") {
-                let rel_val = rel_val.trim().trim_matches('"').trim();
-                if rel_val.eq_ignore_ascii_case(want_rel) {
+    let mut rest = s;
+    while let Some(start) = rest.find('<') {
+        let (uri, tail) = rest[start + 1..].split_once('>')?;
+        let params_end = tail.find('<').unwrap_or(tail.len());
+        for param in tail[..params_end].split([';', ',']) {
+            if let Some(rel_val) = param.trim().strip_prefix("rel=") {
+                let rel_val = rel_val.trim().trim_matches('"');
+                if rel_val
+                    .split_whitespace()
+                    .any(|r| r.eq_ignore_ascii_case(want_rel))
+                {
                     return Some(uri.trim().to_string());
                 }
             }
         }
+        rest = &tail[params_end..];
     }
     None
 }
@@ -65,6 +69,17 @@ mod tests {
         assert_eq!(
             next_link_from_headers(&h, "next"),
             Some("https://api.example.com/logs?after=abc".into())
+        );
+    }
+
+    #[test]
+    fn parse_next_with_comma_in_uri_and_multi_value_rel() {
+        let h = header_map(
+            r#"<https://api.example.com/logs?ids=1,2>; rel="prev", <https://api.example.com/logs?ids=3,4&after=z>; rel="next last""#,
+        );
+        assert_eq!(
+            next_link_from_headers(&h, "next"),
+            Some("https://api.example.com/logs?ids=3,4&after=z".into())
         );
     }
 

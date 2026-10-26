@@ -363,10 +363,30 @@ pub(super) async fn poll_link_header(
 
         let checkpoint_per_page = source.checkpoint != Some(CheckpointTiming::EndOfTick);
         let hit_max_bytes = max_bytes.is_some() && total_bytes > max_bytes.unwrap();
+        if checkpoint_per_page {
+            flush_before_checkpoint(&event_sink).await?;
+        }
         if let Some(next) = next_url {
             let absolute = base_url.join(&next).context("resolve next URL")?;
+            let source_origin = reqwest::Url::parse(&source.url)
+                .context("parse source url")?
+                .origin();
+            if absolute.origin() != source_origin {
+                anyhow::bail!(
+                    "refusing to follow Link next URL to a different origin than the source url: {}",
+                    absolute.origin().ascii_serialization()
+                );
+            }
             if checkpoint_per_page {
-                store.set(source_id, "next_url", absolute.as_str()).await?;
+                store_set_or_skip(
+                    &store,
+                    source_id,
+                    source,
+                    global,
+                    "next_url",
+                    absolute.as_str(),
+                )
+                .await?;
             }
             pending_next_url = Some(absolute.to_string());
             if hit_max_bytes {
@@ -401,12 +421,14 @@ pub(super) async fn poll_link_header(
             break;
         }
     }
+    flush_before_checkpoint(&event_sink).await?;
     if source.checkpoint == Some(CheckpointTiming::EndOfTick)
         && let Some(ref v) = pending_next_url
     {
         store_set_or_skip(&store, source_id, source, global, "next_url", v).await?;
     }
-    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
-    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts)
+        .await?;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await?;
     Ok(())
 }

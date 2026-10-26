@@ -619,7 +619,7 @@ pub struct HttpSink {
 
 enum HttpSinkMsg {
     Line(String),
-    Flush(tokio::sync::oneshot::Sender<()>),
+    Flush(tokio::sync::oneshot::Sender<Result<(), String>>),
 }
 
 impl HttpSink {
@@ -674,7 +674,8 @@ async fn http_sink_worker(
     max_retries: u32,
 ) {
     let mut buf: Vec<String> = Vec::with_capacity(batch_size);
-    let mut flush_waiters: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
+    // Set once a batch is dropped; every later flush fails so no checkpoint advances past lost events.
+    let mut dropped: Option<String> = None;
     let sleep = tokio::time::sleep(batch_timeout);
     tokio::pin!(sleep);
     let mut timer_active = false;
@@ -691,45 +692,59 @@ async fn http_sink_worker(
                             timer_active = true;
                         }
                         if buf.len() >= batch_size {
-                            http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
+                            http_sink_send(&client, &url, &mut buf, max_retries, &mut dropped).await;
                             timer_active = false;
-                            for w in flush_waiters.drain(..) { let _ = w.send(()); }
                         }
                     }
                     Some(HttpSinkMsg::Flush(waiter)) => {
-                        if !buf.is_empty() {
-                            http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
-                            timer_active = false;
-                        }
-                        let _ = waiter.send(());
-                        for w in flush_waiters.drain(..) { let _ = w.send(()); }
+                        http_sink_send(&client, &url, &mut buf, max_retries, &mut dropped).await;
+                        timer_active = false;
+                        let _ = waiter.send(dropped.clone().map_or(Ok(()), Err));
                     }
                     None => {
-                        if !buf.is_empty() {
-                            http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
-                        }
-                        for w in flush_waiters.drain(..) { let _ = w.send(()); }
+                        http_sink_send(&client, &url, &mut buf, max_retries, &mut dropped).await;
                         return;
                     }
                 }
             }
             () = &mut sleep, if timer_active => {
-                if !buf.is_empty() {
-                    http_sink_flush_batch(&client, &url, &mut buf, max_retries).await;
-                }
+                http_sink_send(&client, &url, &mut buf, max_retries, &mut dropped).await;
                 timer_active = false;
-                for w in flush_waiters.drain(..) { let _ = w.send(()); }
             }
         }
     }
 }
 
+async fn http_sink_send(
+    client: &reqwest::Client,
+    url: &str,
+    buf: &mut Vec<String>,
+    max_retries: u32,
+    dropped: &mut Option<String>,
+) {
+    if buf.is_empty() {
+        return;
+    }
+    if let Err(e) = http_sink_flush_batch(client, url, buf, max_retries).await {
+        dropped.get_or_insert(e);
+    }
+}
+
+fn http_sink_retryable_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+}
+
+/// Send one batch. Transient failures (5xx, 408, 429, timeout, connect) are retried until delivery,
+/// with backoff capped at 30s, so a downstream outage pauses polling instead of losing events.
+/// Returns `Err` only when the batch was dropped after a non-retryable failure.
 async fn http_sink_flush_batch(
     client: &reqwest::Client,
     url: &str,
     buf: &mut Vec<String>,
     max_retries: u32,
-) {
+) -> Result<(), String> {
     let mut body = String::with_capacity(buf.iter().map(|l| l.len() + 1).sum());
     for line in buf.iter() {
         body.push_str(line);
@@ -740,43 +755,46 @@ async fn http_sink_flush_batch(
 
     let mut attempt = 0u32;
     loop {
-        match client.post(url).body(body.clone()).send().await {
+        let transient = match client.post(url).body(body.clone()).send().await {
             Ok(resp) if resp.status().is_success() => {
                 tracing::debug!(lines = count, status = %resp.status(), "http sink: batch sent");
-                return;
+                return Ok(());
             }
-            Ok(resp) if resp.status().is_server_error() && attempt < max_retries => {
-                attempt += 1;
-                let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt));
-                tracing::warn!(
-                    status = %resp.status(), attempt, max_retries,
-                    "http sink: retryable error, backing off {delay:?}",
-                );
-                tokio::time::sleep(delay).await;
-            }
+            Ok(resp) if http_sink_retryable_status(resp.status()) => resp.status().to_string(),
             Ok(resp) => {
                 tracing::error!(
                     status = %resp.status(), lines = count,
                     "http sink: non-retryable response, dropping batch",
                 );
                 metrics::record_output_error("http_sink");
-                return;
+                return Err(format!(
+                    "dropped {count} lines after non-retryable response {}",
+                    resp.status()
+                ));
             }
-            Err(e) if (e.is_timeout() || e.is_connect()) && attempt < max_retries => {
-                attempt += 1;
-                let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt));
-                tracing::warn!(
-                    error = %e, attempt, max_retries,
-                    "http sink: transient error, backing off {delay:?}",
-                );
-                tokio::time::sleep(delay).await;
-            }
+            Err(e) if e.is_timeout() || e.is_connect() => e.to_string(),
             Err(e) => {
                 tracing::error!(error = %e, lines = count, "http sink: send failed, dropping batch");
                 metrics::record_output_error("http_sink");
-                return;
+                return Err(format!("dropped {count} lines after send error: {e}"));
             }
+        };
+        attempt = attempt.saturating_add(1);
+        let delay = std::time::Duration::from_millis(100u64 << attempt.min(9))
+            .min(std::time::Duration::from_secs(30));
+        if attempt > max_retries {
+            tracing::error!(
+                error = %transient, attempt, lines = count,
+                "http sink: delivery still failing, retrying in {delay:?}",
+            );
+            metrics::record_output_error("http_sink");
+        } else {
+            tracing::warn!(
+                error = %transient, attempt, max_retries,
+                "http sink: transient error, backing off {delay:?}",
+            );
         }
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -793,13 +811,10 @@ impl EventSink for HttpSink {
             .send(HttpSinkMsg::Flush(tx))
             .map_err(|_| anyhow::anyhow!("http sink worker closed"))?;
         let rt = self.rt.clone();
-        std::thread::scope(|s| {
-            s.spawn(move || {
-                rt.block_on(rx).ok();
-            })
-            .join()
-            .map_err(|_| anyhow::anyhow!("http sink flush thread panicked"))
-        })
+        std::thread::scope(|s| s.spawn(move || rt.block_on(rx)).join())
+            .map_err(|_| anyhow::anyhow!("http sink flush thread panicked"))?
+            .map_err(|_| anyhow::anyhow!("http sink worker closed"))?
+            .map_err(|e| anyhow::anyhow!("http sink {e}; checkpoints stay paused until restart"))
     }
 }
 
@@ -1295,5 +1310,59 @@ mod tests {
 
         // First 2 calls return 503, third succeeds => 3 total calls.
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_sink_keeps_retrying_past_max_retries() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(3)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cfg = crate::config::HttpOutputConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        let sink = HttpSink::new(mock_server.uri(), &cfg).unwrap();
+        sink.write_line(r#"{"msg":"kept"}"#).unwrap();
+        sink.flush().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_sink_flush_fails_after_dropped_batch() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = crate::config::HttpOutputConfig::default();
+        let sink = HttpSink::new(mock_server.uri(), &cfg).unwrap();
+        sink.write_line(r#"{"msg":"lost"}"#).unwrap();
+        let err = sink.flush().unwrap_err().to_string();
+        assert!(err.contains("401"), "{err}");
+        sink.write_line(r#"{"msg":"later"}"#).unwrap();
+        assert!(
+            sink.flush().is_err(),
+            "flush must keep failing after a drop"
+        );
     }
 }
