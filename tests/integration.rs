@@ -1642,6 +1642,55 @@ sources:
     );
 }
 
+/// A Link next URL on another origin is not followed, so source credentials stay on the source host.
+#[tokio::test]
+async fn integration_link_header_refuses_cross_origin_next() {
+    let other = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(0)
+        .mount(&other)
+        .await;
+    let server = MockServer::start().await;
+    let next_link = format!(r#"<{}/steal>; rel="next""#, other.uri());
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Link", next_link.as_str())
+                .set_body_json(json!([{"id": "m1"}])),
+        )
+        .mount(&server)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_link_cross_origin");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("helr.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+sources:
+  link-source:
+    url: "{}/"
+    headers:
+      Authorization: "Bearer secret"
+    pagination:
+      strategy: link_header
+      rel: next
+    resilience:
+      timeout_secs: 5
+"#,
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("different origin"), "stderr: {stderr}");
+}
+
 /// Recorded/fixture: wiremock returns Okta-shaped JSON; parser accepts it.
 #[tokio::test]
 async fn integration_fixture_okta_shaped_events() {

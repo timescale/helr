@@ -368,6 +368,15 @@ pub(super) async fn poll_link_header(
         }
         if let Some(next) = next_url {
             let absolute = base_url.join(&next).context("resolve next URL")?;
+            let source_origin = reqwest::Url::parse(&source.url)
+                .context("parse source url")?
+                .origin();
+            if absolute.origin() != source_origin {
+                anyhow::bail!(
+                    "refusing to follow Link next URL to a different origin than the source url: {}",
+                    absolute.origin().ascii_serialization()
+                );
+            }
             if checkpoint_per_page {
                 store_set_or_skip(
                     &store,
