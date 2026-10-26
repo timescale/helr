@@ -39,7 +39,7 @@ pub(super) async fn poll_page_offset_pagination(
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
-    let base_url = source.url.as_str();
+    let base_url = url_with_first_request_params(&store, source_id, source, &source.url).await?;
     let mut total_events = 0u64;
     let mut incremental_max_ts: Option<String> = None;
     let mut watermark_max_ts: Option<String> = None;
@@ -55,18 +55,11 @@ pub(super) async fn poll_page_offset_pagination(
             tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
             tokio::time::sleep(Duration::from_secs(secs)).await;
         }
-        let mut u = Url::parse(base_url).context("page/offset base url")?;
+        let mut u = Url::parse(&base_url).context("page/offset base url")?;
         u.query_pairs_mut()
             .append_pair(page_param, &page.to_string());
         u.query_pairs_mut()
             .append_pair(limit_param, &limit.to_string());
-        if page == 1
-            && let Some(ref params) = source.query_params
-        {
-            for (k, v) in params {
-                u.query_pairs_mut().append_pair(k, &v.to_param_value());
-            }
-        }
         let url = u.to_string();
         if let Some(cb) = source
             .resilience
@@ -406,7 +399,7 @@ pub(super) async fn poll_offset_pagination(
 ) -> anyhow::Result<()> {
     use reqwest::Url;
     let start = Instant::now();
-    let base_url = source.url.as_str();
+    let base_url = url_with_first_request_params(&store, source_id, source, &source.url).await?;
     let mut total_events = 0u64;
     let mut incremental_max_ts: Option<String> = None;
     let mut watermark_max_ts: Option<String> = None;
@@ -423,18 +416,11 @@ pub(super) async fn poll_offset_pagination(
             tracing::debug!(source = %source_id, delay_secs = secs, "delay between pages");
             tokio::time::sleep(Duration::from_secs(secs)).await;
         }
-        let mut u = Url::parse(base_url).context("offset base url")?;
+        let mut u = Url::parse(&base_url).context("offset base url")?;
         u.query_pairs_mut()
             .append_pair(offset_param, &offset.to_string());
         u.query_pairs_mut()
             .append_pair(limit_param, &limit.to_string());
-        if page == 1
-            && let Some(ref params) = source.query_params
-        {
-            for (k, v) in params {
-                u.query_pairs_mut().append_pair(k, &v.to_param_value());
-            }
-        }
         let url = u.to_string();
         if let Some(cb) = source
             .resilience

@@ -1379,6 +1379,88 @@ sources:
 "#);
 }
 
+/// Page/offset pagination resumes from the stored watermark and sends it on every page.
+#[tokio::test]
+async fn integration_page_offset_resumes_from_watermark() {
+    use wiremock::matchers::{query_param, query_param_is_missing};
+    let server = MockServer::start().await;
+    let pages = [
+        (
+            None,
+            "1",
+            json!([{"id": "a", "ts": "100"}, {"id": "b", "ts": "200"}]),
+        ),
+        (None, "2", json!([])),
+        (
+            Some("200"),
+            "1",
+            json!([{"id": "c", "ts": "300"}, {"id": "d", "ts": "400"}]),
+        ),
+        (Some("200"), "2", json!([{"id": "e", "ts": "500"}])),
+        (Some("200"), "3", json!([])),
+    ];
+    for (since, page, body) in pages {
+        let mock = Mock::given(method("GET")).and(query_param("page", page));
+        let mock = match since {
+            Some(s) => mock.and(query_param("since", s)),
+            None => mock.and(query_param_is_missing("since")),
+        };
+        mock.respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+
+    let config_dir = std::env::temp_dir().join("hel_integration_page_offset_watermark");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("helr.yaml");
+    let state_path = config_dir.join("state.db");
+    let _ = std::fs::remove_file(&state_path);
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: sqlite
+    path: "{}"
+sources:
+  page-source:
+    url: "{}/"
+    pagination:
+      strategy: page_offset
+      page_param: page
+      limit_param: limit
+      limit: 2
+    state:
+      watermark_field: "ts"
+      watermark_param: "since"
+    resilience:
+      timeout_secs: 5
+"#,
+        state_path.to_str().unwrap().replace('\\', "/"),
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let ids = |output: std::process::Output| -> Vec<String> {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).expect("ndjson");
+                v["event"]["id"].as_str().unwrap_or("").to_string()
+            })
+            .collect()
+    };
+    let first = ids(run_hel(&["run", "--once"], config_path.to_str().unwrap()));
+    assert_eq!(first, ["a", "b"]);
+    let second = ids(run_hel(&["run", "--once"], config_path.to_str().unwrap()));
+    assert_eq!(second, ["c", "d", "e"]);
+}
+
 /// True offset pagination: offset=0 then offset=2 (limit=2), stop when empty.
 #[tokio::test]
 async fn integration_offset_pagination_two_pages() {

@@ -258,6 +258,8 @@ Secrets can be read from env var or file; file takes precedence when set.
 - **page_offset:** Query params `page_param` (1-based page) and `limit_param` (page size); `limit` is the value.
 - **offset:** True offset-based pagination: `offset_param` starts at 0 and increments by `limit` each page (e.g. `offset=0&limit=100`, `offset=100&limit=100`, ...).
 
+For `page_offset` and `offset`, the stored watermark (`state.watermark_param`), `incremental_from`, or `from`, plus `query_params`, are sent on every page so each poll pages through the same filtered result set.
+
 ---
 
 #### Resilience (`resilience:`)
