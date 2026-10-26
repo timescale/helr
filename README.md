@@ -129,7 +129,7 @@ Before a source saves its cursor, watermark, or other checkpoint, Helr waits for
 | `source_label_value` | Value for producer label in Helr's own logs | string | — (effective: `helr`) |
 | `state.backend` | State store backend | `sqlite`, `memory`, `redis`, `postgres` | — |
 | `state.path` | Path to state file (SQLite) | string | `./helr-state.db` (when backend is sqlite) |
-| `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`) | string | — (required when backend is redis or postgres) |
+| `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`). For Postgres, `sslmode` is `prefer` by default (TLS when the server offers it) or `require`; the server certificate is verified against the system trust store, so use `sslmode=disable` for a local server with a self-signed certificate. Helr reconnects if the Postgres connection drops. | string | — (required when backend is redis or postgres) |
 | `api.enabled` | Enable API and health HTTP server | boolean | `false` |
 | `api.address` | API/health server bind address | string | `0.0.0.0` |
 | `api.port` | API/health server port | number | `8080` |

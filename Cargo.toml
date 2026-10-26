@@ -34,6 +34,9 @@ sysinfo = "0.38"
 governor = "0.10"
 redis = { version = "1.0", features = ["tokio-comp", "connection-manager"] }
 tokio-postgres = "0.7"
+tokio-postgres-rustls = "0.14"
+rustls-platform-verifier = "0.7"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 tokio-util = { version = "0.7", features = ["io", "io-util"], optional = true }
 
 # Optional NATS output sink.
