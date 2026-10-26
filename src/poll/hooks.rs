@@ -46,12 +46,15 @@ pub(super) async fn poll_with_hooks(
 ) -> anyhow::Result<()> {
     let client = build_client(source.resilience.as_ref())?;
     let max_pages = 100u32;
-    let mut url = store
+    let url = store
         .get(source_id, "next_url")
         .await?
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| source.url.clone());
-    let mut body_override: Option<serde_json::Value> = source.body.clone();
+    let body_override: Option<serde_json::Value> = source.body.clone();
+    // Set by getNextPage; takes precedence over buildRequest on later pages.
+    let mut next_url: Option<String> = None;
+    let mut next_body: Option<serde_json::Value> = None;
     let mut all_events: Vec<HookEvent> = Vec::new();
     let path_for_emit = url.clone();
     let label = effective_source_label(source, source_id);
@@ -142,22 +145,21 @@ pub(super) async fn poll_with_hooks(
         };
 
         let build_result = call_build_request(script, &ctx, hooks_config).await?;
-        let (final_url, final_body) = if let Some(ref br) = build_result {
-            let u = br.url.as_deref().unwrap_or(url.as_str());
-            let b = br.body.clone().or_else(|| body_override.clone());
-            (u.to_string(), b)
-        } else {
-            (url.clone(), body_override.clone())
-        };
+        let final_url = next_url
+            .clone()
+            .or_else(|| build_result.as_ref().and_then(|br| br.url.clone()))
+            .unwrap_or_else(|| url.clone());
+        let paged_body = next_body
+            .clone()
+            .or_else(|| build_result.as_ref().and_then(|br| br.body.clone()));
+        let final_body = paged_body.clone().or_else(|| body_override.clone());
 
         let auth_has_concrete = auth_result.as_ref().is_some_and(|ar| {
             ar.headers.is_some() || ar.cookie.is_some() || ar.body.is_some() || ar.query.is_some()
         });
-        let response = if build_result.as_ref().and_then(|r| r.url.as_ref()).is_some()
-            || build_result
-                .as_ref()
-                .and_then(|r| r.headers.as_ref())
-                .is_some()
+        let response = if build_result
+            .as_ref()
+            .is_some_and(|r| r.url.is_some() || r.headers.is_some() || r.query.is_some())
             || auth_has_concrete
         {
             let method = source.method;
@@ -226,11 +228,10 @@ pub(super) async fn poll_with_hooks(
                     }
                 }
             }
-            let body_to_send = build_result
-                .as_ref()
-                .and_then(|br| br.body.clone())
+            let body_to_send = paged_body
+                .clone()
                 .or_else(|| auth_result.as_ref().and_then(|ar| ar.body.clone()))
-                .or_else(|| final_body.clone())
+                .or_else(|| body_override.clone())
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
             if matches!(method, HttpMethod::Post) {
                 req = req.json(&body_to_send);
@@ -274,8 +275,8 @@ pub(super) async fn poll_with_hooks(
 
         let events: Vec<HookEvent> =
             match call_parse_response(script, &ctx, &hook_response, hooks_config).await? {
-                ev if !ev.is_empty() => ev,
-                _ => {
+                Some(ev) => ev,
+                None => {
                     let parsed = parse_events_from_body_for_source(&body_bytes, source)?;
                     parsed
                         .into_iter()
@@ -342,10 +343,10 @@ pub(super) async fn poll_with_hooks(
         match next {
             Some(n) if n.url.is_some() || n.body.is_some() => {
                 if let Some(u) = n.url {
-                    url = u;
+                    next_url = Some(u);
                 }
                 if let Some(b) = n.body {
-                    body_override = Some(b);
+                    next_body = Some(b);
                 }
             }
             _ => break,

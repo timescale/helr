@@ -1243,6 +1243,85 @@ sources:
 "#);
 }
 
+/// Hook pagination: getNextPage body wins over buildRequest on later pages, and an empty parseResponse page emits nothing.
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn integration_hooks_get_next_page_overrides_build_request() {
+    use wiremock::matchers::body_partial_json;
+    let server = MockServer::start().await;
+    for (skip, ids) in [(0, vec!["a", "b"]), (2, vec!["c", "d"]), (4, vec![])] {
+        let edges: Vec<_> = ids.iter().map(|id| json!({"node": {"id": id}})).collect();
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"skip": skip})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data": {"edges": edges}})),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let config_dir = std::env::temp_dir().join("hel_integration_hooks_next_page");
+    let _ = std::fs::create_dir_all(&config_dir);
+    std::fs::write(
+        config_dir.join("paged.js"),
+        r#"
+function buildRequest(ctx) {
+  return { body: { skip: parseInt(ctx.state.skip || "0", 10) } };
+}
+function parseResponse(ctx, response) {
+  return response.body.data.edges.map(function (e) { return { ts: "", event: e.node }; });
+}
+function getNextPage(ctx, request, response) {
+  if (response.body.data.edges.length < 2) return null;
+  return { body: { skip: request.body.skip + 2 } };
+}
+function commitState(ctx, events) {
+  return { skip: String(parseInt(ctx.state.skip || "0", 10) + events.length) };
+}
+"#,
+    )
+    .expect("write hook");
+    let config_path = config_dir.join("helr.yaml");
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: memory
+  hooks:
+    enabled: true
+    path: "{}"
+sources:
+  paged:
+    url: "{}/graphql"
+    method: post
+    hooks:
+      script: "paged.js"
+    resilience:
+      timeout_secs: 5
+"#,
+        config_dir.display(),
+        server.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let output = run_hel(&["run", "--once"], config_path.to_str().unwrap());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let ids: Vec<String> = stdout
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).expect("ndjson");
+            v["event"]["id"].as_str().unwrap_or("<none>").to_string()
+        })
+        .collect();
+    assert_eq!(ids, ["a", "b", "c", "d"]);
+}
+
 /// Page/offset pagination: two pages then empty.
 #[tokio::test]
 async fn integration_page_offset_pagination_two_pages() {
