@@ -195,7 +195,7 @@ Metrics: `helr_events_dropped_total{source, reason="backpressure"|"max_queue_age
 | `body` | Request body for POST (JSON). Cursor merged in when using cursor pagination. | object/array | — |
 | `source_label_key` | Override producer label key for this source | string | — (use global) |
 | `source_label_value` | Override producer label value for this source | string | source id |
-| `schedule.interval_secs` | Poll interval in seconds | number | `60` |
+| `schedule.interval_secs` | Poll interval in seconds for this source, measured from the end of its previous poll | number | `60` |
 | `schedule.jitter_secs` | Random jitter added to interval (seconds) | number | — |
 | `auth` | Auth config; see Auth types below | object | — |
 | `pagination` | Pagination config; see Pagination types below | object | — |
