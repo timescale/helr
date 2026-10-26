@@ -1322,6 +1322,70 @@ sources:
     assert_eq!(ids, ["a", "b", "c", "d"]);
 }
 
+/// A rejected HTTP output batch fails the tick and leaves the source checkpoint where it was.
+#[tokio::test]
+async fn integration_http_output_failure_does_not_checkpoint() {
+    let source = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": "x", "ts": "100"}]
+        })))
+        .mount(&source)
+        .await;
+    let sink = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&sink)
+        .await;
+
+    let config_dir = std::env::temp_dir().join("hel_integration_http_output_failure");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("helr.yaml");
+    let state_path = config_dir.join("state.db");
+    let _ = std::fs::remove_file(&state_path);
+    let yaml = format!(
+        r#"
+global:
+  log_level: error
+  state:
+    backend: sqlite
+    path: "{}"
+sources:
+  wm-source:
+    url: "{}/"
+    state:
+      watermark_field: "ts"
+      watermark_param: "since"
+    resilience:
+      timeout_secs: 5
+"#,
+        state_path.to_str().unwrap().replace('\\', "/"),
+        source.uri()
+    );
+    std::fs::write(&config_path, yaml).expect("write config");
+
+    let config = config_path.to_str().unwrap();
+    let out = std::process::Command::new(hel_bin())
+        .args(["run", "--config", config, "--once", "--output", &sink.uri()])
+        .output()
+        .expect("run helr");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("401"),
+        "expected output error in logs: {stderr}"
+    );
+
+    let show = std::process::Command::new(hel_bin())
+        .args(["state", "--config", config, "show", "wm-source"])
+        .output()
+        .expect("run helr state show");
+    let stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        !stdout.contains("100"),
+        "watermark must not advance: {stdout}"
+    );
+}
+
 /// Page/offset pagination: two pages then empty.
 #[tokio::test]
 async fn integration_page_offset_pagination_two_pages() {

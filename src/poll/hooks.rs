@@ -377,6 +377,7 @@ pub(super) async fn poll_with_hooks(
         },
         headers: source.headers.clone(),
     };
+    flush_before_checkpoint(&event_sink).await?;
     let to_commit = call_commit_state(script, &commit_ctx, &all_events, hooks_config).await?;
     for (key, value) in to_commit {
         store_set_or_skip(&store, source_id, source, global, &key, &value).await?;

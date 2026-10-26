@@ -140,6 +140,15 @@ pub(crate) fn emit_event_line(
         })
 }
 
+/// Wait until emitted events are accepted by the output, so a checkpoint never advances past undelivered events.
+pub(crate) async fn flush_before_checkpoint(event_sink: &Arc<dyn EventSink>) -> anyhow::Result<()> {
+    let sink = event_sink.clone();
+    tokio::task::spawn_blocking(move || sink.flush())
+        .await
+        .context("output flush task")?
+        .context("output flush before checkpoint")
+}
+
 /// Set state key; on error, fail or skip checkpoint per source config or global degradation.emit_without_checkpoint.
 pub(crate) async fn store_set_or_skip(
     store: &Arc<dyn StateStore>,
@@ -298,13 +307,14 @@ pub(crate) async fn store_incremental_from_after_poll(
     source: &SourceConfig,
     global: &GlobalConfig,
     max_ts: Option<String>,
-) {
+) -> anyhow::Result<()> {
     if let Some(ref inc) = source.incremental_from {
         let val = max_ts.unwrap_or_default();
         if !val.is_empty() {
-            let _ = store_set_or_skip(store, source_id, source, global, &inc.state_key, &val).await;
+            store_set_or_skip(store, source_id, source, global, &inc.state_key, &val).await?;
         }
     }
+    Ok(())
 }
 
 /// Store per-source watermark state after poll when state.watermark_field is configured.
@@ -314,13 +324,14 @@ pub(crate) async fn store_watermark_after_poll(
     source: &SourceConfig,
     global: &GlobalConfig,
     max_ts: Option<String>,
-) {
+) -> anyhow::Result<()> {
     if let Some(key) = watermark_state_key(source) {
         let val = max_ts.unwrap_or_default();
         if !val.is_empty() {
-            let _ = store_set_or_skip(store, source_id, source, global, key, &val).await;
+            store_set_or_skip(store, source_id, source, global, key, &val).await?;
         }
     }
+    Ok(())
 }
 
 pub(crate) fn status_class(status: u16) -> &'static str {

@@ -1150,8 +1150,17 @@ async fn run_collector(
         }
     }
 
-    if let Err(e) = event_sink.flush() {
-        tracing::warn!("flush output: {}", e);
+    let sink = event_sink.clone();
+    match tokio::time::timeout(
+        SHUTDOWN_TIMEOUT,
+        tokio::task::spawn_blocking(move || sink.flush()),
+    )
+    .await
+    {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(e))) => tracing::warn!("flush output: {}", e),
+        Ok(Err(e)) => tracing::warn!("flush output task: {}", e),
+        Err(_) => tracing::warn!("output did not flush within shutdown timeout"),
     }
     tracing::info!("graceful shutdown complete");
     Ok(())

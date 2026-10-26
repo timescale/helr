@@ -112,6 +112,8 @@ Configuration is merged in this order (later overrides earlier):
 
 The `--output` flag selects the sink by URL scheme: a plain path means file, `http://` or `https://` means HTTP POST, and `nats://` means NATS publish. When omitted, output goes to stdout. The `global.output` config section provides optional tuning for HTTP (batch size, headers, retries) and NATS (subject override). NATS output requires `--features nats`.
 
+Before a source saves its cursor, watermark, or other checkpoint, Helr waits for the output to accept the events emitted so far. If the HTTP sink drops a batch after a non-retryable response (for example 400 or 401), checkpoints stay paused and the affected sources report errors until Helr restarts, so the events are fetched again instead of lost.
+
 **Broken pipe (SIGPIPE):** When stdout is a pipe and the consumer (e.g. Alloy, `helr run | alloy ...`) exits, writes return EPIPE. Helr treats this as **fatal**: the error is logged, `helr_output_errors_total` is incremented, and the process exits with a non-zero code so an orchestrator can restart. Keep the downstream process running, or use file output (`--output /path`) and have the collector tail the file instead.
 
 <details>
@@ -141,7 +143,7 @@ The `--output` flag selects the sink by URL scheme: a plain path means file, `ht
 | `output.http.batch_timeout_ms` | Max milliseconds to wait for a full batch before flushing early | number | `500` |
 | `output.http.headers` | Extra HTTP headers (e.g. `Authorization: "Bearer ..."`) | map | — |
 | `output.http.timeout_secs` | HTTP request timeout (seconds) | number | `30` |
-| `output.http.max_retries` | Max retries on transient failure (5xx, timeout) with exponential backoff | number | `3` |
+| `output.http.max_retries` | Retries on transient failure (5xx, 408, 429, timeout, connect) before each further failed attempt is logged as an error. Delivery keeps retrying with backoff capped at 30s, so polling pauses instead of dropping events. | number | `3` |
 | `output.nats.subject` | Override the NATS subject parsed from the `--output nats://` URL | string | — |
 
 When `api.enabled` is true, GET `/healthz` returns full JSON (version, uptime, per-source status, circuit state, last_error). GET `/readyz` and `/startupz` return version, uptime, and their flags only (no per-source detail). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.

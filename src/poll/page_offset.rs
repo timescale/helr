@@ -370,9 +370,11 @@ pub(super) async fn poll_page_offset_pagination(
             tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
         }
     }
+    flush_before_checkpoint(&event_sink).await?;
     store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
-    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
-    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts)
+        .await?;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await?;
     Ok(())
 }
 
@@ -731,8 +733,10 @@ pub(super) async fn poll_offset_pagination(
             tracing::warn!(source = %source_id, "reached max_pages {}", max_pages);
         }
     }
+    flush_before_checkpoint(&event_sink).await?;
     store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
-    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
-    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts)
+        .await?;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await?;
     Ok(())
 }
