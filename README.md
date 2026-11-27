@@ -112,6 +112,8 @@ Configuration is merged in this order (later overrides earlier):
 
 The `--output` flag selects the sink by URL scheme: a plain path means file, `http://` or `https://` means HTTP POST, and `nats://` means NATS publish. When omitted, output goes to stdout. The `global.output` config section provides optional tuning for HTTP (batch size, headers, retries) and NATS (subject override). NATS output requires `--features nats`.
 
+Before a source saves its cursor, watermark, or other checkpoint, Helr waits for the output to accept the events emitted so far. If the HTTP sink drops a batch after a non-retryable response (for example 400 or 401), checkpoints stay paused and the affected sources report errors until Helr restarts, so the events are fetched again instead of lost.
+
 **Broken pipe (SIGPIPE):** When stdout is a pipe and the consumer (e.g. Alloy, `helr run | alloy ...`) exits, writes return EPIPE. Helr treats this as **fatal**: the error is logged, `helr_output_errors_total` is incremented, and the process exits with a non-zero code so an orchestrator can restart. Keep the downstream process running, or use file output (`--output /path`) and have the collector tail the file instead.
 
 <details>
@@ -127,7 +129,7 @@ The `--output` flag selects the sink by URL scheme: a plain path means file, `ht
 | `source_label_value` | Value for producer label in Helr's own logs | string | — (effective: `helr`) |
 | `state.backend` | State store backend | `sqlite`, `memory`, `redis`, `postgres` | — |
 | `state.path` | Path to state file (SQLite) | string | `./helr-state.db` (when backend is sqlite) |
-| `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`) | string | — (required when backend is redis or postgres) |
+| `state.url` | Connection URL for Redis (`redis://...`) or Postgres (`postgres://...`). For Postgres, `sslmode` is `prefer` by default (TLS when the server offers it) or `require`; the server certificate is verified against the system trust store, so use `sslmode=disable` for a local server with a self-signed certificate. Helr reconnects if the Postgres connection drops. | string | — (required when backend is redis or postgres) |
 | `api.enabled` | Enable API and health HTTP server | boolean | `false` |
 | `api.address` | API/health server bind address | string | `0.0.0.0` |
 | `api.port` | API/health server port | number | `8080` |
@@ -141,7 +143,7 @@ The `--output` flag selects the sink by URL scheme: a plain path means file, `ht
 | `output.http.batch_timeout_ms` | Max milliseconds to wait for a full batch before flushing early | number | `500` |
 | `output.http.headers` | Extra HTTP headers (e.g. `Authorization: "Bearer ..."`) | map | — |
 | `output.http.timeout_secs` | HTTP request timeout (seconds) | number | `30` |
-| `output.http.max_retries` | Max retries on transient failure (5xx, timeout) with exponential backoff | number | `3` |
+| `output.http.max_retries` | Retries on transient failure (5xx, 408, 429, timeout, connect) before each further failed attempt is logged as an error. Delivery keeps retrying with backoff capped at 30s, so polling pauses instead of dropping events. | number | `3` |
 | `output.nats.subject` | Override the NATS subject parsed from the `--output nats://` URL | string | — |
 
 When `api.enabled` is true, GET `/healthz` returns full JSON (version, uptime, per-source status, circuit state, last_error). GET `/readyz` and `/startupz` return version, uptime, and their flags only (no per-source detail). **Readyz semantics:** `/readyz` returns 200 only when (1) output path is writable (or stdout), (2) state store is connected (e.g. SQLite reachable), and (3) at least one source is healthy (circuit not open). The JSON includes `ready`, `output_writable`, `state_store_connected`, and `at_least_one_source_healthy` so you can see which condition failed. When graceful degradation is used (state store fallback to memory), the JSON includes `state_store_fallback_active: true`.
@@ -195,7 +197,7 @@ Metrics: `helr_events_dropped_total{source, reason="backpressure"|"max_queue_age
 | `body` | Request body for POST (JSON). Cursor merged in when using cursor pagination. | object/array | — |
 | `source_label_key` | Override producer label key for this source | string | — (use global) |
 | `source_label_value` | Override producer label value for this source | string | source id |
-| `schedule.interval_secs` | Poll interval in seconds | number | `60` |
+| `schedule.interval_secs` | Poll interval in seconds for this source, measured from the end of its previous poll | number | `60` |
 | `schedule.jitter_secs` | Random jitter added to interval (seconds) | number | — |
 | `auth` | Auth config; see Auth types below | object | — |
 | `pagination` | Pagination config; see Pagination types below | object | — |
@@ -216,7 +218,7 @@ Metrics: `helr_events_dropped_total{source, reason="backpressure"|"max_queue_age
 | `max_response_bytes` | Fail if a single response body exceeds this (bytes) | number | — |
 | `on_invalid_utf8` | When response body is not valid UTF-8 | `replace`, `escape`, `fail` | — |
 | `max_line_bytes` | Max size of one emitted NDJSON line (bytes) | number | — |
-| `max_line_bytes_behavior` | When a line exceeds `max_line_bytes` | `truncate`, `skip`, `fail` | — |
+| `max_line_bytes_behavior` | When a line exceeds `max_line_bytes`. `truncate` keeps the line valid JSON: `event` becomes a string holding the start of the event's JSON, and `meta.truncated` is `true`. | `truncate`, `skip`, `fail` | — |
 | `checkpoint` | When to write state | `end_of_tick`, `per_page` | — |
 | `on_state_write_error` | When state store write fails (e.g. disk full) | `fail`, `skip_checkpoint` | `fail` |
 | `incremental_from` | Store latest event timestamp in state and send as query param on first request (e.g. Slack `oldest`); see below | object | — |
@@ -253,10 +255,12 @@ Secrets can be read from env var or file; file takes precedence when set.
 | `page_offset` | `page_param`, `limit_param`, `limit` | `max_pages` | — |
 | `offset` | `offset_param`, `limit_param`, `limit` | `max_pages` | — |
 
-- **link_header:** Next URL from `Link` header (e.g. `rel="next"`).
+- **link_header:** Next URL from `Link` header (e.g. `rel="next"`). A next URL on a different origin (scheme, host, port) than the source `url` fails the poll instead of receiving the source's credentials.
 - **cursor:** Cursor from response JSON at `cursor_path`; sent as query param `cursor_param` (GET) or merged into body (POST).
 - **page_offset:** Query params `page_param` (1-based page) and `limit_param` (page size); `limit` is the value.
 - **offset:** True offset-based pagination: `offset_param` starts at 0 and increments by `limit` each page (e.g. `offset=0&limit=100`, `offset=100&limit=100`, ...).
+
+For `page_offset` and `offset`, the stored watermark (`state.watermark_param`), `incremental_from`, or `from`, plus `query_params`, are sent on every page so each poll pages through the same filtered result set.
 
 ---
 
@@ -283,7 +287,7 @@ Secrets can be read from env var or file; file takes precedence when set.
 | `circuit_breaker.half_open_timeout_secs` | Seconds before half-open probe | number | `60` |
 | `circuit_breaker.reset_timeout_secs` | Max time in open state (open duration = min(half_open_timeout_secs, reset_timeout_secs)) | number | — |
 | `circuit_breaker.failure_rate_threshold` | Optional: open when failure rate ≥ this (0.0–1.0); requires `minimum_requests` | number | — |
-| `circuit_breaker.minimum_requests` | Minimum requests before evaluating `failure_rate_threshold` | number | — |
+| `circuit_breaker.minimum_requests` | Window size for `failure_rate_threshold`: the rate is evaluated over each consecutive window of this many requests | number | — |
 | `rate_limit.respect_headers` | Use Retry-After or reset header on 429 (see `headers.reset_header`) | boolean | `true` |
 | `rate_limit.page_delay_secs` | Delay between pagination requests (seconds) | number | — |
 | `rate_limit.headers` | Header names for limit/remaining/reset (when API uses different names) | object | — |

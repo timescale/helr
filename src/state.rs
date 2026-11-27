@@ -5,6 +5,7 @@
 //! **Single-writer assumption:** Only one Helr process should use a given state store (e.g. one SQLite file).
 //! For multi-instance deployments use Redis or Postgres state backend.
 
+use anyhow::Context;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::Path;
@@ -309,21 +310,15 @@ impl StateStore for RedisStateStore {
 
 /// Postgres-backed state store. Same schema as SQLite: (source_id, key, value, updated_at).
 pub struct PostgresStateStore {
-    client: tokio_postgres::Client,
-    _connection: tokio::task::JoinHandle<()>,
+    url: String,
+    client: tokio::sync::Mutex<Arc<tokio_postgres::Client>>,
 }
 
 impl PostgresStateStore {
     /// Connect to Postgres at url (e.g. `postgres://user:pass@localhost/dbname`). Creates helr_state table if missing.
+    /// TLS follows the URL's `sslmode` (default `prefer`) and verifies certificates against the system trust store.
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
-            .await
-            .map_err(|e| anyhow::anyhow!("postgres connect: {}", e))?;
-        let _connection = tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!("postgres connection error: {}", e);
-            }
-        });
+        let client = Self::open(url).await?;
         client
             .batch_execute(
                 r#"
@@ -339,9 +334,40 @@ impl PostgresStateStore {
             .await
             .map_err(|e| anyhow::anyhow!("postgres init: {}", e))?;
         Ok(Self {
-            client,
-            _connection,
+            url: url.to_string(),
+            client: tokio::sync::Mutex::new(Arc::new(client)),
         })
+    }
+
+    async fn open(url: &str) -> anyhow::Result<tokio_postgres::Client> {
+        use rustls_platform_verifier::BuilderVerifierExt;
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .and_then(|b| b.with_platform_verifier())
+        .map_err(|e| anyhow::anyhow!("postgres tls config: {}", e))?
+        .with_no_client_auth();
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+        let (client, connection) = tokio_postgres::connect(url, tls)
+            .await
+            .context("postgres connect")?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::error!("postgres connection error: {}", e);
+            }
+        });
+        Ok(client)
+    }
+
+    /// Current client, reconnecting first if the connection closed (server restart, failover, idle timeout).
+    async fn client(&self) -> anyhow::Result<Arc<tokio_postgres::Client>> {
+        let mut guard = self.client.lock().await;
+        if guard.is_closed() {
+            tracing::warn!("postgres state connection closed, reconnecting");
+            *guard = Arc::new(Self::open(&self.url).await?);
+        }
+        Ok(guard.clone())
     }
 }
 
@@ -349,7 +375,8 @@ impl PostgresStateStore {
 impl StateStore for PostgresStateStore {
     async fn get(&self, source_id: &str, key: &str) -> anyhow::Result<Option<String>> {
         let row: Option<tokio_postgres::Row> = self
-            .client
+            .client()
+            .await?
             .query_opt(
                 "SELECT value FROM helr_state WHERE source_id = $1 AND key = $2",
                 &[&source_id, &key],
@@ -364,7 +391,8 @@ impl StateStore for PostgresStateStore {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        self.client
+        self.client()
+            .await?
             .execute(
                 "INSERT INTO helr_state (source_id, key, value, updated_at) VALUES ($1, $2, $3, $4)
                  ON CONFLICT (source_id, key) DO UPDATE SET value = $3, updated_at = $4",
@@ -377,7 +405,8 @@ impl StateStore for PostgresStateStore {
 
     async fn list_keys(&self, source_id: &str) -> anyhow::Result<Vec<String>> {
         let rows = self
-            .client
+            .client()
+            .await?
             .query(
                 "SELECT key FROM helr_state WHERE source_id = $1 ORDER BY key",
                 &[&source_id],
@@ -389,7 +418,8 @@ impl StateStore for PostgresStateStore {
 
     async fn list_sources(&self) -> anyhow::Result<Vec<String>> {
         let rows = self
-            .client
+            .client()
+            .await?
             .query(
                 "SELECT DISTINCT source_id FROM helr_state ORDER BY source_id",
                 &[],
@@ -400,7 +430,8 @@ impl StateStore for PostgresStateStore {
     }
 
     async fn clear_source(&self, source_id: &str) -> anyhow::Result<()> {
-        self.client
+        self.client()
+            .await?
             .execute("DELETE FROM helr_state WHERE source_id = $1", &[&source_id])
             .await
             .map_err(|e| anyhow::anyhow!("postgres: {}", e))?;

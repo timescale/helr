@@ -9,6 +9,8 @@ pub struct LruDedupe {
     capacity: u64,
     order: VecDeque<String>,
     seen: HashSet<String>,
+    /// IDs added during the current poll; forgotten again if the poll fails before its checkpoint.
+    pending: Vec<String>,
 }
 
 impl LruDedupe {
@@ -17,6 +19,7 @@ impl LruDedupe {
             capacity: capacity.max(1),
             order: VecDeque::new(),
             seen: HashSet::new(),
+            pending: Vec::new(),
         }
     }
 
@@ -29,6 +32,7 @@ impl LruDedupe {
             return true; // duplicate
         }
         self.seen.insert(id.clone());
+        self.pending.push(id.clone());
         self.order.push_back(id);
         while self.order.len() as u64 > self.capacity {
             if let Some(evicted) = self.order.pop_front() {
@@ -36,6 +40,17 @@ impl LruDedupe {
             }
         }
         false // new
+    }
+
+    /// Keep (`ok`) or forget the IDs added since the last call.
+    pub fn finish_poll(&mut self, ok: bool) {
+        let pending = std::mem::take(&mut self.pending);
+        if ok || pending.is_empty() {
+            return;
+        }
+        let pending: HashSet<String> = pending.into_iter().collect();
+        self.seen.retain(|id| !pending.contains(id));
+        self.order.retain(|id| !pending.contains(id));
     }
 }
 
@@ -55,6 +70,13 @@ pub async fn seen_and_add(store: &DedupeStore, source_id: &str, id: String, capa
         .entry(source_id.to_string())
         .or_insert_with(|| LruDedupe::new(capacity));
     dedupe.seen_and_add(id)
+}
+
+/// Commit this poll's IDs when it succeeded; roll them back when it failed so a refetch emits them again.
+pub async fn finish_poll(store: &DedupeStore, source_id: &str, ok: bool) {
+    if let Some(d) = store.write().await.get_mut(source_id) {
+        d.finish_poll(ok);
+    }
 }
 
 #[cfg(test)]
@@ -93,6 +115,17 @@ mod tests {
         assert!(!d.seen_and_add("d".to_string()));
         assert!(d.seen_and_add("b".to_string()));
         assert!(!d.seen_and_add("a".to_string()));
+    }
+
+    #[test]
+    fn lru_dedupe_failed_poll_forgets_its_ids() {
+        let mut d = LruDedupe::new(10);
+        assert!(!d.seen_and_add("kept".to_string()));
+        d.finish_poll(true);
+        assert!(!d.seen_and_add("retried".to_string()));
+        d.finish_poll(false);
+        assert!(d.seen_and_add("kept".to_string()));
+        assert!(!d.seen_and_add("retried".to_string()));
     }
 
     #[tokio::test]

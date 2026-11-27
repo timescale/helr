@@ -496,6 +496,9 @@ pub(super) async fn poll_cursor_pagination(
         }
         metrics::record_events(source_id, emitted_count);
         let checkpoint_per_page = source.checkpoint != Some(CheckpointTiming::EndOfTick);
+        if checkpoint_per_page {
+            flush_before_checkpoint(&event_sink).await?;
+        }
         match next_cursor {
             Some(c) => {
                 if checkpoint_per_page {
@@ -526,12 +529,14 @@ pub(super) async fn poll_cursor_pagination(
             }
         }
     }
+    flush_before_checkpoint(&event_sink).await?;
     if source.checkpoint == Some(CheckpointTiming::EndOfTick)
         && let Some(ref v) = pending_cursor
     {
         store_set_or_skip(&store, source_id, source, global, "cursor", v).await?;
     }
-    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
-    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts)
+        .await?;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await?;
     Ok(())
 }

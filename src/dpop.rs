@@ -54,6 +54,11 @@ fn uri_without_query_and_fragment(url: &str) -> anyhow::Result<String> {
     Ok(u.to_string())
 }
 
+/// Random proof id: servers reject a reused `jti`, and several proofs can share the same `iat` second.
+pub fn new_jti() -> String {
+    format!("{:032x}", rand::random::<u128>())
+}
+
 /// Build DPoP proof JWT (RFC 9449): htm, htu (no query/fragment), iat, jti; optional nonce and ath when provided.
 pub fn build_dpop_proof(
     method: &str,
@@ -111,6 +116,13 @@ pub fn build_dpop_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_jti_is_unique_per_call() {
+        let a = new_jti();
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, new_jti());
+    }
 
     #[test]
     fn test_dpop_proof_shape() {

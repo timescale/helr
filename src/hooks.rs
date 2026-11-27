@@ -301,12 +301,13 @@ pub async fn call_build_request(
 }
 
 /// Call parseResponse(ctx, response). Returns array of { ts, source, event, meta? }.
+/// `None` when the hook is not defined or does not return an array; `Some(vec![])` is an empty page.
 pub async fn call_parse_response(
     script: &str,
     ctx: &HookContext,
     response: &HookResponse,
     hooks_config: &HooksConfig,
-) -> anyhow::Result<Vec<HookEvent>> {
+) -> anyhow::Result<Option<Vec<HookEvent>>> {
     let timeout = Duration::from_secs(hooks_config.timeout_secs);
     let ctx_json = serde_json::to_value(ctx).context("serialize hook ctx")?;
     let resp_json = serde_json::to_value(response).context("serialize hook response")?;
@@ -320,7 +321,7 @@ pub async fn call_parse_response(
     .await?;
     let arr = match result.and_then(|v| v.as_array().cloned()) {
         Some(a) => a,
-        None => return Ok(vec![]),
+        None => return Ok(None),
     };
     let mut events = Vec::new();
     for item in arr {
@@ -351,7 +352,7 @@ pub async fn call_parse_response(
             meta,
         });
     }
-    Ok(events)
+    Ok(Some(events))
 }
 
 /// Call getNextPage(ctx, request, response). Returns null or { url?, body? }. request is the request that was sent (url, body).
@@ -515,6 +516,7 @@ mod tests {
         let cfg = default_hooks_config();
         let events = call_parse_response(script, &ctx, &response, &cfg)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].ts, "2024-01-01T00:00:00Z");

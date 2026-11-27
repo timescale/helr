@@ -336,9 +336,11 @@ pub(super) async fn poll_single_page(
     }
     metrics::record_events(source_id, emitted_count);
 
+    flush_before_checkpoint(&event_sink).await?;
     store_set_or_skip(&store, source_id, source, global, "next_url", "").await?;
-    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts).await;
-    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await;
+    store_incremental_from_after_poll(&store, source_id, source, global, incremental_max_ts)
+        .await?;
+    store_watermark_after_poll(&store, source_id, source, global, watermark_max_ts).await?;
     tracing::info!(
         source = %source_id,
         events = emitted_count,

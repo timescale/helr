@@ -1003,12 +1003,32 @@ async fn run_collector(
 
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
+    let mut next_due: HashMap<String, Instant> = HashMap::new();
+    {
+        let g = config_arc.read().await;
+        let now = Instant::now();
+        for (id, source) in &g.sources {
+            next_due.insert(
+                id.clone(),
+                now + source_delay(source, &g, state_store_fallback_active),
+            );
+        }
+    }
     let mut tick = 0u64;
     'run: loop {
         let (delay, dump_enabled) = {
             let g = config_arc.read().await;
+            next_due.retain(|id, _| g.sources.contains_key(id));
+            let now = Instant::now();
+            let earliest = g
+                .sources
+                .keys()
+                .filter(|id| source_filter.is_none_or(|f| f == id.as_str()))
+                .map(|id| next_due.get(id).copied().unwrap_or(now))
+                .min()
+                .unwrap_or(now + Duration::from_secs(60));
             (
-                next_delay(&g, state_store_fallback_active),
+                earliest.saturating_duration_since(now),
                 g.global.dump_on_sigusr1.is_some(),
             )
         };
@@ -1058,8 +1078,19 @@ async fn run_collector(
             _ = tokio::time::sleep(delay) => {}
         }
 
-        let config_guard = config_arc.read().await;
-        let config_ref = &*config_guard;
+        // shortcut: due sources run together, so a slow source delays the next tick of the others; move to per-source tasks if that matters.
+        let due_config = {
+            let g = config_arc.read().await;
+            let now = Instant::now();
+            let mut c = g.clone();
+            c.sources
+                .retain(|id, _| next_due.get(id).is_none_or(|due| *due <= now));
+            c
+        };
+        if due_config.sources.is_empty() {
+            continue 'run;
+        }
+        let config_ref = &due_config;
         let store_ref = store.clone();
         let source_filter_ref = source_filter;
         let circuit_store_ref = circuit_store.clone();
@@ -1110,10 +1141,26 @@ async fn run_collector(
                 }
             }
         }
+        let now = Instant::now();
+        for (id, source) in &due_config.sources {
+            next_due.insert(
+                id.clone(),
+                now + source_delay(source, &due_config, state_store_fallback_active),
+            );
+        }
     }
 
-    if let Err(e) = event_sink.flush() {
-        tracing::warn!("flush output: {}", e);
+    let sink = event_sink.clone();
+    match tokio::time::timeout(
+        SHUTDOWN_TIMEOUT,
+        tokio::task::spawn_blocking(move || sink.flush()),
+    )
+    .await
+    {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(e))) => tracing::warn!("flush output: {}", e),
+        Ok(Err(e)) => tracing::warn!("flush output task: {}", e),
+        Err(_) => tracing::warn!("output did not flush within shutdown timeout"),
     }
     tracing::info!("graceful shutdown complete");
     Ok(())
@@ -1181,21 +1228,15 @@ async fn shutdown_signal() {
     }
 }
 
-/// Interval + jitter: min interval across sources, max jitter; delay = interval ± jitter, at least 1s.
+/// Delay until a source's next poll: its interval ± its jitter, at least 1s.
 /// When state_store_fallback_active and degradation.reduced_frequency_multiplier is set, multiplies delay by that factor.
-fn next_delay(config: &Config, state_store_fallback_active: bool) -> Duration {
-    let interval_secs = config
-        .sources
-        .values()
-        .map(|s| s.schedule.interval_secs)
-        .min()
-        .unwrap_or(60);
-    let jitter_secs = config
-        .sources
-        .values()
-        .filter_map(|s| s.schedule.jitter_secs)
-        .max()
-        .unwrap_or(0);
+fn source_delay(
+    source: &config::SourceConfig,
+    config: &Config,
+    state_store_fallback_active: bool,
+) -> Duration {
+    let interval_secs = source.schedule.interval_secs;
+    let jitter_secs = source.schedule.jitter_secs.unwrap_or(0);
     let delta = if jitter_secs > 0 {
         rand::random_range(-(jitter_secs as i64)..=(jitter_secs as i64))
     } else {
@@ -1237,6 +1278,39 @@ mod tests {
     }
 
     #[test]
+    fn test_source_delay_uses_each_source_interval() {
+        let dir = std::env::temp_dir().join("hel_source_delay_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("helr.yaml");
+        std::fs::write(
+            &path,
+            r#"
+global: {}
+sources:
+  fast:
+    url: "https://example.com/fast"
+    schedule:
+      interval_secs: 60
+  slow:
+    url: "https://example.com/slow"
+    schedule:
+      interval_secs: 3600
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            source_delay(&config.sources["fast"], &config, false).as_secs(),
+            60
+        );
+        assert_eq!(
+            source_delay(&config.sources["slow"], &config, false).as_secs(),
+            3600
+        );
+    }
+
+    #[test]
     fn test_next_delay_reduced_frequency_when_fallback_active() {
         let dir = std::env::temp_dir().join("hel_next_delay_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -1262,8 +1336,9 @@ sources:
         .unwrap();
         let config = Config::load(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        let delay_fallback = next_delay(&config, true);
-        let delay_normal = next_delay(&config, false);
+        let s1 = &config.sources["s1"];
+        let delay_fallback = source_delay(s1, &config, true);
+        let delay_normal = source_delay(s1, &config, false);
         assert_eq!(
             delay_normal.as_secs(),
             60,
